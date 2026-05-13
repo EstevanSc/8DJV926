@@ -25,8 +25,7 @@ async fn main() {
         config.redis_url
     );
 
-    #[allow(unused_mut, unused_variables)]
-    let mut redis_client = match RedisClient::connect(&config.redis_url).await {
+    let _redis_client = match RedisClient::connect(&config.redis_url).await {
         Ok(mut client) => {
             tracing::info!("Successfully connected to Redis");
             match client.ping().await {
