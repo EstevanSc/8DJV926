@@ -34,6 +34,20 @@ async fn main() {
                     tracing::error!("Redis ping failed: {}", e);
                 }
             }
+
+            if let Err(e) = client.set("orchestrator:status", "online").await {
+                tracing::error!("Failed to set orchestrator:status: {}", e);
+            } else {
+                match client.get("orchestrator:status").await {
+                    Ok(value) => {
+                        tracing::info!("Orchestrator status: {}", value);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to read orchestrator:status: {}", e);
+                    }
+                }
+            }
+
             Some(client)
         }
         Err(e) => {
