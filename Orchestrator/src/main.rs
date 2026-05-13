@@ -10,7 +10,7 @@ async fn main() {
 
     let app = Router::new().nest("/api", api::routes());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("Failed to bind to address");
