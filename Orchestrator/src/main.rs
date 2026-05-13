@@ -4,8 +4,10 @@ use tokio::signal;
 
 mod api;
 mod config;
+mod infrastructure;
 
 use config::Config;
+use infrastructure::RedisClient;
 
 #[tokio::main]
 async fn main() {
@@ -20,6 +22,26 @@ async fn main() {
         config.redis_url
     );
 
+    #[allow(unused_mut, unused_variables)]
+    let mut redis_client = match RedisClient::connect(&config.redis_url).await {
+        Ok(mut client) => {
+            tracing::info!("Successfully connected to Redis");
+            match client.ping().await {
+                Ok(pong) => {
+                    tracing::info!("Redis ping successful: {}", pong);
+                }
+                Err(e) => {
+                    tracing::error!("Redis ping failed: {}", e);
+                }
+            }
+            Some(client)
+        }
+        Err(e) => {
+            tracing::error!("Failed to connect to Redis: {}", e);
+            None
+        }
+    };
+
     let app = Router::new().nest("/api", api::routes());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -28,11 +50,6 @@ async fn main() {
         .expect("Failed to bind to address");
 
     tracing::info!("Server listening on {}", addr);
-
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    );
 
     let shutdown = async {
         let ctrl_c = async {
@@ -58,10 +75,13 @@ async fn main() {
         }
     };
 
-    server
-        .with_graceful_shutdown(shutdown)
-        .await
-        .expect("Server error");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .expect("Server error");
 
-    tracing::info!("Server shutting down");
+    tracing::info!("Orchestrator shutting down");
 }
