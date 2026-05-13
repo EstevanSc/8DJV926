@@ -1,7 +1,12 @@
 //! Configuration management from environment variables.
-//! Loads PORT, ENVIRONMENT, and REDIS_URL with sensible defaults.
+//! Loads PORT, ENVIRONMENT, and REDIS_URL from .env file or environment variables.
+//! Falls back to sensible defaults if neither .env nor environment variables are set.
 
 use std::env;
+
+const DEFAULT_PORT: u16 = 8081;
+const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
+const DEFAULT_ENVIRONMENT: &str = "development";
 
 pub struct Config {
     pub port: u16,
@@ -10,17 +15,19 @@ pub struct Config {
 }
 
 impl Config {
-    /// Loads configuration from environment variables with defaults.
+    /// Loads configuration from .env file, environment variables, or defaults.
     pub fn from_env() -> Self {
+        dotenv::dotenv().ok();
+
         let port = env::var("PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(8080);
+            .unwrap_or(DEFAULT_PORT);
 
-        let redis_url =
-            env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| DEFAULT_REDIS_URL.to_string());
 
-        let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
+        let environment =
+            env::var("ENVIRONMENT").unwrap_or_else(|_| DEFAULT_ENVIRONMENT.to_string());
 
         Config {
             port,

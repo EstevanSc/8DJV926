@@ -5,7 +5,7 @@ services:
     image: redis:7-alpine
     container_name: orchestrator-redis
     ports:
-      - '6379:6379'
+      - '${REDIS_PORT}:6379'
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -16,11 +16,11 @@ services:
     build: .
     container_name: orchestrator-app
     ports:
-      - '8080:8080'
+      - '${ORCHESTRATOR_PORT}:${ORCHESTRATOR_PORT}'
     environment:
-      PORT: '8080'
+      PORT: '${ORCHESTRATOR_PORT}'
       ENVIRONMENT: development
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://redis:${REDIS_PORT}
     depends_on:
       redis:
         condition: service_healthy

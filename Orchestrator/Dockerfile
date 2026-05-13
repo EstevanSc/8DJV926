@@ -3,8 +3,6 @@ FROM rust:latest AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock* ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
-
 COPY src ./src
 RUN cargo build --release
 
@@ -16,6 +14,6 @@ WORKDIR /app
 
 COPY --from=builder /build/target/release/orchestrator .
 
-EXPOSE 8080
+EXPOSE 8081
 
 CMD ["./orchestrator"]
