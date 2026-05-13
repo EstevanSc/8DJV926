@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
-const HEARTBEAT_TTL_SECONDS: usize = 15;
+const HEARTBEAT_TTL_SECONDS: usize = 30;
 
 /// Starts the UDP heartbeat listener on the configured port.
 ///
@@ -27,7 +27,7 @@ pub async fn start_heartbeat_listener(port: u16, redis: RedisClient) {
 }
 
 /// Continuously receives UDP packets, parses them, and persists to Redis.
-async fn listen_loop(socket: UdpSocket, mut redis: RedisClient) {
+async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
     let mut buffer = vec![0u8; 65535];
 
     loop {

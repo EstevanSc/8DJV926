@@ -21,6 +21,9 @@ services:
       ORCH_PORT: '${ORCH_PORT}'
       ENVIRONMENT: development
       REDIS_URL: redis://redis:${REDIS_PORT}
+      DS_BINARY_PATH: '${DS_BINARY_PATH}'
+      DS_BASE_PORT: '${DS_BASE_PORT}'
+      HOT_SERVERS_MIN: '${HOT_SERVERS_MIN}'
     depends_on:
       redis:
         condition: service_healthy

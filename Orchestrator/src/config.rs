@@ -8,12 +8,18 @@ const DEFAULT_PORT: u16 = 8081;
 const DEFAULT_ORCH_PORT: u16 = 7000;
 const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 const DEFAULT_ENVIRONMENT: &str = "development";
+const DEFAULT_DS_BINARY_PATH: &str = "./dedicated_server";
+const DEFAULT_DS_BASE_PORT: u16 = 7777;
+const DEFAULT_HOT_SERVERS_MIN: usize = 1;
 
 pub struct Config {
     pub port: u16,
     pub orch_port: u16,
     pub redis_url: String,
     pub environment: String,
+    pub ds_binary_path: String,
+    pub ds_base_port: u16,
+    pub hot_servers_min: usize,
 }
 
 impl Config {
@@ -36,11 +42,27 @@ impl Config {
         let environment =
             env::var("ENVIRONMENT").unwrap_or_else(|_| DEFAULT_ENVIRONMENT.to_string());
 
+        let ds_binary_path =
+            env::var("DS_BINARY_PATH").unwrap_or_else(|_| DEFAULT_DS_BINARY_PATH.to_string());
+
+        let ds_base_port = env::var("DS_BASE_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_DS_BASE_PORT);
+
+        let hot_servers_min = env::var("HOT_SERVERS_MIN")
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_HOT_SERVERS_MIN);
+
         Config {
             port,
             orch_port,
             redis_url,
             environment,
+            ds_binary_path,
+            ds_base_port,
+            hot_servers_min,
         }
     }
 }

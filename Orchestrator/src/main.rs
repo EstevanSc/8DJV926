@@ -29,7 +29,7 @@ async fn main() {
     );
 
     let redis_client = match RedisClient::connect(&config.redis_url).await {
-        Ok(mut client) => {
+        Ok(client) => {
             tracing::info!("Successfully connected to Redis");
             match client.ping().await {
                 Ok(pong) => {
@@ -64,13 +64,31 @@ async fn main() {
     // Spawn heartbeat listener task if Redis is available
     if let Some(redis) = redis_client {
         let heartbeat_port = config.orch_port;
+        let heartbeat_redis = redis.clone();
         tokio::spawn(async move {
             tracing::info!("Starting heartbeat listener task");
-            services::heartbeat_listener::start_heartbeat_listener(heartbeat_port, redis).await;
+            services::heartbeat_listener::start_heartbeat_listener(heartbeat_port, heartbeat_redis)
+                .await;
             tracing::error!("Heartbeat listener task stopped unexpectedly");
         });
+
+        let scaler_redis = redis.clone();
+        let ds_binary_path = config.ds_binary_path.clone();
+        let ds_base_port = config.ds_base_port;
+        let hot_servers_min = config.hot_servers_min;
+        tokio::spawn(async move {
+            tracing::info!("Starting scaler task");
+            services::scaler::start_scaler(
+                scaler_redis,
+                hot_servers_min,
+                ds_binary_path,
+                ds_base_port,
+            )
+            .await;
+            tracing::error!("Scaler task stopped unexpectedly");
+        });
     } else {
-        tracing::warn!("Heartbeat listener not started: Redis connection required");
+        tracing::warn!("Background tasks not started: Redis connection required");
     }
     let app = Router::new().nest("/api", api::routes());
 
