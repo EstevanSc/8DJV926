@@ -1,3 +1,6 @@
+//! Orchestrator service entry point.
+//! Initializes configuration, Redis connection, and HTTP server.
+
 use axum::Router;
 use std::net::SocketAddr;
 use tokio::signal;

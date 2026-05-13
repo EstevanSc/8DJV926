@@ -1,3 +1,6 @@
+//! Configuration management from environment variables.
+//! Loads PORT, ENVIRONMENT, and REDIS_URL with sensible defaults.
+
 use std::env;
 
 pub struct Config {
@@ -7,6 +10,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Loads configuration from environment variables with defaults.
     pub fn from_env() -> Self {
         let port = env::var("PORT")
             .ok()

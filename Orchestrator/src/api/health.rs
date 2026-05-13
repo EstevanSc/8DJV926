@@ -1,3 +1,5 @@
+//! Health check endpoint for service liveness verification.
+
 use axum::Json;
 use serde_json::json;
 
