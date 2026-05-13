@@ -28,7 +28,7 @@ async fn main() {
         config.redis_url
     );
 
-    let _redis_client = match RedisClient::connect(&config.redis_url).await {
+    let redis_client = match RedisClient::connect(&config.redis_url).await {
         Ok(mut client) => {
             tracing::info!("Successfully connected to Redis");
             match client.ping().await {
@@ -61,15 +61,17 @@ async fn main() {
         }
     };
 
-    // Spawn heartbeat listener task
-    let heartbeat_port = config.orch_port;
-    tokio::spawn(async move {
-    tracing::info!("Starting heartbeat listener task");
-
-    services::heartbeat_listener::start_heartbeat_listener(heartbeat_port).await;
-
-    tracing::error!("Heartbeat listener task stopped unexpectedly");
-});
+    // Spawn heartbeat listener task if Redis is available
+    if let Some(redis) = redis_client {
+        let heartbeat_port = config.orch_port;
+        tokio::spawn(async move {
+            tracing::info!("Starting heartbeat listener task");
+            services::heartbeat_listener::start_heartbeat_listener(heartbeat_port, redis).await;
+            tracing::error!("Heartbeat listener task stopped unexpectedly");
+        });
+    } else {
+        tracing::warn!("Heartbeat listener not started: Redis connection required");
+    }
     let app = Router::new().nest("/api", api::routes());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

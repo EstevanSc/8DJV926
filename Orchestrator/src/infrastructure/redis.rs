@@ -2,6 +2,7 @@
 //! Provides connection management and basic SET/GET/PING commands.
 
 use redis::aio::ConnectionManager;
+use std::collections::HashMap;
 
 pub struct RedisClient {
     manager: ConnectionManager,
@@ -33,6 +34,31 @@ impl RedisClient {
     pub async fn get(&mut self, key: &str) -> Result<String, redis::RedisError> {
         redis::cmd("GET")
             .arg(key)
+            .query_async(&mut self.manager)
+            .await
+    }
+
+    /// Sets multiple hash fields for a key using HSET.
+    pub async fn hset_multiple(
+        &mut self,
+        key: &str,
+        fields: HashMap<&str, String>,
+    ) -> Result<(), redis::RedisError> {
+        let mut cmd = redis::cmd("HSET");
+        cmd.arg(key);
+
+        for (field, value) in fields {
+            cmd.arg(field).arg(value);
+        }
+
+        cmd.query_async(&mut self.manager).await
+    }
+
+    /// Sets a TTL (Time To Live) in seconds for a key using EXPIRE.
+    pub async fn expire(&mut self, key: &str, seconds: usize) -> Result<(), redis::RedisError> {
+        redis::cmd("EXPIRE")
+            .arg(key)
+            .arg(seconds)
             .query_async(&mut self.manager)
             .await
     }
