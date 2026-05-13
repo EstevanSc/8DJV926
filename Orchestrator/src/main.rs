@@ -8,6 +8,8 @@ use tokio::signal;
 mod api;
 mod config;
 mod infrastructure;
+mod models;
+mod services;
 
 use config::Config;
 use infrastructure::RedisClient;
@@ -19,9 +21,10 @@ async fn main() {
     let config = Config::from_env();
 
     tracing::info!(
-        "Starting orchestrator - environment: {}, port: {}, redis_url: {}",
+        "Starting orchestrator - environment: {}, port: {}, heartbeat_port: {}, redis_url: {}",
         config.environment,
         config.port,
+        config.orch_port,
         config.redis_url
     );
 
@@ -58,6 +61,15 @@ async fn main() {
         }
     };
 
+    // Spawn heartbeat listener task
+    let heartbeat_port = config.orch_port;
+    tokio::spawn(async move {
+    tracing::info!("Starting heartbeat listener task");
+
+    services::heartbeat_listener::start_heartbeat_listener(heartbeat_port).await;
+
+    tracing::error!("Heartbeat listener task stopped unexpectedly");
+});
     let app = Router::new().nest("/api", api::routes());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));

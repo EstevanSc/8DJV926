@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   redis:
     image: redis:7-alpine
@@ -17,8 +15,10 @@ services:
     container_name: orchestrator-app
     ports:
       - '${ORCHESTRATOR_PORT}:${ORCHESTRATOR_PORT}'
+      - '${ORCH_PORT}:${ORCH_PORT}/udp'
     environment:
       PORT: '${ORCHESTRATOR_PORT}'
+      ORCH_PORT: '${ORCH_PORT}'
       ENVIRONMENT: development
       REDIS_URL: redis://redis:${REDIS_PORT}
     depends_on:
