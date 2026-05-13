@@ -3,14 +3,26 @@ use std::net::SocketAddr;
 use tokio::signal;
 
 mod api;
+mod config;
+
+use config::Config;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let config = Config::from_env();
+
+    tracing::info!(
+        "Starting orchestrator - environment: {}, port: {}, redis_url: {}",
+        config.environment,
+        config.port,
+        config.redis_url
+    );
+
     let app = Router::new().nest("/api", api::routes());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("Failed to bind to address");

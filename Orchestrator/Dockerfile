@@ -3,8 +3,9 @@ FROM rust:latest AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock* ./
-COPY src ./src
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
 
+COPY src ./src
 RUN cargo build --release
 
 FROM debian:bookworm-slim
