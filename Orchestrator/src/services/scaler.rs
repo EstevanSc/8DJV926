@@ -27,9 +27,15 @@ pub async fn start_scaler(
                     let needed = hot_servers_min - available_count;
                     tracing::info!("Scaler: Need to spawn {} servers", needed);
 
-                    for i in 0..needed {
-                        let port = ds_base_port + (available_count as u16) + (i as u16);
-                        spawn_dedicated_server(&ds_binary_path, port);
+                    for _ in 0..needed {
+                        match find_available_port(&redis, ds_base_port).await {
+                            Ok(port) => {
+                                spawn_dedicated_server(&ds_binary_path, port);
+                            }
+                            Err(e) => {
+                                tracing::error!("Scaler: Failed to find available port: {}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -55,6 +61,42 @@ async fn scan_available_servers(redis: &RedisClient) -> Result<usize, redis::Red
     }
 
     Ok(available_count)
+}
+
+/// Scans Redis for all occupied ports from existing servers.
+async fn get_occupied_ports(redis: &RedisClient) -> Result<Vec<u16>, redis::RedisError> {
+    let keys = redis.scan("server:*").await?;
+    let mut ports = Vec::new();
+
+    for key in keys {
+        if let Ok(Some(port_str)) = redis.hget(&key, "port").await {
+            if let Ok(port) = port_str.parse::<u16>() {
+                ports.push(port);
+            }
+        }
+    }
+
+    ports.sort();
+    Ok(ports)
+}
+
+/// Finds the first available port starting from base_port, avoiding collisions.
+async fn find_available_port(
+    redis: &RedisClient,
+    base_port: u16,
+) -> Result<u16, redis::RedisError> {
+    let occupied = get_occupied_ports(redis).await?;
+    let mut candidate = base_port;
+
+    while occupied.contains(&candidate) {
+        candidate = candidate.saturating_add(1);
+        if candidate > 65535u16.saturating_sub(1000) {
+            candidate = base_port;
+            break;
+        }
+    }
+
+    Ok(candidate)
 }
 
 /// Spawns a new dedicated server process using the provided binary path and port.

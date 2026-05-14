@@ -14,7 +14,7 @@ WORKDIR /app
 
 COPY --from=builder /build/target/release/orchestrator .
 COPY mock_server.sh .
-RUN chmod +x mock_server.sh
+RUN sed -i 's/\r//' mock_server.sh && chmod +x mock_server.sh
 
 EXPOSE 8081
 

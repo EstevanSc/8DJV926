@@ -8,7 +8,7 @@ const DEFAULT_PORT: u16 = 8081;
 const DEFAULT_ORCH_PORT: u16 = 7000;
 const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1:6379";
 const DEFAULT_ENVIRONMENT: &str = "development";
-const DEFAULT_DS_BINARY_PATH: &str = "./dedicated_server";
+const DEFAULT_DS_BINARY_PATH: &str = "/app/mock_server.sh";
 const DEFAULT_DS_BASE_PORT: u16 = 7777;
 const DEFAULT_HOT_SERVERS_MIN: usize = 1;
 

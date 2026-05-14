@@ -39,7 +39,9 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
                 // Parse JSON payload
                 match String::from_utf8(payload.to_vec()) {
                     Ok(json_str) => {
-                        match serde_json::from_str::<Heartbeat>(&json_str) {
+                        let json_start = json_str.find('{').unwrap_or(0);
+                        let json_content = &json_str[json_start..];
+                        match serde_json::from_str::<Heartbeat>(json_content) {
                             Ok(heartbeat) => {
                                 tracing::debug!(
                                     "Parsed heartbeat: id={}, zone={}, players={}/{}",
