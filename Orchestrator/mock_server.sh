@@ -15,17 +15,10 @@ echo "[Mock Server] Starting with ID=$SERVER_ID, PORT=$PORT"
 echo "[Mock Server] Sending heartbeats to $HEARTBEAT_LISTENER_IP:$HEARTBEAT_LISTENER_PORT every ${HEARTBEAT_INTERVAL}s"
 
 while true; do
-    # Construct the JSON heartbeat payload
     HEARTBEAT="{\"id\":\"$SERVER_ID\",\"ip\":\"127.0.0.1\",\"port\":$PORT,\"zone\":\"zone_a\",\"player_count\":0,\"max_players\":100}"
     
-    # Send via UDP using netcat
-    printf '%s' "$HEARTBEAT" | nc -u "$HEARTBEAT_LISTENER_IP" "$HEARTBEAT_LISTENER_PORT" 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
-        echo "[Mock Server] Sent heartbeat: $HEARTBEAT"
-    else
-        echo "[Mock Server] Failed to send heartbeat"
-    fi
+    printf '%s' "$HEARTBEAT" > /dev/udp/$HEARTBEAT_LISTENER_IP/$HEARTBEAT_LISTENER_PORT
+    echo "[Mock Server] Sent heartbeat: $HEARTBEAT"
     
     sleep "$HEARTBEAT_INTERVAL"
 done

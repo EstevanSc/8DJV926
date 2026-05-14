@@ -4,9 +4,9 @@ use crate::infrastructure::RedisClient;
 use std::process::Command;
 use tokio::time::{interval, Duration};
 
-const SCALER_INTERVAL_SECONDS: u64 = 10;
+const SCALER_INTERVAL_SECONDS: u64 = 5;
 
-/// Starts the scaler loop that runs every 10 seconds.
+/// Starts the scaler loop
 /// Scans available servers and spawns new dedicated server processes if needed.
 pub async fn start_scaler(
     redis: RedisClient,
