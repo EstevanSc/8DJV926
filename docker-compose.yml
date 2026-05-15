@@ -42,6 +42,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       RUST_LOG: info
+      SUPABASE_URL: https://asutrpqfngsuokiqvxfc.supabase.co
+      SUPABASE_SERVICE_KEY: sb_secret_cmnZ9U1fcpL-OEqR6-qGDQ_bMQRjDHl
     depends_on:
       redis:
         condition: service_healthy

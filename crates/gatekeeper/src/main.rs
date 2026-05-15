@@ -1,3 +1,4 @@
+mod db;
 mod redis_ops;
 mod routes;
 
@@ -12,6 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Clone)]
 pub struct AppState {
     pub redis: deadpool_redis::Pool,
+    pub supabase: db::SupabaseClient,
 }
 
 #[tokio::main]
@@ -24,9 +26,15 @@ async fn main() -> anyhow::Result<()> {
     let redis_url = std::env::var("REDIS_URL")
         .unwrap_or_else(|_| "redis://redis:6379".to_string());
 
-    let redis_pool = redis_ops::create_pool(&redis_url)?;
+    let supabase_url = std::env::var("SUPABASE_URL")
+        .expect("SUPABASE_URL env var must be set");
+    let supabase_key = std::env::var("SUPABASE_SERVICE_KEY")
+        .expect("SUPABASE_SERVICE_KEY env var must be set");
 
-    let state = AppState { redis: redis_pool };
+    let redis_pool = redis_ops::create_pool(&redis_url)?;
+    let supabase = db::SupabaseClient::new(&supabase_url, supabase_key);
+
+    let state = AppState { redis: redis_pool, supabase };
 
     let app = Router::new()
         .route("/login", post(routes::join::handler))

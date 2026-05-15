@@ -11,6 +11,7 @@ path = "src/main.rs"
 common             = { workspace = true }
 axum               = { workspace = true }
 tokio              = { workspace = true }
+reqwest            = { workspace = true }
 deadpool-redis     = { workspace = true }
 uuid               = { workspace = true }
 serde              = { workspace = true }

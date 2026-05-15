@@ -109,6 +109,11 @@ struct LoginResponse {
     server: ServerInfo,
 }
 
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: String,
+}
+
 #[derive(Component)]
 struct JoinTask(Task<Result<(String, LoginResponse), String>>);
 
@@ -427,7 +432,11 @@ fn handle_submit(
                     .map(|r| (username_clone, r))
                     .map_err(|e| e.to_string())
             } else {
-                Err(format!("Server returned {}", resp.status()))
+                let status = resp.status();
+                let msg = resp.json::<ErrorResponse>().await
+                    .map(|e| e.error)
+                    .unwrap_or_else(|_| format!("Server error {}", status));
+                Err(msg)
             }
         })
     });
