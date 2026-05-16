@@ -1,4 +1,5 @@
 mod server;
+mod messages;
 
 use bevy::prelude::*;
 use crate::server::ServerPlugin;

@@ -1,8 +1,9 @@
-﻿use bevy::asset::uuid;
+﻿use std::collections::HashMap;
 use bevy::prelude::*;
-use game_sockets::GamePeer;
+use game_sockets::{GameNetworkEvent, GamePeer};
 use game_sockets::protocols::QuicBackend;
 use uuid::Uuid;
+use crate::messages::GameMessage;
 
 pub struct ServerPlugin;
 
@@ -10,7 +11,9 @@ impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
         app
             .insert_resource(ServerConfig::from_env())
-            .add_systems(Startup, bind_socket);
+            .init_resource::<PlayerRegistry>()
+            .add_systems(Startup, bind_socket)
+            .add_systems(Update, receive_packets);
     }
 }
 
@@ -21,6 +24,16 @@ pub struct ServerConfig {
     pub port: u16,
     pub zone: String,
     pub max_players: usize,
+}
+
+#[derive(Resource, Default)]
+pub struct PlayerRegistry {
+    pub registry: HashMap<Uuid, PlayerInfo>
+}
+
+pub struct PlayerInfo {
+    pub id: Uuid,
+    pub username: String,
 }
 
 impl ServerConfig {
@@ -61,6 +74,38 @@ fn bind_socket(mut commands: Commands, server_config: Res<ServerConfig>) {
         }
         Err(e) => {
             eprintln!("Failed to listen on {}: {}", ip, e);
+        }
+    }
+}
+
+fn receive_packets(mut server: ResMut<NetworkPeer>, mut player_registry: ResMut<PlayerRegistry>) {
+    while let Ok(Some(event)) = server.peer.poll() {
+        match event {
+            GameNetworkEvent::Connected(conn) => {
+                println!("Connected! Client id: {:?}", conn.connection_id);
+            }
+            GameNetworkEvent::Message {data, connection, stream} => {
+                let msg: GameMessage = wincode::deserialize(&data).unwrap();
+                match msg {
+                    // JOIN message
+                    GameMessage::Join {username} => {
+                        let id = connection.connection_id;
+                        player_registry.registry.insert(id, PlayerInfo{id, username});
+
+                        // Send Welcome message to the player
+                        let response = GameMessage::Welcome {player_id: id};
+                        if let Ok(serialized) = wincode::serialize(&response) {
+                            server.peer.send(&connection, &stream, serialized.into()).unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            GameNetworkEvent::Disconnected(conn) => {
+                // Remove player from registry
+                player_registry.registry.remove(&conn.connection_id);
+            }
+            _ => {}
         }
     }
 }

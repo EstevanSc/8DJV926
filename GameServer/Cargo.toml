@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 game_sockets = { path = "../game_sockets" }
 bevy = "0.18.1"
+serde = { version = "1.0.228", features = ["derive"] }
+wincode = { version = "0.5.4", features = ["derive", "uuid"]}
+uuid = { version = "1.0", features = ["v4", "serde"] }
