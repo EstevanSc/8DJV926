@@ -6,19 +6,17 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
-const HEARTBEAT_TTL_SECONDS: usize = 30;
-
 /// Starts the UDP heartbeat listener on the configured port.
 ///
 /// Continuously listens for incoming heartbeat packets from Dedicated Servers,
 /// parses JSON payloads, and persists server state to Redis.
-pub async fn start_heartbeat_listener(port: u16, redis: RedisClient) {
+pub async fn start_heartbeat_listener(port: u16, redis: RedisClient, heartbeat_ttl_seconds: usize) {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     match UdpSocket::bind(addr).await {
         Ok(socket) => {
             tracing::info!("Heartbeat listener started on {}", addr);
-            listen_loop(socket, redis).await;
+            listen_loop(socket, redis, heartbeat_ttl_seconds).await;
         }
         Err(e) => {
             tracing::error!("Failed to bind heartbeat listener on {}: {}", addr, e);
@@ -27,7 +25,7 @@ pub async fn start_heartbeat_listener(port: u16, redis: RedisClient) {
 }
 
 /// Continuously receives UDP packets, parses them, and persists to Redis.
-async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
+async fn listen_loop(socket: UdpSocket, redis: RedisClient, heartbeat_ttl_seconds: usize) {
     let mut buffer = vec![0u8; 65535];
 
     loop {
@@ -51,8 +49,10 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
                                     heartbeat.max_players
                                 );
 
-                                // Determine server status
-                                let status = if heartbeat.player_count >= heartbeat.max_players {
+                                // Determine server status: empty (0 players), full, or available
+                                let status = if heartbeat.player_count == 0 {
+                                    "empty".to_string()
+                                } else if heartbeat.player_count >= heartbeat.max_players {
                                     "full".to_string()
                                 } else {
                                     "available".to_string()
@@ -65,7 +65,7 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
                                 fields.insert("zone", heartbeat.zone.clone());
                                 fields.insert("player_count", heartbeat.player_count.to_string());
                                 fields.insert("max_players", heartbeat.max_players.to_string());
-                                fields.insert("status", status);
+                                fields.insert("status", status.clone());
 
                                 // Persist to Redis
                                 let redis_key = format!("server:{}", heartbeat.id);
@@ -73,7 +73,7 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
                                     Ok(()) => {
                                         // Set TTL for automatic expiration
                                         if let Err(e) =
-                                            redis.expire(&redis_key, HEARTBEAT_TTL_SECONDS).await
+                                            redis.expire(&redis_key, heartbeat_ttl_seconds).await
                                         {
                                             tracing::error!(
                                                 "Failed to set TTL for {}: {}",
@@ -84,12 +84,8 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient) {
                                             tracing::info!(
                                                 "Updated server {} in Redis (status: {}, TTL: {}s)",
                                                 heartbeat.id,
-                                                if heartbeat.player_count >= heartbeat.max_players {
-                                                    "full"
-                                                } else {
-                                                    "available"
-                                                },
-                                                HEARTBEAT_TTL_SECONDS
+                                                status,
+                                                heartbeat_ttl_seconds
                                             );
                                         }
                                     }

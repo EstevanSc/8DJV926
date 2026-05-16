@@ -4,8 +4,6 @@ use crate::infrastructure::RedisClient;
 use std::process::Command;
 use tokio::time::{interval, Duration};
 
-const SCALER_INTERVAL_SECONDS: u64 = 5;
-
 /// Starts the scaler loop
 /// Scans available servers and spawns new dedicated server processes if needed.
 pub async fn start_scaler(
@@ -13,8 +11,9 @@ pub async fn start_scaler(
     hot_servers_min: usize,
     ds_binary_path: String,
     ds_base_port: u16,
+    scaler_interval_seconds: u64,
 ) {
-    let mut interval = interval(Duration::from_secs(SCALER_INTERVAL_SECONDS));
+    let mut interval = interval(Duration::from_secs(scaler_interval_seconds));
 
     loop {
         interval.tick().await;
@@ -54,7 +53,7 @@ async fn scan_available_servers(redis: &RedisClient) -> Result<usize, redis::Red
 
     for key in keys {
         if let Ok(Some(status)) = redis.hget(&key, "status").await {
-            if status == "available" {
+            if status == "empty" {
                 available_count += 1;
             }
         }

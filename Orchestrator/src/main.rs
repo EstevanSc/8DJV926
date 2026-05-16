@@ -65,10 +65,15 @@ async fn main() {
     if let Some(redis) = redis_client {
         let heartbeat_port = config.orch_port;
         let heartbeat_redis = redis.clone();
+        let hb_ttl = config.heartbeat_ttl_seconds;
         tokio::spawn(async move {
             tracing::info!("Starting heartbeat listener task");
-            services::heartbeat_listener::start_heartbeat_listener(heartbeat_port, heartbeat_redis)
-                .await;
+            services::heartbeat_listener::start_heartbeat_listener(
+                heartbeat_port,
+                heartbeat_redis,
+                hb_ttl,
+            )
+            .await;
             tracing::error!("Heartbeat listener task stopped unexpectedly");
         });
 
@@ -76,6 +81,7 @@ async fn main() {
         let ds_binary_path = config.ds_binary_path.clone();
         let ds_base_port = config.ds_base_port;
         let hot_servers_min = config.hot_servers_min;
+        let scaler_interval = config.scaler_interval_seconds;
         tokio::spawn(async move {
             tracing::info!("Starting scaler task");
             services::scaler::start_scaler(
@@ -83,6 +89,7 @@ async fn main() {
                 hot_servers_min,
                 ds_binary_path,
                 ds_base_port,
+                scaler_interval,
             )
             .await;
             tracing::error!("Scaler task stopped unexpectedly");

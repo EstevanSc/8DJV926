@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Server address information for Gatekeeper routing decisions.
+/// Shared structure of server address information to be used by Gatekeeper routing decisions.
 ///
 /// Contains minimal data required to direct player connections.
 /// Will be shared across services when workspace is unified.
