@@ -9,6 +9,7 @@ dependencies = [
  "bevy",
  "game_sockets",
  "serde",
+ "serde_json",
  "uuid",
  "wincode",
 ]

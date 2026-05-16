@@ -1,5 +1,6 @@
 mod server;
 mod messages;
+mod heartbeat;
 
 use bevy::prelude::*;
 use crate::server::ServerPlugin;
