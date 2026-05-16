@@ -18,12 +18,12 @@ pub async fn start_scaler(
     loop {
         interval.tick().await;
 
-        match scan_available_servers(&redis).await {
-            Ok(available_count) => {
-                tracing::debug!("Scaler: {} available servers", available_count);
+        match scan_empty_servers(&redis).await {
+            Ok(empty_count) => {
+                tracing::debug!("Scaler: {} empty servers", empty_count);
 
-                if available_count < hot_servers_min {
-                    let needed = hot_servers_min - available_count;
+                if empty_count < hot_servers_min {
+                    let needed = hot_servers_min - empty_count;
                     tracing::info!("Scaler: Need to spawn {} servers", needed);
 
                     for _ in 0..needed {
@@ -46,20 +46,20 @@ pub async fn start_scaler(
 }
 
 /// Scans Redis for all servers matching "server:*" and counts available ones.
-async fn scan_available_servers(redis: &RedisClient) -> Result<usize, redis::RedisError> {
+async fn scan_empty_servers(redis: &RedisClient) -> Result<usize, redis::RedisError> {
     let keys = redis.scan("server:*").await?;
 
-    let mut available_count = 0;
+    let mut empty_count = 0;
 
     for key in keys {
         if let Ok(Some(status)) = redis.hget(&key, "status").await {
             if status == "empty" {
-                available_count += 1;
+                empty_count += 1;
             }
         }
     }
 
-    Ok(available_count)
+    Ok(empty_count)
 }
 
 /// Scans Redis for all occupied ports from existing servers.
