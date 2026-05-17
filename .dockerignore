@@ -1,3 +1,16 @@
+# Ignore the local Rust build artifacts
+**/target/
+
+# Ignore version control history
+.git/
+.gitignore
+
+# Ignore local environment configurations
+.env
+*.local
+
+# Ignore OS-specific garbage
+**/.DS_Store
 # Exclude the local build cache — can be multiple GB and is never needed in
 # the Docker build context. The multi-stage Dockerfiles compile from scratch
 # inside the builder stage.

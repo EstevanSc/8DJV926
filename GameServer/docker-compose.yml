@@ -1,0 +1,18 @@
+﻿version: '3.8'
+
+services:
+  game-server:
+    container_name: bevy_game_server
+    build:
+      context: ..
+      dockerfile: ./GameServer/Dockerfile
+    ports:
+      - "${DS_PORT:-7777}:${DS_PORT:-7777}/udp"
+    environment:
+      - DS_PORT=${DS_PORT:-7777}
+      - DS_ZONE=${DS_ZONE:-zone_A}
+      - MAX_PLAYERS=${MAX_PLAYERS:-2}
+      - ORCH_HOST=${ORCH_HOST:-127.0.0.1:7000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
