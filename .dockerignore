@@ -1,0 +1,13 @@
+# Ignore the local Rust build artifacts
+**/target/
+
+# Ignore version control history
+.git/
+.gitignore
+
+# Ignore local environment configurations
+.env
+*.local
+
+# Ignore OS-specific garbage
+**/.DS_Store
