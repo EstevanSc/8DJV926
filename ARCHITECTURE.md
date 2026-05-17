@@ -2,19 +2,22 @@
 
 ## Overview
 
-The project is a Rust workspace with three members:
+The project is a Rust workspace with six members:
 
 | Crate | Kind | Description |
 |---|---|---|
 | `common` | library | Shared types: packets, Redis key helpers, constants |
-| `crates` | binary | Bevy game client |
-| `crates/gatekeeper` | binary | Axum HTTP authentication server |
+| `client` | binary | Bevy game client |
+| `gatekeeper` | binary | Axum HTTP authentication server |
+| `GameServer` | binary | Bevy headless dedicated game server (QUIC) |
+| `Orchestrator` | binary | Axum server lifecycle manager and heartbeat listener |
+| `game_sockets` | library | QUIC/TCP/UDP networking abstraction used by client and GameServer |
 
-Redis is the only shared data store. The dedicated game server (QUIC) is not yet implemented — that connection is stubbed on the client side.
+Redis is the shared data store between gatekeeper and orchestrator. The game server registers itself with the orchestrator via UDP heartbeats; the gatekeeper reads that state to route players.
 
 ---
 
-## Component: Client (`crates/`)
+## Component: Client (`client/`)
 
 A Bevy 0.18 desktop application. Runs locally; never inside Docker.
 
@@ -73,7 +76,7 @@ Reads keyboard/gamepad input and sends movement packets (active in `InGame`).
 
 ---
 
-## Component: Gatekeeper (`crates/gatekeeper/`)
+## Component: Gatekeeper (`gatekeeper/`)
 
 An Axum 0.8 HTTP server. Runs in Docker on port `3000`. Talks to Redis over the internal Docker network.
 
@@ -131,6 +134,88 @@ Authentication currently accepts any non-empty username. Real auth is a future m
 | `server:<id>` | HASH | `ip`, `port`, `zone`, `status`, `players` |
 
 `status` must be `"available"` for the gatekeeper to assign a player to it.
+
+---
+
+## Component: GameServer (`GameServer/`)
+
+A Bevy headless binary (`MinimalPlugins`). Runs inside Docker; never renders.
+
+### Startup
+
+1. Reads `DS_PORT` (default `7777`), `DS_ZONE`, `MAX_PLAYERS`, and `ORCH_HOST` from env.
+2. Binds a QUIC socket via `game_sockets::GamePeer` / `QuicBackend`.
+3. Schedules `receive_packets` and `send_heartbeat` every frame via Bevy `Update`.
+
+### Heartbeat (`src/heartbeat.rs`)
+
+Every 5 s, serialises a `Heartbeat` struct to JSON and sends it via UDP to the orchestrator address. Includes `id`, `ip`, `port`, `zone`, `player_count`, `max_players`.
+
+### Message protocol (`src/messages.rs`)
+
+```
+GameMessage::Join    { username }
+GameMessage::Welcome { player_id }
+```
+
+Encoded with `wincode` (binary schema). On `Join`, the server assigns the connection UUID as the player ID and replies with `Welcome`.
+
+### Test client (`src/bin/test_client.rs`)
+
+Stand-alone binary that opens a QUIC connection to `127.0.0.1:7777`, sends `Join { username: "Alice_Tester" }`, and prints the `Welcome` response.
+
+---
+
+## Component: Orchestrator (`Orchestrator/`)
+
+An Axum 0.8 HTTP server. Runs in Docker on port `8081`. Listens for UDP heartbeats on port `7000`. Talks to Redis.
+
+### Startup (`src/main.rs`)
+
+1. Loads config from env / `.env` file via `dotenv`.
+2. Connects to Redis and verifies with `PING`.
+3. Spawns two background tasks: heartbeat listener and scaler.
+4. Binds Axum on `0.0.0.0:<PORT>`.
+
+### Routes
+
+| Method | Path | Handler |
+|---|---|---|
+| `GET` | `/api/health` | Returns service status |
+
+### Heartbeat listener (`src/services/heartbeat_listener.rs`)
+
+Binds a UDP socket on `ORCH_PORT` (default `7000`). Each JSON packet from a GameServer is parsed into a `Heartbeat` and written to Redis as a hash with a TTL.
+
+### Scaler (`src/services/scaler.rs`)
+
+Polls Redis every `SCALER_INTERVAL_SECONDS` seconds. Ensures at least `HOT_SERVERS_MIN` servers are running by spawning new `DS_BINARY_PATH` processes if needed.
+
+---
+
+## Component: game_sockets (`game_sockets/`)
+
+A library crate providing a transport-agnostic networking API used by both the client and GameServer.
+
+### Key types
+
+| Type | Description |
+|---|---|
+| `GamePeer` | Entry point — wraps a `GameSocketBackend` and exposes `listen`, `connect`, `send`, `poll` |
+| `GameConnection` | Handle for a single peer connection (UUID) |
+| `GameStream` | Logical stream within a connection; stream ID encodes reliability in the low 2 bits |
+| `GameNetworkEvent` | Events emitted by `poll`: `Connected`, `Disconnected`, `Message`, `StreamCreated` |
+| `BackendCommand` | Commands sent to the backend thread: `Bind`, `Connect`, `Send`, `CreateStream`, … |
+
+### Backends
+
+| Module | Protocol |
+|---|---|
+| `QuicBackend` | QUIC over UDP via `quinn 0.10` + `rustls 0.21` (self-signed TLS) |
+| `TcpBackend` | Length-delimited TCP frames via `tokio-util::codec::LengthDelimitedCodec` |
+| `UdpBackend` | Raw UDP datagrams |
+
+> **Note:** `game_sockets` intentionally pins `quinn 0.10` / `rustls 0.21` / `rcgen 0.11` because `quic_protocol.rs` uses the pre-0.22 rustls API (`Certificate`, `PrivateKey`, `ServerCertVerifier`). The rest of the workspace uses `quinn 0.11` / `rustls 0.23`; Cargo compiles both versions without conflict.
 
 ---
 
@@ -275,6 +360,8 @@ docker compose down
 
 | Item | Status |
 |---|---|
-| Real QUIC connection to game server | `TODO` in `client/net.rs::start_connect` |
+| Real QUIC connection from client to GameServer | `TODO` in `client/net.rs::start_connect` — currently stubbed |
 | Real password authentication | Gatekeeper accepts any non-empty username |
-| Server capacity limit (max players) | Not enforced — status stays `"available"` indefinitely |
+| Server capacity limit (max players) | Not enforced by gatekeeper — status stays `"available"` indefinitely |
+| Heartbeat struct deduplication | `GameServer/src/heartbeat.rs` is a temporary copy; should use `common` once merged |
+| `game_sockets` quinn/rustls upgrade | Pinned to quinn 0.10 / rustls 0.21; upgrade requires rewriting `quic_protocol.rs` |

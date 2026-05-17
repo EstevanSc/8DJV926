@@ -1,6 +1,8 @@
 # docker-compose.yml
-# Starts the two server-side services needed for testing: Redis and the Gatekeeper.
-# The client (Bevy desktop app) runs locally and connects to the gatekeeper on port 3000.
+# Unified stack: Redis · Gatekeeper · Orchestrator · Dedicated Game Server
+#
+# Start everything:  docker compose up -d
+# Client runs locally:  cargo run -p client
 
 networks:
   game-net:
@@ -28,24 +30,71 @@ services:
       retries: 5
 
   # ── Gatekeeper ────────────────────────────────────────────────────────────
-  # POST /login on :3000  — client sends credentials, receives server info.
-  # QUIC on :3001         — client connects after login to establish game session.
+  # POST /login on :3000  — client sends credentials, receives server coordinates.
   gatekeeper:
     build:
       context: .
-      dockerfile: dockerfiles/Dockerfile.gatekeeper
+      dockerfile: gatekeeper/Dockerfile
     image: gatekeeper:latest
     networks:
       - game-net
     ports:
-      - "3000:3000"   # HTTP login endpoint (client → gatekeeper)
+      - "3000:3000"
     environment:
       REDIS_URL: redis://redis:6379
       RUST_LOG: info
-      SUPABASE_URL: https://asutrpqfngsuokiqvxfc.supabase.co
-      SUPABASE_SERVICE_KEY: sb_secret_cmnZ9U1fcpL-OEqR6-qGDQ_bMQRjDHl
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ── Orchestrator ──────────────────────────────────────────────────────────
+  # HTTP API on :8081  — server-fleet management.
+  # UDP heartbeat listener on :7000  — receives heartbeats from game servers.
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Orchestrator/Dockerfile
+    image: orchestrator:latest
+    networks:
+      - game-net
+    ports:
+      - "8081:8081"
+      - "7000:7000/udp"
+    environment:
+      PORT: "8081"
+      ORCH_PORT: "7000"
+      REDIS_URL: redis://redis:6379
+      DS_BINARY_PATH: /app/mock_server.sh
+      DS_BASE_PORT: "7778"
+      HOT_SERVERS_MIN: "1"
+      HEARTBEAT_TTL_SECONDS: "30"
+      SCALER_INTERVAL_SECONDS: "5"
+      RUST_LOG: info
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Dedicated Game Server ─────────────────────────────────────────────────
+  # QUIC/UDP on :7777  — clients connect here after login.
+  # Sends UDP heartbeats to orchestrator:7000 every 5 s.
+  game-server:
+    build:
+      context: .
+      dockerfile: GameServer/Dockerfile
+    image: game-server:latest
+    networks:
+      - game-net
+    ports:
+      - "7777:7777/udp"
+    environment:
+      DS_PORT: "7777"
+      DS_ZONE: zone_A
+      MAX_PLAYERS: "2"
+      ORCH_HOST: "orchestrator:7000"
+      RUST_LOG: info
+    depends_on:
+      - orchestrator
     restart: unless-stopped
 

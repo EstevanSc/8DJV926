@@ -1,47 +1,50 @@
-﻿# ==========================================================
-# Stage 1: Build Environment
-# ==========================================================
-FROM rust:1.89-slim-bookworm AS builder
+﻿# syntax=docker/dockerfile:1
+# Multi-stage workspace build for the dedicated game server.
+# Build context must be the workspace root: dockerfile: GameServer/Dockerfile
 
-# Install system dependencies required to compile Bevy and network libraries
+# ── Stage 1: cargo-chef base ──────────────────────────────────────────────
+FROM rust:slim-bookworm AS chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    cmake \
     clang \
     lld \
+    git \
     && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef --locked
+WORKDIR /workspace
 
-WORKDIR /app
+# ── Stage 2: dependency planner ───────────────────────────────────────────
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Copy the workspace configuration and source files from the root context
-COPY game_sockets/ ./game_sockets/
-COPY GameServer/ ./GameServer/
+# ── Stage 3: dependency cache ─────────────────────────────────────────────
+FROM chef AS builder
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN cargo chef cook --release -p GameServer --recipe-path recipe.json
 
-WORKDIR /app/GameServer
-
-# Build the dedicated server target
+# ── Stage 4: build the GameServer binary ──────────────────────────────────
+COPY . .
 RUN cargo build --release -p GameServer
 
-# ==========================================================
-# Stage 2: Runtime Environment
-# ==========================================================
+# ── Stage 5: minimal runtime image ────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
+COPY --from=builder /workspace/target/release/GameServer /app/GameServer
 
-# Copy the compiled binary from the builder stage
-COPY --from=builder /app/GameServer/target/release/GameServer /app/GameServer
-# Expose the default UDP game port
-EXPOSE 7777/udp
-
-# Default environment variables
+# Defaults — overridden by docker-compose environment:
 ENV DS_PORT=7777
 ENV DS_ZONE=zone_A
 ENV MAX_PLAYERS=2
-ENV ORCH_HOST=127.0.0.1:7000
+# Use the Docker service name so the container can reach the orchestrator:
+ENV ORCH_HOST=orchestrator:7000
 
-CMD ["./GameServer"]
+# QUIC/UDP game port — clients connect here after receiving server info from gatekeeper
+EXPOSE 7777/udp
+
+CMD ["/app/GameServer"]
