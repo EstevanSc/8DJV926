@@ -1,0 +1,29 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: orchestrator-redis
+    ports:
+      - '${REDIS_PORT}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  orchestrator:
+    build: .
+    container_name: orchestrator-app
+    ports:
+      - '${ORCHESTRATOR_PORT}:${ORCHESTRATOR_PORT}'
+      - '${ORCH_PORT}:${ORCH_PORT}/udp'
+    environment:
+      PORT: '${ORCHESTRATOR_PORT}'
+      ORCH_PORT: '${ORCH_PORT}'
+      ENVIRONMENT: development
+      REDIS_URL: redis://redis:${REDIS_PORT}
+      DS_BINARY_PATH: '${DS_BINARY_PATH}'
+      DS_BASE_PORT: '${DS_BASE_PORT}'
+      HOT_SERVERS_MIN: '${HOT_SERVERS_MIN}'
+    depends_on:
+      redis:
+        condition: service_healthy
