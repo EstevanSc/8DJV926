@@ -73,6 +73,7 @@ pub async fn spawn_server(
         format!("DS_ID={server_id}"),
         format!("DS_PORT={port}"),
         format!("DS_ZONE={zone}"),
+        format!("DS_PUBLIC_IP={public_addr}"),
         format!("MAX_PLAYERS={max_players}"),
         format!("ORCH_HOST={orch_host}"),
         format!("RUST_LOG={rust_log}"),

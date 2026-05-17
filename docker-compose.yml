@@ -43,8 +43,8 @@ services:
       - "3000:3000"
     environment:
       REDIS_URL: redis://redis:6379
-      SUPABASE_URL: ${SUPABASE_URL:-http://localhost:54321}
-      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-dev-placeholder}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
       RUST_LOG: info
     depends_on:
       redis:
@@ -72,7 +72,7 @@ services:
       ORCH_PORT: "7000"
       REDIS_URL: redis://redis:6379
       DS_BINARY_PATH: /app/mock_server.sh
-      DS_BASE_PORT: "7778"
+      DS_BASE_PORT: "7777"
       HOT_SERVERS_MIN: "1"
       HEARTBEAT_TTL_SECONDS: "30"
       SCALER_INTERVAL_SECONDS: "5"
@@ -80,27 +80,5 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
-
-  # ── Dedicated Game Server ─────────────────────────────────────────────────
-  # QUIC/UDP on :7777  — clients connect here after login.
-  # Sends UDP heartbeats to orchestrator:7000 every 5 s.
-  game-server:
-    build:
-      context: .
-      dockerfile: GameServer/Dockerfile
-    image: game-server:latest
-    networks:
-      - game-net
-    ports:
-      - "7777:7777/udp"
-    environment:
-      DS_PORT: "7777"
-      DS_ZONE: zone_A
-      MAX_PLAYERS: "2"
-      ORCH_HOST: "orchestrator:7000"
-      RUST_LOG: info
-    depends_on:
-      - orchestrator
     restart: unless-stopped
 

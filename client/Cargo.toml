@@ -10,6 +10,9 @@ path = "main.rs"
 [dependencies]
 common       = { workspace = true }
 bevy         = { workspace = true, features = ["default"] }
+game_sockets = { workspace = true }
+wincode      = { workspace = true }
+uuid         = { workspace = true }
 quinn        = { workspace = true }
 rustls       = { workspace = true }
 reqwest      = { workspace = true }

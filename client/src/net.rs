@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::Mutex;
 
 use bevy::prelude::*;
-use bevy::tasks::Task;
-use futures_lite::future;
-use quinn::{ClientConfig, Endpoint};
-use tokio::runtime::Runtime;
+use game_sockets::protocols::QuicBackend;
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use wincode::{SchemaRead, SchemaWrite};
 
 use common::packets::PositionBatch;
 
@@ -15,91 +15,169 @@ pub struct ClientNetPlugin;
 
 impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
-        // Create one persistent Tokio runtime for all quinn operations.
-        let rt = Runtime::new().expect("failed to create Tokio runtime for QUIC");
-        app.insert_resource(QuicRuntime(Arc::new(rt)))
-            .add_message::<PositionBatchReceived>()
+        app.add_message::<PositionBatchReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
-                poll_connect_task.run_if(in_state(GameState::Connecting)),
+                (poll_net_events, tick_connect_timeout).run_if(in_state(GameState::Connecting)),
             )
             .add_systems(Update, receive_packets.run_if(in_state(GameState::InGame)));
     }
 }
 
-/// A single persistent Tokio runtime that owns all quinn async tasks.
-/// Keeping it alive means the quinn endpoint driver keeps running.
-#[derive(Resource, Clone)]
-#[allow(dead_code)] // inner runtime kept alive intentionally; used when real QUIC is wired up
-struct QuicRuntime(Arc<Runtime>);
-
 // ---------------------------------------------------------------------------
-// Connection task
+// Wire protocol — must match GameServer/src/messages.rs exactly.
 // ---------------------------------------------------------------------------
 
-#[derive(Component)]
-struct ConnectTask(Task<Result<u32, String>>);
+#[derive(Debug, Serialize, Deserialize, Clone, SchemaWrite, SchemaRead)]
+enum GameMessage {
+    Join { username: String },
+    Welcome { player_id: Uuid },
+}
 
-/// The entity_id the server assigned to this client.
+// ---------------------------------------------------------------------------
+// Resources
+// ---------------------------------------------------------------------------
+
+/// Wraps the active `GamePeer` in a Mutex so it satisfies Bevy's Sync bound.
+#[derive(Resource)]
+pub struct ActivePeer(pub Mutex<GamePeer>);
+
+/// Set to true once we have sent the `Join` message to the server.
+#[derive(Resource, Default)]
+struct JoinSent(bool);
+
+/// Countdown started when we enter Connecting. If no `Connected` event arrives
+/// before it expires the client returns to Login.
+#[derive(Resource)]
+struct ConnectTimeout(Timer);
+
+/// The UUID assigned by the server in the `Welcome` message.
+/// Also stored as a hash-derived `u32` for the position-interpolation system.
 #[derive(Resource, Clone, Copy)]
 pub struct MyEntityId(pub u32);
 
-/// Bevy resource holding the active QUIC connection to the gatekeeper.
-#[derive(Resource)]
-#[allow(dead_code)]
-pub struct ServerConnection(pub quinn::Connection);
+/// The active game-server connection handle. Inserted once the QUIC handshake
+/// completes. Used by other systems (e.g. input) to send datagrams.
+#[derive(Resource, Clone, Copy)]
+pub struct ServerConn(pub GameConnection);
 
-/// Channel receiver fed by the background datagram receive task.
-/// Wrapped in Mutex so it satisfies Bevy's Resource: Sync bound.
-#[derive(Resource)]
-pub struct DatagramReceiver(std::sync::Mutex<Receiver<Vec<u8>>>);
+// ---------------------------------------------------------------------------
+// Systems
+// ---------------------------------------------------------------------------
 
-fn start_connect(mut commands: Commands, session: Res<GameSession>, _rt: Res<QuicRuntime>) {
-    let player_id = session.player_id.clone();
+fn start_connect(mut commands: Commands, session: Res<GameSession>) {
+    tracing::info!(
+        "Connecting to game server at {}:{}",
+        session.server_ip,
+        session.server_port
+    );
 
-    // TODO: Replace with a real QUIC connection to the dedicated game server
-    // at session.server_ip:session.server_port once it is implemented.
-    // For now, derive a deterministic entity_id from the player_id and skip
-    // the network round-trip entirely.
-    let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
-        let entity_id: u32 = player_id
-            .bytes()
-            .fold(0u32, |acc, b| acc.wrapping_add(b as u32));
-        Ok::<u32, String>(entity_id)
-    });
+    let peer = GamePeer::new(QuicBackend::new());
+    if let Err(e) = peer.connect(&session.server_ip, session.server_port) {
+        tracing::error!("Failed to initiate QUIC connection: {e:?}");
+    }
 
-    commands.spawn(ConnectTask(task));
+    commands.insert_resource(ActivePeer(Mutex::new(peer)));
+    commands.insert_resource(JoinSent(false));
+    commands.insert_resource(ConnectTimeout(Timer::from_seconds(10.0, TimerMode::Once)));
 }
 
-fn poll_connect_task(
+fn poll_net_events(
     mut commands: Commands,
-    mut tasks: Query<(Entity, &mut ConnectTask)>,
+    session: Res<GameSession>,
+    peer_res: Option<ResMut<ActivePeer>>,
+    mut join_sent: ResMut<JoinSent>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
-    for (entity, mut task) in &mut tasks {
-        if let Some(result) = future::block_on(future::poll_once(&mut task.0)) {
-            commands.entity(entity).despawn();
-            match result {
-                Ok(entity_id) => {
-                    commands.insert_resource(MyEntityId(entity_id));
-                    next_state.set(GameState::InGame);
-                    tracing::info!(
-                        entity_id,
-                        "Session ready — entering game (server connection stubbed)"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("Session setup failed: {e}");
-                    next_state.set(GameState::Login);
+    let Some(peer_res) = peer_res else { return };
+    let Ok(mut peer) = peer_res.0.lock() else { return };
+
+    loop {
+        let event = match peer.poll() {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(_) => {
+                tracing::error!("GamePeer backend thread crashed — returning to login");
+                next_state.set(GameState::Login);
+                break;
+            }
+        };
+        match event {
+            GameNetworkEvent::Connected(conn) => {
+                tracing::info!("QUIC connected (id={:?}); sending Join", conn.connection_id);
+                commands.insert_resource(ServerConn(conn));
+
+                if !join_sent.0 {
+                    let msg = GameMessage::Join {
+                        username: session.username.clone(),
+                    };
+                    match wincode::serialize(&msg) {
+                        Ok(data) => {
+                            let stream = GameStream::from(0);
+                            if let Err(e) = peer.send(&conn, &stream, data.into()) {
+                                tracing::error!("Failed to send Join: {e:?}");
+                            } else {
+                                tracing::info!("Sent Join for '{}'", session.username);
+                                join_sent.0 = true;
+                            }
+                        }
+                        Err(e) => tracing::error!("Failed to serialize Join: {e:?}"),
+                    }
                 }
             }
+
+            GameNetworkEvent::Message { data, .. } => {
+                match wincode::deserialize::<GameMessage>(&data) {
+                    Ok(GameMessage::Welcome { player_id }) => {
+                        tracing::info!("Received Welcome — player_id={player_id}");
+                        // Derive a u32 from the UUID for the position-interpolation system.
+                        let entity_id = player_id
+                            .as_bytes()
+                            .iter()
+                            .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+                        commands.insert_resource(MyEntityId(entity_id));
+                        next_state.set(GameState::InGame);
+                    }
+                    Ok(other) => {
+                        tracing::warn!("Unexpected message variant: {other:?}");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to decode server message: {e:?}");
+                    }
+                }
+            }
+
+            GameNetworkEvent::Disconnected(conn) => {
+                tracing::warn!("Disconnected from server ({:?})", conn.connection_id);
+                next_state.set(GameState::Login);
+            }
+
+            GameNetworkEvent::Error { inner, .. } => {
+                tracing::error!("Network error: {inner}");
+                next_state.set(GameState::Login);
+            }
+
+            _ => {}
         }
     }
 }
 
+fn tick_connect_timeout(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut timeout: ResMut<ConnectTimeout>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    if timeout.0.tick(time.delta()).just_finished() {
+        tracing::warn!("Connection timed out — returning to login");
+        commands.remove_resource::<ConnectTimeout>();
+        next_state.set(GameState::Login);
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Packet receive loop
+// InGame packet receive (position batches from the server)
 // ---------------------------------------------------------------------------
 
 /// Message emitted when a fresh `PositionBatch` arrives from the server.
@@ -107,14 +185,17 @@ fn poll_connect_task(
 pub struct PositionBatchReceived(pub PositionBatch);
 
 fn receive_packets(
-    receiver: Option<Res<DatagramReceiver>>,
+    peer_res: Option<ResMut<ActivePeer>>,
     mut batch_writer: MessageWriter<PositionBatchReceived>,
 ) {
-    let Some(receiver) = receiver else { return };
-    let Ok(rx) = receiver.0.lock() else { return };
-    while let Ok(data) = rx.try_recv() {
-        if let Ok(batch) = bitcode::decode::<PositionBatch>(&data) {
-            batch_writer.write(PositionBatchReceived(batch));
+    let Some(peer_res) = peer_res else { return };
+    let Ok(mut peer) = peer_res.0.lock() else { return };
+
+    while let Ok(Some(event)) = peer.poll() {
+        if let GameNetworkEvent::Message { data, .. } = event {
+            if let Ok(batch) = bitcode::decode::<PositionBatch>(&data) {
+                batch_writer.write(PositionBatchReceived(batch));
+            }
         }
     }
 }
@@ -122,7 +203,7 @@ fn receive_packets(
 // ---------------------------------------------------------------------------
 // TLS — skip cert verification in debug builds
 // ---------------------------------------------------------------------------
-
+/*
 #[allow(dead_code)] // called when real QUIC connection to the game server is implemented
 fn make_client_endpoint() -> anyhow::Result<Endpoint> {
     let crypto = make_client_crypto()?;
@@ -148,7 +229,7 @@ fn make_client_crypto() -> anyhow::Result<quinn::crypto::rustls::QuicClientConfi
         .with_no_client_auth();
     quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(Into::into)
 }
-
+*/
 // ---------------------------------------------------------------------------
 // Dev cert verifier
 // ---------------------------------------------------------------------------

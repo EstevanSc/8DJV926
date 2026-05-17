@@ -4,7 +4,7 @@ use bytes::Bytes;
 use common::packets::PlayerInput;
 
 use super::GameState;
-use super::net::ServerConnection;
+use super::net::{ActivePeer, ServerConn};
 
 pub struct ClientInputPlugin;
 
@@ -14,8 +14,15 @@ impl Plugin for ClientInputPlugin {
     }
 }
 
-fn send_input(keys: Res<ButtonInput<KeyCode>>, conn: Option<Res<ServerConnection>>) {
-    let Some(conn) = conn else { return };
+fn send_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    peer_res: Option<ResMut<ActivePeer>>,
+    server_conn: Option<Res<ServerConn>>,
+) {
+    let (Some(peer_res), Some(server_conn)) = (peer_res, server_conn) else {
+        return;
+    };
+    let Ok(peer) = peer_res.0.lock() else { return };
 
     let mut dx = 0.0_f32;
     let mut dy = 0.0_f32;
@@ -38,7 +45,8 @@ fn send_input(keys: Res<ButtonInput<KeyCode>>, conn: Option<Res<ServerConnection
     }
 
     let data = Bytes::from(bitcode::encode(&PlayerInput { dx, dy }));
-    if let Err(e) = conn.0.send_datagram(data) {
-        tracing::warn!("send_datagram (input): {e}");
+    let stream = game_sockets::GameStream::from(0);
+    if let Err(e) = peer.send(&server_conn.0, &stream, data) {
+        tracing::warn!("send (input): {e:?}");
     }
 }

@@ -36,7 +36,10 @@ pub struct PlayerInfo {
 #[derive(Resource)]
 pub struct ServerConfig {
     pub id: String,
+    /// Bind address (always 0.0.0.0 inside the container).
     pub ip: String,
+    /// Routable address advertised to clients via heartbeat.
+    pub public_ip: String,
     pub port: u16,
     pub zone: String,
     pub max_players: usize,
@@ -62,6 +65,9 @@ impl ServerConfig {
             // key matches the Redis entry created during container spawn.
             id: std::env::var("DS_ID").unwrap_or_else(|_| Uuid::new_v4().to_string()),
             ip: "0.0.0.0".to_string(),
+            // DS_PUBLIC_IP is the address clients use to reach this server.
+            // Set to "localhost" for local Docker dev (port-mapped to host).
+            public_ip: std::env::var("DS_PUBLIC_IP").unwrap_or_else(|_| "localhost".to_string()),
             port,
             zone: std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string()),
             max_players: std::env::var("MAX_PLAYERS")
@@ -156,8 +162,8 @@ fn send_heartbeat(
 
         let heartbeat_data = Heartbeat {
             id: config.id.clone(),
-            ip: config.ip.clone(),
-            port: config.port.clone(),
+            ip: config.public_ip.clone(),
+            port: config.port,
             zone: config.zone.clone(),
             player_count,
             max_players: config.max_players.clone(),

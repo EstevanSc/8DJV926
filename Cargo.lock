@@ -2086,12 +2086,15 @@ dependencies = [
  "bytes",
  "common",
  "futures-lite",
+ "game_sockets",
  "quinn 0.11.9",
  "reqwest",
  "rustls 0.23.40",
  "serde",
  "tokio",
  "tracing",
+ "uuid",
+ "wincode",
 ]
 
 [[package]]
