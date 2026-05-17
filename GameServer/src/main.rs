@@ -1,9 +1,9 @@
-mod server;
-mod messages;
 mod heartbeat;
+mod messages;
+mod server;
 
-use bevy::prelude::*;
 use crate::server::ServerPlugin;
+use bevy::prelude::*;
 
 fn main() {
     App::new()

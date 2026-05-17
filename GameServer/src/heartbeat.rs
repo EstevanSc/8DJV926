@@ -1,4 +1,4 @@
-﻿// TEMP, replace with heartbeat in the shared module when merging
+// TEMP, replace with heartbeat in the shared module when merging
 
 use serde::{Deserialize, Serialize};
 

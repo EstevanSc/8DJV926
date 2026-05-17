@@ -1,19 +1,22 @@
+use crate::GameNetworkEvent::StreamCreated;
+use crate::GameStreamReliability::{Reliable, Unreliable};
+use crate::{
+    BackendCommand, GameNetworkEvent, GameSocketBackend, GameSocketError, GameStream,
+    GameStreamReliability,
+};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use quinn::congestion::BbrConfig;
+use quinn::{Connection, Endpoint, RecvStream, SendStream};
+use rustls::client::{ServerCertVerified, ServerCertVerifier};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
-use uuid::Uuid;
-use quinn::{Endpoint, Connection, RecvStream, SendStream};
-use quinn::congestion::BbrConfig;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameSocketError, GameStream, GameStreamReliability};
-use rustls::client::{ServerCertVerified, ServerCertVerifier};
 use tracing::error;
 use tracing::log::{debug, log};
-use crate::GameNetworkEvent::StreamCreated;
-use crate::GameStreamReliability::{Reliable, Unreliable};
+use uuid::Uuid;
 
 struct SkipServerVerification;
 
@@ -99,11 +102,15 @@ fn make_client_config() -> quinn::ClientConfig {
 pub struct QuicBackend {
     connections: HashMap<Uuid, Connection>,
     reliable_send_streams: HashMap<(Uuid, u16), SendStream>,
-    unreliable_send_streams: Vec<(Uuid, u16)>
+    unreliable_send_streams: Vec<(Uuid, u16)>,
 }
 
 impl GameSocketBackend for QuicBackend {
-    fn run(mut self, mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>, event_tx: mpsc::UnboundedSender<GameNetworkEvent>) {
+    fn run(
+        mut self,
+        mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>,
+        event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+    ) {
         let rt = Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async move {
             let (conn_reg_tx, mut conn_reg_rx) = mpsc::unbounded_channel::<(Uuid, Connection)>();
@@ -207,7 +214,14 @@ impl GameSocketBackend for QuicBackend {
                                     }
                                 }
                             }
-                            BackendCommand::Shutdown => break,
+                            BackendCommand::Shutdown => {
+                                for (uuid, conn) in self.connections.drain() {
+                                    conn.close(0_u32.into(), b"Application Shutdown");
+                                    let _ = event_tx.send(GameNetworkEvent::Disconnected(uuid.into()));
+                                }
+
+                                break;
+                            },
                             BackendCommand::CreateStream { connection, stream, reliability } => {
                                 if reliability == GameStreamReliability::Reliable {
                                     if let Some(conn) = self.connections.get(&connection) {
@@ -242,15 +256,20 @@ impl QuicBackend {
         Self {
             connections: HashMap::new(),
             reliable_send_streams: HashMap::new(),
-            unreliable_send_streams: Vec::new()
+            unreliable_send_streams: Vec::new(),
         }
     }
 
-    fn spawn_reader(conn: Connection, uuid: Uuid, event_tx: mpsc::UnboundedSender<GameNetworkEvent>, stream_reg_tx: mpsc::UnboundedSender<(Uuid, GameStream, Option<SendStream>)>) {
+    fn spawn_reader(
+        conn: Connection,
+        uuid: Uuid,
+        event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+        stream_reg_tx: mpsc::UnboundedSender<(Uuid, GameStream, Option<SendStream>)>,
+    ) {
         let conn_clone = conn.clone();
         let event_tx_clone = event_tx.clone();
         let stream_reg_tx_clone = stream_reg_tx.clone();
-        
+
         // Datagram Reader
         tokio::spawn(async move {
             // Local cache to deduplicate stream registrations
@@ -271,6 +290,7 @@ impl QuicBackend {
                     data: b,
                 });
             }
+            let _ = event_tx_clone.send(GameNetworkEvent::Disconnected(uuid.into()));
         });
 
         // Stream Reader
@@ -281,22 +301,36 @@ impl QuicBackend {
                     Ok(id) => id,
                     Err(_) => return,
                 };
-                let _ = stream_reg_tx.send((uuid, GameStream::new(stream_id, Reliable), Some(quic_stream.0)));
+                let _ = stream_reg_tx.send((
+                    uuid,
+                    GameStream::new(stream_id, Reliable),
+                    Some(quic_stream.0),
+                ));
                 tokio::spawn(async move {
                     Self::stream_reading_loop(uuid, stream_id, quic_stream.1, tx.clone()).await;
                 });
             }
+
+            let conn_monitor = conn.clone();
+            let _code = conn_monitor.closed().await;
         });
     }
 
-    async fn stream_reading_loop(uuid: Uuid, stream_id: u16, mut stream: RecvStream, event_tx: mpsc::UnboundedSender<GameNetworkEvent>) {
+    async fn stream_reading_loop(
+        uuid: Uuid,
+        stream_id: u16,
+        mut stream: RecvStream,
+        event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+    ) {
         loop {
             let len = match stream.read_u32().await {
                 Ok(l) => l as usize,
                 Err(_) => break,
             };
             let mut buf = vec![0u8; len];
-            if stream.read_exact(&mut buf).await.is_err() { break; }
+            if stream.read_exact(&mut buf).await.is_err() {
+                break;
+            }
 
             let _ = event_tx.send(GameNetworkEvent::Message {
                 connection: uuid.into(),

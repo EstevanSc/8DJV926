@@ -1,33 +1,54 @@
 pub mod protocols;
 
-use std::thread;
 use bytes::Bytes;
+use std::thread;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum BackendCommand {
-    Bind { addr: String, port: u16 },
-    Connect { addr: String, port: u16 },
-    Send { connection: Uuid, stream: GameStream, data: Bytes },
-    CreateStream { connection: Uuid, stream: u16, reliability: GameStreamReliability },
-    CloseStream { connection: Uuid, stream: u16 },
+    Bind {
+        addr: String,
+        port: u16,
+    },
+    Connect {
+        addr: String,
+        port: u16,
+    },
+    Send {
+        connection: Uuid,
+        stream: GameStream,
+        data: Bytes,
+    },
+    CreateStream {
+        connection: Uuid,
+        stream: u16,
+        reliability: GameStreamReliability,
+    },
+    CloseStream {
+        connection: Uuid,
+        stream: u16,
+    },
     Shutdown,
 }
 
 pub trait GameSocketBackend: Send + 'static {
-    fn run(self, cmd_rx: mpsc::UnboundedReceiver<BackendCommand>, event_tx: mpsc::UnboundedSender<GameNetworkEvent>);
+    fn run(
+        self,
+        cmd_rx: mpsc::UnboundedReceiver<BackendCommand>,
+        event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+    );
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct GameConnection {
-    pub connection_id: uuid::Uuid
+    pub connection_id: uuid::Uuid,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct GameStream {
-    pub stream_id: u16
+    pub stream_id: u16,
 }
 
 const RELIABILITY_MASK: u16 = 0b11;
@@ -43,9 +64,7 @@ impl GameStream {
             stream_id |= RELIABILITY_MASK;
         }
 
-        Self {
-            stream_id
-        }
+        Self { stream_id }
     }
 
     pub fn is_reliable(&self) -> bool {
@@ -71,27 +90,27 @@ pub enum GameSocketError {
     #[error("Generic error from protocol : {inner_msg}.")]
     ProtocolError { inner_msg: String },
     #[error("Error initializing protocol : {inner_msg}.")]
-    InitError { inner_msg: String},
+    InitError { inner_msg: String },
     #[error("Error connecting to remote host.")]
     ConnectionError,
     #[error("Unable to bind socket.")]
     BindError(#[from] std::io::Error),
     #[error("Error sending a packet : {inner_msg}.")]
-    SendFailed{ inner_msg: String}
+    SendFailed { inner_msg: String },
 }
 
 #[derive(Debug)]
 pub enum GameNetworkEvent {
     Connected(GameConnection),
     Disconnected(GameConnection),
-    Message{
+    Message {
         connection: GameConnection,
         stream: GameStream,
-        data: bytes::Bytes
+        data: bytes::Bytes,
     },
     Error {
         connection: GameConnection,
-        inner: GameSocketError
+        inner: GameSocketError,
     },
     StreamCreated(GameConnection, GameStream),
     StreamClosed(GameConnection, GameStream),
@@ -137,35 +156,62 @@ impl GamePeer {
     }
 
     fn send_cmd(&self, cmd: BackendCommand) -> Result<(), GameSocketError> {
-        self.cmd_tx.as_ref()
+        self.cmd_tx
+            .as_ref()
             .ok_or(GameSocketError::ConnectionError)?
             .send(cmd)
             .map_err(|_| GameSocketError::ConnectionError)
     }
 
     pub fn listen(&self, ip: &str, port: u16) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Bind { addr: ip.to_string(), port })
+        self.send_cmd(BackendCommand::Bind {
+            addr: ip.to_string(),
+            port,
+        })
     }
 
     pub fn connect(&self, addr: &str, port: u16) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Connect { addr: addr.to_string(), port })
+        self.send_cmd(BackendCommand::Connect {
+            addr: addr.to_string(),
+            port,
+        })
     }
 
-    pub fn create_stream(&mut self, conn: GameConnection, reliability: GameStreamReliability) -> Result<(), GameSocketError> {
+    pub fn create_stream(
+        &mut self,
+        conn: GameConnection,
+        reliability: GameStreamReliability,
+    ) -> Result<(), GameSocketError> {
         self.next_stream_id += 1;
         self.send_cmd(BackendCommand::CreateStream {
             connection: conn.connection_id,
             stream: self.next_stream_id,
-            reliability
+            reliability,
         })
     }
 
-    pub fn close_stream(&self, conn: GameConnection, stream: GameStream) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::CloseStream { connection: conn.connection_id, stream: stream.stream_id })
+    pub fn close_stream(
+        &self,
+        conn: GameConnection,
+        stream: GameStream,
+    ) -> Result<(), GameSocketError> {
+        self.send_cmd(BackendCommand::CloseStream {
+            connection: conn.connection_id,
+            stream: stream.stream_id,
+        })
     }
 
-    pub fn send(&self, conn: &GameConnection, stream: &GameStream, msg: Bytes) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Send { connection: conn.connection_id, stream: stream.clone(), data: msg })
+    pub fn send(
+        &self,
+        conn: &GameConnection,
+        stream: &GameStream,
+        msg: Bytes,
+    ) -> Result<(), GameSocketError> {
+        self.send_cmd(BackendCommand::Send {
+            connection: conn.connection_id,
+            stream: stream.clone(),
+            data: msg,
+        })
     }
 
     pub fn poll(&mut self) -> Result<Option<GameNetworkEvent>, GameSocketError> {
@@ -175,13 +221,17 @@ impl GamePeer {
                 Err(mpsc::error::TryRecvError::Empty) => Ok(None),
                 Err(_) => Err(GameSocketError::ConnectionError),
             },
-            None => Err(GameSocketError::ProtocolError { inner_msg: "Not initialized".into() }),
+            None => Err(GameSocketError::ProtocolError {
+                inner_msg: "Not initialized".into(),
+            }),
         }
     }
 
     pub fn shutdown(&mut self) -> Result<(), GameSocketError> {
         let _ = self.send_cmd(BackendCommand::Shutdown);
-        if let Some(h) = self.thread_handle.take() { let _ = h.join(); }
+        if let Some(h) = self.thread_handle.take() {
+            let _ = h.join();
+        }
         Ok(())
     }
 }

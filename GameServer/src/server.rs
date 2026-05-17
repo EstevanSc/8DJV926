@@ -1,21 +1,23 @@
-﻿use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
-use std::time::Duration;
-use bevy::prelude::*;
-use game_sockets::{GameNetworkEvent, GamePeer};
-use game_sockets::protocols::QuicBackend;
-use uuid::Uuid;
 use crate::heartbeat::Heartbeat;
 use crate::messages::GameMessage;
+use bevy::prelude::*;
+use game_sockets::protocols::QuicBackend;
+use game_sockets::{GameNetworkEvent, GamePeer};
+use std::collections::HashMap;
+use std::net::{SocketAddr, UdpSocket};
+use std::time::Duration;
+use uuid::Uuid;
 
 pub struct ServerPlugin;
 
 impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .insert_resource(ServerConfig::from_env())
+        app.insert_resource(ServerConfig::from_env())
             .init_resource::<PlayerRegistry>()
-            .insert_resource(HeartbeatTimer(Timer::new(Duration::from_secs(5), TimerMode::Repeating)))
+            .insert_resource(HeartbeatTimer(Timer::new(
+                Duration::from_secs(5),
+                TimerMode::Repeating,
+            )))
             .add_systems(Startup, bind_socket)
             .add_systems(Update, (receive_packets, send_heartbeat).chain());
     }
@@ -23,7 +25,7 @@ impl Plugin for ServerPlugin {
 
 #[derive(Resource, Default)]
 pub struct PlayerRegistry {
-    pub registry: HashMap<Uuid, PlayerInfo>
+    pub registry: HashMap<Uuid, PlayerInfo>,
 }
 
 pub struct PlayerInfo {
@@ -47,12 +49,15 @@ impl ServerConfig {
             .parse::<u16>()
             .expect("Invalid DS_PORT");
 
-        let orchestrator_host = std::env::var("ORCH_HOST").unwrap_or_else(|_| "127.0.0.1:7000".to_string());
-        let orchestrator_address: SocketAddr = orchestrator_host.parse().expect("Invalid orchestrator address");
+        let orchestrator_host =
+            std::env::var("ORCH_HOST").unwrap_or_else(|_| "127.0.0.1:7000".to_string());
+        let orchestrator_address: SocketAddr = orchestrator_host
+            .parse()
+            .expect("Invalid orchestrator address");
 
         Self {
             id: Uuid::new_v4().to_string(),
-            ip: "127.0.0.1".to_string(),
+            ip: "0.0.0.0".to_string(),
             port,
             zone: std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string()),
             max_players: std::env::var("MAX_PLAYERS")
@@ -81,7 +86,7 @@ fn bind_socket(mut commands: Commands, server_config: Res<ServerConfig>) {
     match peer.listen(ip, port) {
         Ok(_) => {
             println!("Listening on {}", ip);
-            commands.insert_resource(NetworkPeer {peer});
+            commands.insert_resource(NetworkPeer { peer });
         }
         Err(e) => {
             eprintln!("Failed to listen on {}: {}", ip, e);
@@ -95,26 +100,42 @@ fn receive_packets(mut server: ResMut<NetworkPeer>, mut player_registry: ResMut<
             GameNetworkEvent::Connected(conn) => {
                 println!("Connected! Client id: {:?}", conn.connection_id);
             }
-            GameNetworkEvent::Message {data, connection, stream} => {
+            GameNetworkEvent::Message {
+                data,
+                connection,
+                stream,
+            } => {
                 let msg: GameMessage = wincode::deserialize(&data).unwrap();
                 match msg {
                     // JOIN message
-                    GameMessage::Join {username} => {
+                    GameMessage::Join { username } => {
+                        println!("Joined {}", username);
                         let id = connection.connection_id;
-                        player_registry.registry.insert(id, PlayerInfo{id, username});
+                        player_registry
+                            .registry
+                            .insert(id, PlayerInfo { id, username });
 
                         // Send Welcome message to the player
-                        let response = GameMessage::Welcome {player_id: id};
+                        let response = GameMessage::Welcome { player_id: id };
                         if let Ok(serialized) = wincode::serialize(&response) {
-                            server.peer.send(&connection, &stream, serialized.into()).unwrap();
+                            server
+                                .peer
+                                .send(&connection, &stream, serialized.into())
+                                .unwrap();
+                        }
+                        else {
+                            eprintln!("Failed to serialize game message");
                         }
                     }
-                    _ => {}
+                    _ => {
+                        println!("Unexpected message {:?}", msg);
+                    }
                 }
             }
             GameNetworkEvent::Disconnected(conn) => {
                 // Remove player from registry
                 player_registry.registry.remove(&conn.connection_id);
+                println!("Disconnected! Client id: {:?}", conn.connection_id);
             }
             _ => {}
         }
@@ -136,7 +157,7 @@ fn send_heartbeat(
             port: config.port.clone(),
             zone: config.zone.clone(),
             player_count,
-            max_players: config.max_players.clone()
+            max_players: config.max_players.clone(),
         };
 
         // Send heartbeat JSON packet to the orchestrator
@@ -150,7 +171,11 @@ fn send_heartbeat(
                         "Heartbeat sent: {}/{} players. Status: {}",
                         player_count,
                         config.max_players,
-                        if player_count >= config.max_players { "FULL" } else { "AVAILABLE" }
+                        if player_count >= config.max_players {
+                            "FULL"
+                        } else {
+                            "AVAILABLE"
+                        }
                     );
                 }
             }

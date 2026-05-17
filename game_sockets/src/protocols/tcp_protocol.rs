@@ -1,19 +1,23 @@
-use std::collections::HashMap;
+use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameSocketError, GameStream};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use uuid::Uuid;
-use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameSocketError, GameStream};
 
 pub struct TcpBackend {
     peers: HashMap<Uuid, mpsc::Sender<Bytes>>,
 }
 
 impl GameSocketBackend for TcpBackend {
-    fn run(mut self, mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>, event_tx: mpsc::UnboundedSender<GameNetworkEvent>) {
+    fn run(
+        mut self,
+        mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>,
+        event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+    ) {
         let rt = Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async move {
             let (peer_reg_tx, mut peer_reg_rx) = mpsc::channel::<(Uuid, mpsc::Sender<Bytes>)>(16);
@@ -100,7 +104,9 @@ impl GameSocketBackend for TcpBackend {
 
 impl TcpBackend {
     pub fn new() -> Self {
-        Self { peers: HashMap::new() }
+        Self {
+            peers: HashMap::new(),
+        }
     }
 
     /// Spawns a task that manages Reading AND Writing for a single socket.
@@ -108,7 +114,7 @@ impl TcpBackend {
         socket: TcpStream,
         uuid: Uuid,
         event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
-        mut write_rx: mpsc::Receiver<Bytes>
+        mut write_rx: mpsc::Receiver<Bytes>,
     ) {
         tokio::spawn(async move {
             // Apply Length-Delimited Framing

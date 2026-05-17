@@ -1,12 +1,12 @@
+use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameStream};
+use bytes::{BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use bytes::{BufMut, Bytes, BytesMut};
 use tokio::net::UdpSocket;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameStream};
 
 // Protocol Constants
 const HEADER_SIZE: usize = 18; // 16 bytes (UUID) + 2 bytes (StreamID)
@@ -18,7 +18,11 @@ pub struct UdpBackend {
 }
 
 impl GameSocketBackend for UdpBackend {
-    fn run(mut self, mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>, event_tx: mpsc::UnboundedSender<GameNetworkEvent>) {
+    fn run(
+        mut self,
+        mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>,
+        event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+    ) {
         let rt = Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async move {
             let mut buf = [0u8; 2048];
@@ -62,7 +66,11 @@ impl UdpBackend {
     }
 
     /// Command Processor
-    async fn process_command(&mut self, cmd: BackendCommand, event_tx: &mpsc::UnboundedSender<GameNetworkEvent>) {
+    async fn process_command(
+        &mut self,
+        cmd: BackendCommand,
+        event_tx: &mpsc::UnboundedSender<GameNetworkEvent>,
+    ) {
         match cmd {
             BackendCommand::Bind { addr, port } => {
                 if self.socket.is_none() {
@@ -77,14 +85,18 @@ impl UdpBackend {
                         self.socket = Some(Arc::new(s));
                     }
                 }
-                
+
                 if let Ok(socket_addr) = format!("{}:{}", addr, port).parse::<SocketAddr>() {
                     let uuid = Uuid::new_v4();
                     self.connections.insert(uuid, socket_addr);
                     let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
                 }
             }
-            BackendCommand::Send { connection, stream, data } => {
+            BackendCommand::Send {
+                connection,
+                stream,
+                data,
+            } => {
                 if let Some(socket) = &self.socket {
                     if let Some(remote_addr) = self.connections.get(&connection) {
                         let mut packet = BytesMut::with_capacity(HEADER_SIZE + data.len());
@@ -95,21 +107,40 @@ impl UdpBackend {
                     }
                 }
             }
-            BackendCommand::CreateStream { connection, stream, reliability } => {
-                let _ = event_tx.send(GameNetworkEvent::StreamCreated(connection.into(), GameStream::new(stream, reliability)));
+            BackendCommand::CreateStream {
+                connection,
+                stream,
+                reliability,
+            } => {
+                let _ = event_tx.send(GameNetworkEvent::StreamCreated(
+                    connection.into(),
+                    GameStream::new(stream, reliability),
+                ));
             }
             BackendCommand::CloseStream { connection, stream } => {
-                let _ = event_tx.send(GameNetworkEvent::StreamClosed(connection.into(), stream.into()));
+                let _ = event_tx.send(GameNetworkEvent::StreamClosed(
+                    connection.into(),
+                    stream.into(),
+                ));
             }
             _ => {} // Handled in loop
         }
     }
 
     /// Packet Processor
-    fn process_packet(&mut self, buf: &[u8], addr: SocketAddr, event_tx: &mpsc::UnboundedSender<GameNetworkEvent>) {
-        if buf.len() < HEADER_SIZE { return; }
+    fn process_packet(
+        &mut self,
+        buf: &[u8],
+        addr: SocketAddr,
+        event_tx: &mpsc::UnboundedSender<GameNetworkEvent>,
+    ) {
+        if buf.len() < HEADER_SIZE {
+            return;
+        }
 
-        let Ok(incoming_uuid) = Uuid::from_slice(&buf[0..16]) else { return };
+        let Ok(incoming_uuid) = Uuid::from_slice(&buf[0..16]) else {
+            return;
+        };
         let stream_id = u16::from_be_bytes([buf[16], buf[17]]);
 
         // Auto-Accept / Update Address Logic
@@ -130,7 +161,7 @@ impl UdpBackend {
             streams.push(stream_id);
             let _ = event_tx.send(GameNetworkEvent::StreamCreated(
                 incoming_uuid.into(),
-                stream_id.into()
+                stream_id.into(),
             ));
         }
 
@@ -139,7 +170,7 @@ impl UdpBackend {
         let _ = event_tx.send(GameNetworkEvent::Message {
             connection: incoming_uuid.into(),
             stream: stream_id.into(),
-            data: payload
+            data: payload,
         });
     }
 }
