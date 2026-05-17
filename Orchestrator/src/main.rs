@@ -8,6 +8,8 @@ use tokio::signal;
 mod api;
 mod config;
 mod infrastructure;
+mod models;
+mod services;
 
 use config::Config;
 use infrastructure::RedisClient;
@@ -19,14 +21,15 @@ async fn main() {
     let config = Config::from_env();
 
     tracing::info!(
-        "Starting orchestrator - environment: {}, port: {}, redis_url: {}",
+        "Starting orchestrator - environment: {}, port: {}, heartbeat_port: {}, redis_url: {}",
         config.environment,
         config.port,
+        config.orch_port,
         config.redis_url
     );
 
-    let _redis_client = match RedisClient::connect(&config.redis_url).await {
-        Ok(mut client) => {
+    let redis_client = match RedisClient::connect(&config.redis_url).await {
+        Ok(client) => {
             tracing::info!("Successfully connected to Redis");
             match client.ping().await {
                 Ok(pong) => {
@@ -58,6 +61,42 @@ async fn main() {
         }
     };
 
+    // Spawn heartbeat listener task if Redis is available
+    if let Some(redis) = redis_client {
+        let heartbeat_port = config.orch_port;
+        let heartbeat_redis = redis.clone();
+        let hb_ttl = config.heartbeat_ttl_seconds;
+        tokio::spawn(async move {
+            tracing::info!("Starting heartbeat listener task");
+            services::heartbeat_listener::start_heartbeat_listener(
+                heartbeat_port,
+                heartbeat_redis,
+                hb_ttl,
+            )
+            .await;
+            tracing::error!("Heartbeat listener task stopped unexpectedly");
+        });
+
+        let scaler_redis = redis.clone();
+        let ds_binary_path = config.ds_binary_path.clone();
+        let ds_base_port = config.ds_base_port;
+        let hot_servers_min = config.hot_servers_min;
+        let scaler_interval = config.scaler_interval_seconds;
+        tokio::spawn(async move {
+            tracing::info!("Starting scaler task");
+            services::scaler::start_scaler(
+                scaler_redis,
+                hot_servers_min,
+                ds_binary_path,
+                ds_base_port,
+                scaler_interval,
+            )
+            .await;
+            tracing::error!("Scaler task stopped unexpectedly");
+        });
+    } else {
+        tracing::warn!("Background tasks not started: Redis connection required");
+    }
     let app = Router::new().nest("/api", api::routes());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
