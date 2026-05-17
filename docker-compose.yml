@@ -1,0 +1,51 @@
+# docker-compose.yml
+# Starts the two server-side services needed for testing: Redis and the Gatekeeper.
+# The client (Bevy desktop app) runs locally and connects to the gatekeeper on port 3000.
+
+networks:
+  game-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+
+services:
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    networks:
+      - game-net
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Gatekeeper ────────────────────────────────────────────────────────────
+  # POST /login on :3000  — client sends credentials, receives server info.
+  # QUIC on :3001         — client connects after login to establish game session.
+  gatekeeper:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.gatekeeper
+    image: gatekeeper:latest
+    networks:
+      - game-net
+    ports:
+      - "3000:3000"   # HTTP login endpoint (client → gatekeeper)
+    environment:
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: info
+      SUPABASE_URL: https://asutrpqfngsuokiqvxfc.supabase.co
+      SUPABASE_SERVICE_KEY: sb_secret_cmnZ9U1fcpL-OEqR6-qGDQ_bMQRjDHl
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+

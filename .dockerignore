@@ -11,3 +11,19 @@
 
 # Ignore OS-specific garbage
 **/.DS_Store
+# Exclude the local build cache — can be multiple GB and is never needed in
+# the Docker build context. The multi-stage Dockerfiles compile from scratch
+# inside the builder stage.
+target/
+
+# Version control
+.git/
+.gitignore
+
+# IDE / editor artefacts
+.vscode/
+.idea/
+*.swp
+
+# Markdown / docs — not needed inside the image
+*.md
