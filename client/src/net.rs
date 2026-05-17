@@ -17,18 +17,14 @@ impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
         // Create one persistent Tokio runtime for all quinn operations.
         let rt = Runtime::new().expect("failed to create Tokio runtime for QUIC");
-        app
-            .insert_resource(QuicRuntime(Arc::new(rt)))
+        app.insert_resource(QuicRuntime(Arc::new(rt)))
             .add_message::<PositionBatchReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
                 poll_connect_task.run_if(in_state(GameState::Connecting)),
             )
-            .add_systems(
-                Update,
-                receive_packets.run_if(in_state(GameState::InGame)),
-            );
+            .add_systems(Update, receive_packets.run_if(in_state(GameState::InGame)));
     }
 }
 
@@ -59,11 +55,7 @@ pub struct ServerConnection(pub quinn::Connection);
 #[derive(Resource)]
 pub struct DatagramReceiver(std::sync::Mutex<Receiver<Vec<u8>>>);
 
-fn start_connect(
-    mut commands: Commands,
-    session: Res<GameSession>,
-    _rt: Res<QuicRuntime>,
-) {
+fn start_connect(mut commands: Commands, session: Res<GameSession>, _rt: Res<QuicRuntime>) {
     let player_id = session.player_id.clone();
 
     // TODO: Replace with a real QUIC connection to the dedicated game server
@@ -92,7 +84,10 @@ fn poll_connect_task(
                 Ok(entity_id) => {
                     commands.insert_resource(MyEntityId(entity_id));
                     next_state.set(GameState::InGame);
-                    tracing::info!(entity_id, "Session ready — entering game (server connection stubbed)");
+                    tracing::info!(
+                        entity_id,
+                        "Session ready — entering game (server connection stubbed)"
+                    );
                 }
                 Err(e) => {
                     tracing::error!("Session setup failed: {e}");
@@ -135,9 +130,7 @@ fn make_client_endpoint() -> anyhow::Result<Endpoint> {
     // Send a QUIC PING every 10 s to keep the connection alive.
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     // Allow up to 60 s of silence before declaring the connection dead.
-    transport.max_idle_timeout(Some(
-        std::time::Duration::from_secs(60).try_into()?,
-    ));
+    transport.max_idle_timeout(Some(std::time::Duration::from_secs(60).try_into()?));
     let mut client_cfg = ClientConfig::new(Arc::new(crypto));
     client_cfg.transport_config(Arc::new(transport));
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;

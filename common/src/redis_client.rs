@@ -1,30 +1,35 @@
-//! Redis client abstraction for async operations.
-//! Provides connection management and basic SET/GET/PING commands.
+//! Shared Redis client used by all server-side services.
+//!
+//! Built on top of `redis::aio::ConnectionManager` which handles
+//! reconnection automatically and is safe to clone across tasks.
 
 use redis::aio::ConnectionManager;
 use std::collections::HashMap;
 
+/// Async Redis wrapper shared between Orchestrator and Gatekeeper.
+///
+/// Clone-able — each clone shares the same underlying connection manager.
 #[derive(Clone)]
 pub struct RedisClient {
     manager: ConnectionManager,
 }
 
 impl RedisClient {
-    /// Connects to Redis using the provided URL and returns a RedisClient instance.
+    /// Connect to Redis at `redis_url` (e.g. `redis://redis:6379`).
     pub async fn connect(redis_url: &str) -> Result<Self, redis::RedisError> {
         let client = redis::Client::open(redis_url)?;
         let manager = ConnectionManager::new(client).await?;
         Ok(RedisClient { manager })
     }
 
-    /// Pings the Redis server to check connectivity. Returns "PONG" if successful.
+    /// Ping the server — returns `"PONG"` on success.
     pub async fn ping(&self) -> Result<String, redis::RedisError> {
         redis::cmd("PING")
             .query_async(&mut self.manager.clone())
             .await
     }
 
-    /// Sets a key-value pair in Redis. Returns Ok(()) if successful.
+    /// SET key value.
     pub async fn set(&self, key: &str, value: &str) -> Result<(), redis::RedisError> {
         redis::cmd("SET")
             .arg(key)
@@ -33,7 +38,7 @@ impl RedisClient {
             .await
     }
 
-    /// Gets the value of a key from Redis. Returns the value as a String if successful.
+    /// GET key.
     pub async fn get(&self, key: &str) -> Result<String, redis::RedisError> {
         redis::cmd("GET")
             .arg(key)
@@ -41,7 +46,7 @@ impl RedisClient {
             .await
     }
 
-    /// Sets multiple hash fields for a key using HSET.
+    /// HSET key field value [field value …]
     pub async fn hset_multiple(
         &self,
         key: &str,
@@ -49,15 +54,13 @@ impl RedisClient {
     ) -> Result<(), redis::RedisError> {
         let mut cmd = redis::cmd("HSET");
         cmd.arg(key);
-
         for (field, value) in fields {
             cmd.arg(field).arg(value);
         }
-
         cmd.query_async(&mut self.manager.clone()).await
     }
 
-    /// Sets a TTL (Time To Live) in seconds for a key using EXPIRE.
+    /// EXPIRE key seconds.
     pub async fn expire(&self, key: &str, seconds: usize) -> Result<(), redis::RedisError> {
         redis::cmd("EXPIRE")
             .arg(key)
@@ -66,7 +69,7 @@ impl RedisClient {
             .await
     }
 
-    /// Scans Redis keys matching a pattern using SCAN.
+    /// SCAN … MATCH pattern — iterates all matching keys.
     pub async fn scan(&self, pattern: &str) -> Result<Vec<String>, redis::RedisError> {
         let mut keys = Vec::new();
         let mut cursor = 0u64;
@@ -90,7 +93,7 @@ impl RedisClient {
         Ok(keys)
     }
 
-    /// Gets a specific field from a hash using HGET.
+    /// HGET key field — returns `None` when the key or field is absent.
     pub async fn hget(&self, key: &str, field: &str) -> Result<Option<String>, redis::RedisError> {
         redis::cmd("HGET")
             .arg(key)
@@ -99,10 +102,25 @@ impl RedisClient {
             .await
     }
 
-    /// Deletes a key using DEL.
+    /// DEL key.
     pub async fn del(&self, key: &str) -> Result<(), redis::RedisError> {
         redis::cmd("DEL")
             .arg(key)
+            .query_async(&mut self.manager.clone())
+            .await
+    }
+
+    /// HINCRBY key field increment — atomically increments a hash integer field.
+    pub async fn hincr(
+        &self,
+        key: &str,
+        field: &str,
+        increment: i64,
+    ) -> Result<i64, redis::RedisError> {
+        redis::cmd("HINCRBY")
+            .arg(key)
+            .arg(field)
+            .arg(increment)
             .query_async(&mut self.manager.clone())
             .await
     }

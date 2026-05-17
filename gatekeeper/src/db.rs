@@ -90,7 +90,10 @@ impl SupabaseClient {
             .headers(self.auth_headers())
             // Ask PostgREST to return the inserted row so we can read the generated id.
             .header("Prefer", "return=representation")
-            .json(&CreatePlayerBody { player_name: name, password })
+            .json(&CreatePlayerBody {
+                player_name: name,
+                password,
+            })
             .send()
             .await
             .context("Supabase create_player: request failed")?
@@ -100,6 +103,7 @@ impl SupabaseClient {
             .await
             .context("Supabase create_player: JSON parse error")?;
 
-        rows.pop().context("Supabase create_player: response was empty")
+        rows.pop()
+            .context("Supabase create_player: response was empty")
     }
 }

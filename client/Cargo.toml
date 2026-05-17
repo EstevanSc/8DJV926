@@ -9,7 +9,7 @@ path = "main.rs"
 
 [dependencies]
 common       = { workspace = true }
-bevy         = { workspace = true }
+bevy         = { workspace = true, features = ["default"] }
 quinn        = { workspace = true }
 rustls       = { workspace = true }
 reqwest      = { workspace = true }

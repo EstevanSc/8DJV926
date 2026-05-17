@@ -8,12 +8,10 @@ use tokio::signal;
 mod api;
 mod config;
 mod docker_ops;
-mod infrastructure;
-mod models;
 mod services;
 
+use common::RedisClient;
 use config::Config;
-use infrastructure::RedisClient;
 
 #[tokio::main]
 async fn main() {

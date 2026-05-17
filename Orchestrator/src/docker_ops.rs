@@ -14,7 +14,7 @@ use bollard::container::{Config, CreateContainerOptions, NetworkingConfig, Start
 use bollard::models::{EndpointSettings, HostConfig, PortBinding};
 use uuid::Uuid;
 
-use crate::infrastructure::RedisClient;
+use common::RedisClient;
 
 // ── env-var helpers ──────────────────────────────────────────────────────────
 
@@ -141,7 +141,8 @@ pub async fn spawn_server(
     fields.insert("port", port.to_string());
     fields.insert("zone", zone);
     fields.insert("status", "starting".to_string());
-    fields.insert("players", "0".to_string());
+    fields.insert("player_count", "0".to_string());
+    fields.insert("max_players", max_players.clone());
     redis
         .hset_multiple(&redis_key, fields)
         .await

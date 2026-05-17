@@ -6,10 +6,10 @@
 //!   - **stops** excess containers if the count is above `hot_servers_min`
 
 use bollard::Docker;
-use tokio::time::{interval, Duration};
+use common::RedisClient;
+use tokio::time::{Duration, interval};
 
 use crate::docker_ops;
-use crate::infrastructure::RedisClient;
 
 /// Main scaler loop. Runs forever; call from a `tokio::spawn`.
 pub async fn start_scaler(
@@ -67,9 +67,7 @@ pub async fn start_scaler(
 
                         // Remove the Redis entry.
                         if let Err(e) = redis.del(&redis_key).await {
-                            tracing::error!(
-                                "Scaler: failed to remove Redis key {redis_key}: {e}"
-                            );
+                            tracing::error!("Scaler: failed to remove Redis key {redis_key}: {e}");
                         } else {
                             tracing::info!("Scaler: removed server {redis_key}");
                         }
@@ -86,9 +84,7 @@ pub async fn start_scaler(
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Returns `(redis_key, container_id)` for every server with `status=empty`.
-async fn list_empty_servers(
-    redis: &RedisClient,
-) -> Result<Vec<(String, Option<String>)>, redis::RedisError> {
+async fn list_empty_servers(redis: &RedisClient) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let keys = redis.scan("server:*").await?;
     let mut result = Vec::new();
 
@@ -105,7 +101,7 @@ async fn list_empty_servers(
 }
 
 /// Returns ports already registered in Redis under any `server:*` key.
-async fn get_occupied_ports(redis: &RedisClient) -> Result<Vec<u16>, redis::RedisError> {
+async fn get_occupied_ports(redis: &RedisClient) -> anyhow::Result<Vec<u16>> {
     let keys = redis.scan("server:*").await?;
     let mut ports = Vec::new();
 
@@ -122,10 +118,7 @@ async fn get_occupied_ports(redis: &RedisClient) -> Result<Vec<u16>, redis::Redi
 }
 
 /// Finds the lowest port ≥ `base_port` that is not already in use.
-async fn find_available_port(
-    redis: &RedisClient,
-    base_port: u16,
-) -> Result<u16, redis::RedisError> {
+async fn find_available_port(redis: &RedisClient, base_port: u16) -> anyhow::Result<u16> {
     let occupied = get_occupied_ports(redis).await?;
     let mut candidate = base_port;
 
@@ -139,4 +132,3 @@ async fn find_available_port(
 
     Ok(candidate)
 }
-

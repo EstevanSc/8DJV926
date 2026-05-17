@@ -1,7 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
+use common::ServerInfo;
 use serde::{Deserialize, Serialize};
 
-use crate::{redis_ops, AppState};
+use crate::{AppState, redis_ops};
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -11,13 +12,6 @@ use crate::{redis_ops, AppState};
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-}
-
-#[derive(Serialize)]
-pub struct ServerInfo {
-    pub ip: String,
-    pub port: u16,
-    pub zone: String,
 }
 
 #[derive(Serialize)]
@@ -47,7 +41,10 @@ pub async fn handler(
     let password = body.password.trim();
 
     if username.is_empty() || password.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "username and password cannot be empty"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "username and password cannot be empty",
+        ));
     }
 
     // ── Supabase: find or create the player ─────────────────────────────────
@@ -83,12 +80,7 @@ pub async fn handler(
 
     // ── Redis: pick an available game server ────────────────────────────────
 
-    let mut conn = state.redis.get().await.map_err(|e| {
-        tracing::error!("Redis pool error during login: {e}");
-        err(StatusCode::SERVICE_UNAVAILABLE, "no server available")
-    })?;
-
-    let server = redis_ops::find_available_server(&mut conn)
+    let server = redis_ops::find_available_server(&state.redis)
         .await
         .map_err(|e| {
             tracing::error!("find_available_server failed: {e:#}");
@@ -100,11 +92,14 @@ pub async fn handler(
         return Err(err(StatusCode::SERVICE_UNAVAILABLE, "no server available"));
     };
 
-    redis_ops::increment_player_count(&mut conn, &server.id)
+    redis_ops::increment_player_count(&state.redis, &server.id)
         .await
         .map_err(|e| {
             tracing::error!("increment_player_count failed: {e:#}");
-            err(StatusCode::INTERNAL_SERVER_ERROR, "server assignment failed")
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server assignment failed",
+            )
         })?;
 
     tracing::info!(
@@ -116,12 +111,5 @@ pub async fn handler(
         server.zone,
     );
 
-    Ok(Json(LoginResponse {
-        player_id,
-        server: ServerInfo {
-            ip: server.ip,
-            port: server.port,
-            zone: server.zone,
-        },
-    }))
+    Ok(Json(LoginResponse { player_id, server }))
 }

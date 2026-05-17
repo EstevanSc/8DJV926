@@ -1,5 +1,5 @@
-mod client;
+mod src;
 
 fn main() {
-    client::run();
+    src::run();
 }

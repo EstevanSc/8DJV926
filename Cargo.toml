@@ -44,10 +44,10 @@ deadpool-redis = "0.18"
 redis          = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"] }
 
 # bevy
-bevy = { version = "0.18.1" }
+bevy = { version = "0.18.1", default-features = false }
 
 # utilities
-uuid               = { version = "1", features = ["v4"] }
+uuid               = { version = "1", features = ["v4", "serde"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow             = "1"
