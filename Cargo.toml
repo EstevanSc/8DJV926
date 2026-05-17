@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "common",
+    "crates",
+    "crates/gatekeeper",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# internal crates
+common = { path = "common" }
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+bitcode = { version = "0.6", features = ["serde"] }
+
+# async runtime
+tokio = { version = "1", features = ["full"] }
+
+# networking
+axum = "0.8"
+quinn = "0.11"
+rustls = { version = "0.23", features = ["ring"] }
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# database
+deadpool-redis = "0.18"
+
+# bevy
+bevy = { version = "0.18.1" }
+
+# utilities
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+bytes = "1"
+futures-lite = "2"
