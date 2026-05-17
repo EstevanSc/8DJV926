@@ -98,4 +98,12 @@ impl RedisClient {
             .query_async(&mut self.manager.clone())
             .await
     }
+
+    /// Deletes a key using DEL.
+    pub async fn del(&self, key: &str) -> Result<(), redis::RedisError> {
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async(&mut self.manager.clone())
+            .await
+    }
 }

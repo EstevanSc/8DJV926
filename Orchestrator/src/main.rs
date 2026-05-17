@@ -7,6 +7,7 @@ use tokio::signal;
 
 mod api;
 mod config;
+mod docker_ops;
 mod infrastructure;
 mod models;
 mod services;
@@ -78,22 +79,28 @@ async fn main() {
         });
 
         let scaler_redis = redis.clone();
-        let ds_binary_path = config.ds_binary_path.clone();
         let ds_base_port = config.ds_base_port;
         let hot_servers_min = config.hot_servers_min;
         let scaler_interval = config.scaler_interval_seconds;
-        tokio::spawn(async move {
-            tracing::info!("Starting scaler task");
-            services::scaler::start_scaler(
-                scaler_redis,
-                hot_servers_min,
-                ds_binary_path,
-                ds_base_port,
-                scaler_interval,
-            )
-            .await;
-            tracing::error!("Scaler task stopped unexpectedly");
-        });
+        match docker_ops::connect() {
+            Ok(docker) => {
+                tokio::spawn(async move {
+                    tracing::info!("Starting scaler task");
+                    services::scaler::start_scaler(
+                        docker,
+                        scaler_redis,
+                        hot_servers_min,
+                        ds_base_port,
+                        scaler_interval,
+                    )
+                    .await;
+                    tracing::error!("Scaler task stopped unexpectedly");
+                });
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect to Docker daemon — scaler disabled: {e}");
+            }
+        }
     } else {
         tracing::warn!("Background tasks not started: Redis connection required");
     }

@@ -56,7 +56,10 @@ impl ServerConfig {
             .expect("Invalid orchestrator address");
 
         Self {
-            id: Uuid::new_v4().to_string(),
+            // When spawned by the orchestrator DS_ID is injected so the heartbeat
+            // key matches the Redis entry created during container spawn.
+            id: std::env::var("DS_ID")
+                .unwrap_or_else(|_| Uuid::new_v4().to_string()),
             ip: "0.0.0.0".to_string(),
             port,
             zone: std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string()),

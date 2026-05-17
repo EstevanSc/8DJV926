@@ -55,3 +55,4 @@ bytes              = "1"
 futures-lite       = "2"
 thiserror          = "2"
 dotenv             = "0.15"
+bollard            = { version = "0.18", features = ["ssl"] }

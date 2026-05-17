@@ -51,6 +51,7 @@ services:
   # ── Orchestrator ──────────────────────────────────────────────────────────
   # HTTP API on :8081  — server-fleet management.
   # UDP heartbeat listener on :7000  — receives heartbeats from game servers.
+  # Docker socket mounted so the scaler can spawn/stop game-server containers.
   orchestrator:
     build:
       context: .
@@ -61,6 +62,8 @@ services:
     ports:
       - "8081:8081"
       - "7000:7000/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       PORT: "8081"
       ORCH_PORT: "7000"
