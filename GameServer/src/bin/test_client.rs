@@ -1,8 +1,8 @@
-﻿use std::thread;
-use std::time::Duration;
-use game_sockets::{GameNetworkEvent, GamePeer, GameStream};
 use game_sockets::protocols::QuicBackend;
+use game_sockets::{GameNetworkEvent, GamePeer, GameStream};
 use serde::{Deserialize, Serialize};
+use std::thread;
+use std::time::Duration;
 use uuid::Uuid;
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -26,7 +26,10 @@ fn main() {
     // 2. Establish a connection to the Bevy Dedicated Server
     match client.connect(server_ip, server_port) {
         Ok(conn) => {
-            println!("QUIC connection handshake initiated with {}:{}", server_ip, server_port);
+            println!(
+                "QUIC connection handshake initiated with {}:{}",
+                server_ip, server_port
+            );
             conn
         }
         Err(e) => {
@@ -43,7 +46,10 @@ fn main() {
             Ok(Some(event)) => {
                 match event {
                     GameNetworkEvent::Connected(conn) => {
-                        println!("Successfully connected! Connection ID: {:?}", conn.connection_id);
+                        println!(
+                            "Successfully connected! Connection ID: {:?}",
+                            conn.connection_id
+                        );
 
                         // 4. Send the GameMessage::Join packet once connected
                         let join_msg = GameMessage::Join {
@@ -51,20 +57,23 @@ fn main() {
                         };
 
                         if let Ok(serialized) = wincode::serialize(&join_msg) {
-                            let stream = GameStream::from(0);                            if let Err(e) = client.send(&conn, &stream, serialized.into()) {
+                            let stream = GameStream::from(0);
+                            if let Err(e) = client.send(&conn, &stream, serialized.into()) {
                                 eprintln!("Failed to send JOIN message: {:?}", e);
                             } else {
                                 println!("Sent JOIN message for user 'Alice_Tester'");
                                 has_joined = true;
                             }
-                        }
-
-                        else {
+                        } else {
                             eprintln!("Failed to serialize game message");
                         }
                     }
 
-                    GameNetworkEvent::Message { data, connection: _, stream: _ } => {
+                    GameNetworkEvent::Message {
+                        data,
+                        connection: _,
+                        stream: _,
+                    } => {
                         // 5. Catch and deserialize the incoming welcome message from the server
                         match wincode::deserialize::<GameMessage>(&data) {
                             Ok(GameMessage::Welcome { player_id }) => {
@@ -76,7 +85,9 @@ fn main() {
 
                                 break;
                             }
-                            Ok(other) => println!("Received unexpected message variant: {:?}", other),
+                            Ok(other) => {
+                                println!("Received unexpected message variant: {:?}", other)
+                            }
                             Err(e) => eprintln!("Failed to parse incoming packet: {:?}", e),
                         }
                     }

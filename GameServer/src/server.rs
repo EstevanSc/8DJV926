@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameNetworkEvent, GamePeer};
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -36,7 +36,10 @@ pub struct PlayerInfo {
 #[derive(Resource)]
 pub struct ServerConfig {
     pub id: String,
+    /// Bind address (always 0.0.0.0 inside the container).
     pub ip: String,
+    /// Routable address advertised to clients via heartbeat.
+    pub public_ip: String,
     pub port: u16,
     pub zone: String,
     pub max_players: usize,
@@ -52,12 +55,19 @@ impl ServerConfig {
         let orchestrator_host =
             std::env::var("ORCH_HOST").unwrap_or_else(|_| "127.0.0.1:7000".to_string());
         let orchestrator_address: SocketAddr = orchestrator_host
-            .parse()
-            .expect("Invalid orchestrator address");
+            .to_socket_addrs()
+            .expect("Invalid orchestrator address")
+            .next()
+            .expect("No addresses resolved for ORCH_HOST");
 
         Self {
-            id: Uuid::new_v4().to_string(),
+            // When spawned by the orchestrator DS_ID is injected so the heartbeat
+            // key matches the Redis entry created during container spawn.
+            id: std::env::var("DS_ID").unwrap_or_else(|_| Uuid::new_v4().to_string()),
             ip: "0.0.0.0".to_string(),
+            // DS_PUBLIC_IP is the address clients use to reach this server.
+            // Set to "localhost" for local Docker dev (port-mapped to host).
+            public_ip: std::env::var("DS_PUBLIC_IP").unwrap_or_else(|_| "localhost".to_string()),
             port,
             zone: std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string()),
             max_players: std::env::var("MAX_PLAYERS")
@@ -122,8 +132,7 @@ fn receive_packets(mut server: ResMut<NetworkPeer>, mut player_registry: ResMut<
                                 .peer
                                 .send(&connection, &stream, serialized.into())
                                 .unwrap();
-                        }
-                        else {
+                        } else {
                             eprintln!("Failed to serialize game message");
                         }
                     }
@@ -153,8 +162,8 @@ fn send_heartbeat(
 
         let heartbeat_data = Heartbeat {
             id: config.id.clone(),
-            ip: config.ip.clone(),
-            port: config.port.clone(),
+            ip: config.public_ip.clone(),
+            port: config.port,
             zone: config.zone.clone(),
             player_count,
             max_players: config.max_players.clone(),
@@ -162,7 +171,7 @@ fn send_heartbeat(
 
         // Send heartbeat JSON packet to the orchestrator
         if let Ok(json_payload) = serde_json::to_string(&heartbeat_data) {
-            if let Ok(udp_socket) = UdpSocket::bind("127.0.0.1:0") {
+            if let Ok(udp_socket) = UdpSocket::bind("0.0.0.0:0") {
                 let bytes = json_payload.as_bytes();
                 if let Err(e) = udp_socket.send_to(bytes, config.orchestrator_address) {
                     eprintln!("Failed to send heartbeat packet: {:?}", e);

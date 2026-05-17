@@ -1,69 +1,107 @@
-//! Server scaling loop that maintains minimum available servers.
+//! Server scaling loop that maintains a minimum fleet of empty game servers.
+//!
+//! Each tick the scaler:
+//!   - counts servers with `status=empty` in Redis
+//!   - **spawns** Docker containers if the count is below `hot_servers_min`
+//!   - **stops** excess containers if the count is above `hot_servers_min`
 
-use crate::infrastructure::RedisClient;
-use std::process::Command;
-use tokio::time::{interval, Duration};
+use bollard::Docker;
+use common::RedisClient;
+use tokio::time::{Duration, interval};
 
-/// Starts the scaler loop
-/// Scans available servers and spawns new dedicated server processes if needed.
+use crate::docker_ops;
+
+/// Main scaler loop. Runs forever; call from a `tokio::spawn`.
 pub async fn start_scaler(
+    docker: Docker,
     redis: RedisClient,
     hot_servers_min: usize,
-    ds_binary_path: String,
-    ds_base_port: u16,
+    base_port: u16,
     scaler_interval_seconds: u64,
 ) {
-    let mut interval = interval(Duration::from_secs(scaler_interval_seconds));
+    let mut ticker = interval(Duration::from_secs(scaler_interval_seconds));
 
     loop {
-        interval.tick().await;
+        ticker.tick().await;
 
-        match scan_empty_servers(&redis).await {
-            Ok(empty_count) => {
-                tracing::debug!("Scaler: {} empty servers", empty_count);
+        match list_empty_servers(&redis).await {
+            Ok(empty_servers) => {
+                let empty_count = empty_servers.len();
+                tracing::debug!("Scaler: {empty_count} empty server(s) (min={hot_servers_min})");
 
                 if empty_count < hot_servers_min {
+                    // ── scale up ─────────────────────────────────────────────
                     let needed = hot_servers_min - empty_count;
-                    tracing::info!("Scaler: Need to spawn {} servers", needed);
+                    tracing::info!("Scaler: spawning {needed} server(s)");
 
                     for _ in 0..needed {
-                        match find_available_port(&redis, ds_base_port).await {
+                        match find_available_port(&redis, base_port).await {
                             Ok(port) => {
-                                spawn_dedicated_server(&ds_binary_path, port);
+                                if let Err(e) =
+                                    docker_ops::spawn_server(&docker, &redis, port).await
+                                {
+                                    tracing::error!("Scaler: failed to spawn server: {e}");
+                                }
                             }
                             Err(e) => {
-                                tracing::error!("Scaler: Failed to find available port: {}", e);
+                                tracing::error!("Scaler: no free port available: {e}");
                             }
+                        }
+                    }
+                } else if empty_count > hot_servers_min {
+                    // ── scale down ────────────────────────────────────────────
+                    let excess = empty_count - hot_servers_min;
+                    tracing::info!("Scaler: removing {excess} excess empty server(s)");
+
+                    for (redis_key, container_id) in empty_servers.into_iter().take(excess) {
+                        // Stop the Docker container if we know its ID.
+                        if let Some(cid) = container_id {
+                            if let Err(e) = docker_ops::stop_container(&docker, &cid).await {
+                                tracing::error!(
+                                    "Scaler: failed to stop container {cid}: {e} \
+                                     — leaving Redis entry intact"
+                                );
+                                continue; // don't remove the Redis key if the container is still up
+                            }
+                        }
+
+                        // Remove the Redis entry.
+                        if let Err(e) = redis.del(&redis_key).await {
+                            tracing::error!("Scaler: failed to remove Redis key {redis_key}: {e}");
+                        } else {
+                            tracing::info!("Scaler: removed server {redis_key}");
                         }
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Scaler: Failed to scan servers: {}", e);
+                tracing::error!("Scaler: failed to query Redis: {e}");
             }
         }
     }
 }
 
-/// Scans Redis for all servers matching "server:*" and counts available ones.
-async fn scan_empty_servers(redis: &RedisClient) -> Result<usize, redis::RedisError> {
-    let keys = redis.scan("server:*").await?;
+// ── helpers ──────────────────────────────────────────────────────────────────
 
-    let mut empty_count = 0;
+/// Returns `(redis_key, container_id)` for every server with `status=empty`.
+async fn list_empty_servers(redis: &RedisClient) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let keys = redis.scan("server:*").await?;
+    let mut result = Vec::new();
 
     for key in keys {
         if let Ok(Some(status)) = redis.hget(&key, "status").await {
             if status == "empty" {
-                empty_count += 1;
+                let container_id = redis.hget(&key, "container_id").await.unwrap_or(None);
+                result.push((key, container_id));
             }
         }
     }
 
-    Ok(empty_count)
+    Ok(result)
 }
 
-/// Scans Redis for all occupied ports from existing servers.
-async fn get_occupied_ports(redis: &RedisClient) -> Result<Vec<u16>, redis::RedisError> {
+/// Returns ports already registered in Redis under any `server:*` key.
+async fn get_occupied_ports(redis: &RedisClient) -> anyhow::Result<Vec<u16>> {
     let keys = redis.scan("server:*").await?;
     let mut ports = Vec::new();
 
@@ -75,46 +113,22 @@ async fn get_occupied_ports(redis: &RedisClient) -> Result<Vec<u16>, redis::Redi
         }
     }
 
-    ports.sort();
+    ports.sort_unstable();
     Ok(ports)
 }
 
-/// Finds the first available port starting from base_port, avoiding collisions.
-async fn find_available_port(
-    redis: &RedisClient,
-    base_port: u16,
-) -> Result<u16, redis::RedisError> {
+/// Finds the lowest port ≥ `base_port` that is not already in use.
+async fn find_available_port(redis: &RedisClient, base_port: u16) -> anyhow::Result<u16> {
     let occupied = get_occupied_ports(redis).await?;
     let mut candidate = base_port;
 
     while occupied.contains(&candidate) {
         candidate = candidate.saturating_add(1);
-        if candidate > 65535u16.saturating_sub(1000) {
+        if candidate == u16::MAX {
             candidate = base_port;
             break;
         }
     }
 
     Ok(candidate)
-}
-
-/// Spawns a new dedicated server process using the provided binary path and port.
-fn spawn_dedicated_server(binary_path: &str, port: u16) {
-    match Command::new(binary_path).arg(port.to_string()).spawn() {
-        Ok(child) => {
-            tracing::info!(
-                "Spawned dedicated server on port {} (PID: {:?})",
-                port,
-                child.id()
-            );
-        }
-        Err(e) => {
-            tracing::error!(
-                "Failed to spawn dedicated server at {} on port {}: {}",
-                binary_path,
-                port,
-                e
-            );
-        }
-    }
 }

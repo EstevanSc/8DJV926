@@ -11,8 +11,7 @@ pub struct LoginPlugin;
 
 impl Plugin for LoginPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .init_resource::<FormState>()
+        app.init_resource::<FormState>()
             .init_resource::<PendingSubmit>()
             .add_systems(OnEnter(GameState::Login), setup_login_ui)
             .add_systems(OnExit(GameState::Login), (teardown_login_ui, reset_form))
@@ -141,7 +140,10 @@ fn setup_login_ui(mut commands: Commands) {
             // Title
             p.spawn((
                 Text::new("Extraction MMO"),
-                TextFont { font_size: 40.0, ..default() },
+                TextFont {
+                    font_size: 40.0,
+                    ..default()
+                },
             ));
 
             // Username row
@@ -152,7 +154,13 @@ fn setup_login_ui(mut commands: Commands) {
                 ..default()
             })
             .with_children(|row| {
-                row.spawn((Text::new("Username:"), TextFont { font_size: 22.0, ..default() }));
+                row.spawn((
+                    Text::new("Username:"),
+                    TextFont {
+                        font_size: 22.0,
+                        ..default()
+                    },
+                ));
                 row.spawn((
                     Button,
                     Node {
@@ -168,7 +176,10 @@ fn setup_login_ui(mut commands: Commands) {
                 .with_children(|f| {
                     f.spawn((
                         Text::new("|"),
-                        TextFont { font_size: 20.0, ..default() },
+                        TextFont {
+                            font_size: 20.0,
+                            ..default()
+                        },
                         UsernameDisplay,
                     ));
                 });
@@ -182,7 +193,13 @@ fn setup_login_ui(mut commands: Commands) {
                 ..default()
             })
             .with_children(|row| {
-                row.spawn((Text::new("Password:"), TextFont { font_size: 22.0, ..default() }));
+                row.spawn((
+                    Text::new("Password:"),
+                    TextFont {
+                        font_size: 22.0,
+                        ..default()
+                    },
+                ));
                 row.spawn((
                     Button,
                     Node {
@@ -198,7 +215,10 @@ fn setup_login_ui(mut commands: Commands) {
                 .with_children(|f| {
                     f.spawn((
                         Text::new("|"),
-                        TextFont { font_size: 20.0, ..default() },
+                        TextFont {
+                            font_size: 20.0,
+                            ..default()
+                        },
                         PasswordDisplay,
                     ));
                 });
@@ -215,13 +235,22 @@ fn setup_login_ui(mut commands: Commands) {
                 JoinButton,
             ))
             .with_children(|btn| {
-                btn.spawn((Text::new("Login"), TextFont { font_size: 24.0, ..default() }));
+                btn.spawn((
+                    Text::new("Login"),
+                    TextFont {
+                        font_size: 24.0,
+                        ..default()
+                    },
+                ));
             });
 
             // Status / hint line
             p.spawn((
                 Text::new("Click a field or Tab to switch focus  •  Enter or Join to login"),
-                TextFont { font_size: 16.0, ..default() },
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.7, 0.7, 0.7)),
                 StatusText,
             ));
@@ -293,11 +322,19 @@ fn handle_keyboard_input(
     mut key_events: MessageReader<KeyboardInput>,
     mut username_display: Query<
         &mut Text,
-        (With<UsernameDisplay>, Without<PasswordDisplay>, Without<StatusText>),
+        (
+            With<UsernameDisplay>,
+            Without<PasswordDisplay>,
+            Without<StatusText>,
+        ),
     >,
     mut password_display: Query<
         &mut Text,
-        (With<PasswordDisplay>, Without<UsernameDisplay>, Without<StatusText>),
+        (
+            With<PasswordDisplay>,
+            Without<UsernameDisplay>,
+            Without<StatusText>,
+        ),
     >,
 ) {
     let mut dirty = false;
@@ -320,8 +357,12 @@ fn handle_keyboard_input(
             }
             Key::Backspace => {
                 match form.focused {
-                    FocusedField::Username => { form.username.pop(); }
-                    FocusedField::Password => { form.password.pop(); }
+                    FocusedField::Username => {
+                        form.username.pop();
+                    }
+                    FocusedField::Password => {
+                        form.password.pop();
+                    }
                 }
                 dirty = true;
             }
@@ -428,12 +469,15 @@ fn handle_submit(
                 .map_err(|e| e.to_string())?;
 
             if resp.status().is_success() {
-                resp.json::<LoginResponse>().await
+                resp.json::<LoginResponse>()
+                    .await
                     .map(|r| (username_clone, r))
                     .map_err(|e| e.to_string())
             } else {
                 let status = resp.status();
-                let msg = resp.json::<ErrorResponse>().await
+                let msg = resp
+                    .json::<ErrorResponse>()
+                    .await
                     .map(|e| e.error)
                     .unwrap_or_else(|_| format!("Server error {}", status));
                 Err(msg)
@@ -464,15 +508,13 @@ fn poll_join_task(
                         });
                         text.0 = format!(
                             "Login successful!\nPlayer ID: {}\nServer: {}:{} ({})\nConnecting in 2s...",
-                            resp.player_id,
-                            resp.server.ip,
-                            resp.server.port,
-                            resp.server.zone,
+                            resp.player_id, resp.server.ip, resp.server.port, resp.server.zone,
                         );
                         color.0 = Color::srgb(0.2, 0.9, 0.2);
-                        commands.insert_resource(TransitionTimer(
-                            Timer::from_seconds(2.0, TimerMode::Once),
-                        ));
+                        commands.insert_resource(TransitionTimer(Timer::from_seconds(
+                            2.0,
+                            TimerMode::Once,
+                        )));
                     }
                     Err(e) => {
                         text.0 = format!("Join failed: {e}");

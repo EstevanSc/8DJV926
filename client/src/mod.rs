@@ -6,12 +6,10 @@ pub mod net;
 use bevy::prelude::*;
 use rustls;
 
-
-use input::ClientInputPlugin;
-use login::LoginPlugin;
-use net::ClientNetPlugin;
-use interpolation::InterpolationPlugin;
-
+use self::input::ClientInputPlugin;
+use self::interpolation::InterpolationPlugin;
+use self::login::LoginPlugin;
+use self::net::ClientNetPlugin;
 
 /// The game session received after a successful `/login`.
 #[derive(Resource, Clone)]

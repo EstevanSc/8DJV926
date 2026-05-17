@@ -1,7 +1,7 @@
 //! UDP heartbeat listener for server status updates.
 
-use crate::infrastructure::RedisClient;
-use crate::models::Heartbeat;
+use common::Heartbeat;
+use common::RedisClient;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;

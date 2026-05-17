@@ -9,6 +9,7 @@ use quinn::congestion::BbrConfig;
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use rustls::client::{ServerCertVerified, ServerCertVerifier};
 use std::collections::HashMap;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -163,16 +164,77 @@ impl GameSocketBackend for QuicBackend {
                             }
                             BackendCommand::Connect { addr, port } => {
                                 let client_config = make_client_config();
-                                let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+
+                                // Resolve the hostname first so we can bind the endpoint
+                                // to the correct address family (IPv4 vs IPv6).
+                                let remote = match format!("{}:{}", addr, port).to_socket_addrs() {
+                                    Ok(it) => {
+                                        // Prefer IPv4 — try IPv4 first, fall back to whatever is available.
+                                        let addrs: Vec<_> = it.collect();
+                                        let chosen = addrs.iter().find(|a| a.is_ipv4()).copied()
+                                            .or_else(|| addrs.into_iter().next());
+                                        match chosen {
+                                            Some(a) => a,
+                                            None => {
+                                                error!("Could not resolve address {}:{}", addr, port);
+                                                let _ = event_tx.send(GameNetworkEvent::Error {
+                                                    connection: Uuid::nil().into(),
+                                                    inner: GameSocketError::ConnectionError,
+                                                });
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("DNS resolution failed for {}:{} — {e}", addr, port);
+                                        let _ = event_tx.send(GameNetworkEvent::Error {
+                                            connection: Uuid::nil().into(),
+                                            inner: GameSocketError::ConnectionError,
+                                        });
+                                        continue;
+                                    }
+                                };
+
+                                // Bind the local endpoint to the same address family as the remote.
+                                let bind_addr = if remote.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+                                let mut endpoint = match Endpoint::client(bind_addr.parse().unwrap()) {
+                                    Ok(ep) => ep,
+                                    Err(e) => {
+                                        error!("Failed to create QUIC endpoint: {e}");
+                                        let _ = event_tx.send(GameNetworkEvent::Error {
+                                            connection: Uuid::nil().into(),
+                                            inner: GameSocketError::ConnectionError,
+                                        });
+                                        continue;
+                                    }
+                                };
                                 endpoint.set_default_client_config(client_config);
 
-                                let remote = format!("{}:{}", addr, port).parse().unwrap();
-                                let connection = endpoint.connect(remote, "localhost").unwrap().await.unwrap();
-                                let uuid = Uuid::new_v4();
+                                let connection = match endpoint.connect(remote, "localhost") {
+                                    Ok(connecting) => match connecting.await {
+                                        Ok(conn) => conn,
+                                        Err(e) => {
+                                            error!("QUIC connection to {}:{} failed: {e}", addr, port);
+                                            let _ = event_tx.send(GameNetworkEvent::Error {
+                                                connection: Uuid::nil().into(),
+                                                inner: GameSocketError::ConnectionError,
+                                            });
+                                            continue;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        error!("QUIC connect error: {e}");
+                                        let _ = event_tx.send(GameNetworkEvent::Error {
+                                            connection: Uuid::nil().into(),
+                                            inner: GameSocketError::ConnectionError,
+                                        });
+                                        continue;
+                                    }
+                                };
 
+                                let uuid = Uuid::new_v4();
                                 self.connections.insert(uuid, connection.clone());
                                 let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
-
                                 QuicBackend::spawn_reader(connection, uuid, event_tx.clone(), stream_reg_tx.clone());
                             }
                             BackendCommand::Send { connection, stream, data } => {

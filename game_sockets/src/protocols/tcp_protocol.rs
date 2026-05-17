@@ -42,7 +42,7 @@ impl GameSocketBackend for TcpBackend {
                                         if let Err(e) = socket.set_nodelay(true) {
                                             tracing::warn!("Failed to set TCP_NODELAY on accepted socket: {}", e);
                                         }
-                                        
+
                                         let uuid = Uuid::new_v4();
                                         // Notify Game Thread
                                         let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
@@ -61,7 +61,7 @@ impl GameSocketBackend for TcpBackend {
                                     if let Err(e) = socket.set_nodelay(true) {
                                         tracing::warn!("Failed to set TCP_NODELAY on connected socket: {}", e);
                                     }
-                                    
+
                                     let uuid = Uuid::new_v4();
                                     let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
 

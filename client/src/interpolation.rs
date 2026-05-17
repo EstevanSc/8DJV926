@@ -9,14 +9,10 @@ pub struct InterpolationPlugin;
 
 impl Plugin for InterpolationPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
+        app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (
-                    spawn_remote_players,
-                    interpolate_remote_players,
-                )
+                (spawn_remote_players, interpolate_remote_players)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -131,7 +127,9 @@ fn spawn_debug_hud(
     session: Res<GameSession>,
     my_id: Option<Res<MyEntityId>>,
 ) {
-    let entity_id = my_id.map(|r| r.0.to_string()).unwrap_or_else(|| "—".to_string());
+    let entity_id = my_id
+        .map(|r| r.0.to_string())
+        .unwrap_or_else(|| "—".to_string());
 
     let info = format!(
         "Player    : {}\nPlayer ID : {}\nEntity ID : {}\nServer    : {}:{}\nZone      : {}",
@@ -158,7 +156,10 @@ fn spawn_debug_hud(
         .with_children(|p| {
             p.spawn((
                 Text::new(info),
-                TextFont { font_size: 14.0, ..default() },
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.9, 0.9, 0.9)),
             ));
         });
