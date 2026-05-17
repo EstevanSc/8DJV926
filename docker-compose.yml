@@ -1,0 +1,84 @@
+# docker-compose.yml
+# Unified stack: Redis · Gatekeeper · Orchestrator · Dedicated Game Server
+#
+# Start everything:  docker compose up -d
+# Client runs locally:  cargo run -p client
+
+networks:
+  game-net:
+    driver: bridge
+    name: game-net
+
+volumes:
+  redis-data:
+
+services:
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    networks:
+      - game-net
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Gatekeeper ────────────────────────────────────────────────────────────
+  # POST /login on :3000  — client sends credentials, receives server coordinates.
+  gatekeeper:
+    build:
+      context: .
+      dockerfile: gatekeeper/Dockerfile
+    image: gatekeeper:latest
+    networks:
+      - game-net
+    ports:
+      - "3000:3000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      RUST_LOG: info
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Orchestrator ──────────────────────────────────────────────────────────
+  # HTTP API on :8081  — server-fleet management.
+  # UDP heartbeat listener on :7000  — receives heartbeats from game servers.
+  # Docker socket mounted so the scaler can spawn/stop game-server containers.
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Orchestrator/Dockerfile
+    image: orchestrator:latest
+    networks:
+      - game-net
+    ports:
+      - "8081:8081"
+      - "7000:7000/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      PORT: "8081"
+      ORCH_PORT: "7000"
+      REDIS_URL: redis://redis:6379
+      DS_BINARY_PATH: /app/mock_server.sh
+      DS_BASE_PORT: "7777"
+      HOT_SERVERS_MIN: "1"
+      HEARTBEAT_TTL_SECONDS: "30"
+      SCALER_INTERVAL_SECONDS: "5"
+      RUST_LOG: info
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+

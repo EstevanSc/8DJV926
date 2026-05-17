@@ -1,0 +1,13 @@
+[package]
+name = "GameServer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+game_sockets = { workspace = true }
+# Only enable minimal features for bevy, to disable rendering
+bevy       = { workspace = true, default-features = false }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+wincode    = { workspace = true }
+uuid       = { workspace = true }

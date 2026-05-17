@@ -1,0 +1,19 @@
+[package]
+name = "game_sockets"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio              = { workspace = true }
+tokio-util         = { workspace = true }
+futures            = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror          = { workspace = true }
+uuid               = { workspace = true }
+bytes              = { workspace = true }
+# Pinned: quic_protocol.rs uses the quinn 0.10 / rustls 0.21 API (Certificate, PrivateKey,
+# ServerCertVerifier). Upgrading requires rewriting the TLS/QUIC setup code.
+quinn  = "0.10"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+rcgen  = "0.11"
