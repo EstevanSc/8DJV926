@@ -81,4 +81,11 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-
+  game-server:
+    build:
+      context: .
+      dockerfile: GameServer/Dockerfile
+    image: game-server:latest
+    networks:
+      - game-net
+    command: /bin/bash -c exit

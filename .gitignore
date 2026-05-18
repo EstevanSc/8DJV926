@@ -21,7 +21,7 @@ target
 #.idea/
 
 # Environment files
-.env
+# .env      # (not ignored for the sake of this lab's simplicity)
 .env.local
 *.swp
 *.swo
