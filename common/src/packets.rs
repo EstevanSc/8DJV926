@@ -9,9 +9,10 @@ use wincode::{SchemaRead, SchemaWrite};
 /// Position and velocity snapshot for a single entity.
 /// Sent unreliably every tick; dropped packets are simply skipped.
 /// Entity IDs are u32 — never UUIDs — to keep datagrams small.
-#[derive(Debug, Clone, Copy, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct PositionSnapshot {
     pub entity_id: u32,
+    pub display_name: String,
     pub x: f32,
     pub y: f32,
     pub vx: f32,

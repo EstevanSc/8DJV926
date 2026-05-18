@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bytes::Bytes;
 
-use common::packets::{PositionBatch, PositionSnapshot};
+use common::packets::PositionBatch;
 
-use super::net::{ConnectedPlayers, SimCommand, SimCommandReceiver};
+use super::interest::interest_query;
+use super::net::{ConnectedPlayers, SimCommand, SimCommandReceiver, entity_id_from_uuid};
 use super::server::NetworkPeer;
 use super::char_controller::*;
 
@@ -67,7 +68,6 @@ pub struct PlayerInputBuffer(pub HashMap<u32, Vec2>);
 #[derive(Component)]
 pub struct Player {
     pub entity_id: u32,
-    #[allow(dead_code)]
     pub display_name: String,
 }
 
@@ -146,7 +146,8 @@ fn despawn_players(
     }
 }
 
-/// Every tick: collect positions of all players and broadcast to connected clients.
+/// Every tick: collect positions of all players and broadcast interest-filtered
+/// snapshots to each connected client individually.
 fn broadcast_position_snapshots(
     mut tick: ResMut<TickCounter>,
     query: Query<(&Player, &Transform)>,
@@ -155,32 +156,38 @@ fn broadcast_position_snapshots(
 ) {
     tick.0 = tick.0.wrapping_add(1);
 
-    let snapshots: Vec<PositionSnapshot> = query
+    // Build the full list of (entity_id, display_name, world_pos) for this tick.
+    let all_players: Vec<(u32, String, Vec2)> = query
         .iter()
-        .map(|(player, transform)| PositionSnapshot {
-            entity_id: player.entity_id,
-            x: transform.translation.x,
-            y: transform.translation.y,
-            vx: 0.0,
-            vy: 0.0,
+        .map(|(player, transform)| {
+            (player.entity_id, player.display_name.clone(), transform.translation.truncate())
         })
         .collect();
 
-    if snapshots.is_empty() {
+    if all_players.is_empty() {
         return;
     }
 
-    let batch = PositionBatch { tick: tick.0, snapshots };
-    let data = match wincode::serialize(&batch) {
-        Ok(bytes) => Bytes::from(bytes),
-        Err(e) => { tracing::warn!("Failed to serialize PositionBatch: {e}"); return; }
-    };
-
     let stream = game_sockets::GameStream::from(0);
     let conns = conn_list.0.lock().unwrap();
-    for (_, conn) in conns.iter() {
-        if let Err(e) = server.peer.send(conn, &stream, data.clone()) {
-            tracing::warn!("send error: {e}");
+    for (conn_uuid, conn) in conns.iter() {
+        // Derive this connection's entity_id and find their world position.
+        let observer_id = entity_id_from_uuid(*conn_uuid);
+        let observer_pos = all_players
+            .iter()
+            .find(|(id, _, _)| *id == observer_id)
+            .map(|(_, _, pos)| *pos)
+            .unwrap_or(Vec2::ZERO);
+
+        let snapshots = interest_query(observer_pos, &all_players);
+        let batch = PositionBatch { tick: tick.0, snapshots };
+        match wincode::serialize(&batch) {
+            Ok(bytes) => {
+                if let Err(e) = server.peer.send(conn, &stream, Bytes::from(bytes)) {
+                    tracing::warn!("send error: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize PositionBatch: {e}"),
         }
     }
 }
