@@ -38,8 +38,6 @@ fn main() {
         }
     };
 
-    let mut has_joined = false;
-
     // 3. Start the polling network event loop
     loop {
         match client.poll() {
@@ -62,7 +60,6 @@ fn main() {
                                 eprintln!("Failed to send JOIN message: {:?}", e);
                             } else {
                                 println!("Sent JOIN message for user 'Alice_Tester'");
-                                has_joined = true;
                             }
                         } else {
                             eprintln!("Failed to serialize game message");

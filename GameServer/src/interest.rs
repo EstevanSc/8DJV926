@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use bevy::prelude::*;
 
 use common::constants::INTEREST_RADIUS_TILES;

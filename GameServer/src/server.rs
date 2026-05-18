@@ -30,6 +30,7 @@ pub struct PlayerRegistry {
     pub registry: HashMap<Uuid, PlayerInfo>,
 }
 
+#[allow(dead_code)]
 pub struct PlayerInfo {
     pub id: Uuid,
     pub entity_id: u32,

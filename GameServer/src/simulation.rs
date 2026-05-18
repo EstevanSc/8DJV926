@@ -67,6 +67,7 @@ pub struct PlayerInputBuffer(pub HashMap<u32, Vec2>);
 #[derive(Component)]
 pub struct Player {
     pub entity_id: u32,
+    #[allow(dead_code)]
     pub display_name: String,
 }
 
