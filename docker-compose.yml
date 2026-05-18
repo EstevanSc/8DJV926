@@ -86,6 +86,5 @@ services:
       context: .
       dockerfile: GameServer/Dockerfile
     image: game-server:latest
-    networks:
-      - game-net
-    command: /bin/bash -c exit
+    deploy:
+      replicas: 0
