@@ -193,7 +193,7 @@ fn receive_packets(
 
     while let Ok(Some(event)) = peer.poll() {
         if let GameNetworkEvent::Message { data, .. } = event {
-            if let Ok(batch) = bitcode::decode::<PositionBatch>(&data) {
+            if let Ok(batch) = wincode::deserialize::<PositionBatch>(&data) {
                 batch_writer.write(PositionBatchReceived(batch));
             }
         }
