@@ -12,13 +12,21 @@ use common::{RedisClient, ServerInfo, redis_keys};
 // Server discovery
 // ---------------------------------------------------------------------------
 
-/// Return the first server with a free slot (`status == "empty"` or
-/// `"available"`) from Redis, or `None` if no server is ready.
+/// Return the best server with a free slot from Redis, or `None` if no server
+/// is ready.
+///
+/// Selection priority:
+/// 1. `"available"` servers (1+ players, not yet full) — sorted by
+///    `player_count` descending so existing sessions are filled first.
+/// 2. `"empty"` servers (0 players, hot-standby) — only used when no
+///    `"available"` server exists.
 ///
 /// Uses `SCAN server:*` to match entries written by the Orchestrator, which is
 /// consistent with how the scaler enumerates the fleet.
 pub async fn find_available_server(redis: &RedisClient) -> anyhow::Result<Option<ServerInfo>> {
     let keys = redis.scan("server:*").await.context("SCAN server:*")?;
+
+    let mut candidates: Vec<ServerInfo> = Vec::new();
 
     for key in keys {
         let status = match redis.hget(&key, "status").await.context("HGET status")? {
@@ -51,7 +59,7 @@ pub async fn find_available_server(redis: &RedisClient) -> anyhow::Result<Option
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
-        return Ok(Some(ServerInfo {
+        candidates.push(ServerInfo {
             id,
             ip,
             port,
@@ -59,10 +67,22 @@ pub async fn find_available_server(redis: &RedisClient) -> anyhow::Result<Option
             status,
             player_count,
             max_players,
-        }));
+        });
     }
 
-    Ok(None)
+    // Sort: "available" (status != "empty") before "empty", then by
+    // player_count descending so the fullest available server is filled first.
+    candidates.sort_by(|a, b| {
+        let a_empty = a.status == "empty";
+        let b_empty = b.status == "empty";
+        match (a_empty, b_empty) {
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            _ => b.player_count.cmp(&a.player_count),
+        }
+    });
+
+    Ok(candidates.into_iter().next())
 }
 
 // ---------------------------------------------------------------------------

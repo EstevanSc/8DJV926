@@ -1,4 +1,6 @@
 use bitcode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 // ---------------------------------------------------------------------------
 // Unreliable datagrams — sent every tick via QUIC unreliable datagrams.
@@ -7,9 +9,10 @@ use bitcode::{Decode, Encode};
 /// Position and velocity snapshot for a single entity.
 /// Sent unreliably every tick; dropped packets are simply skipped.
 /// Entity IDs are u32 — never UUIDs — to keep datagrams small.
-#[derive(Debug, Clone, Copy, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct PositionSnapshot {
     pub entity_id: u32,
+    pub display_name: String,
     pub x: f32,
     pub y: f32,
     pub vx: f32,
@@ -17,7 +20,7 @@ pub struct PositionSnapshot {
 }
 
 /// A batch of position snapshots sent to one client per tick.
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct PositionBatch {
     pub tick: u32,
     pub snapshots: Vec<PositionSnapshot>,
@@ -43,7 +46,7 @@ pub struct AuthAck {
 
 /// Player movement input — sent as unreliable datagram from client to server each frame.
 /// `dx`/`dy` are in the range [-1, 1]; the server normalises and scales by speed.
-#[derive(Debug, Clone, Copy, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct PlayerInput {
     pub dx: f32,
     pub dy: f32,

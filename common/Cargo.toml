@@ -6,5 +6,6 @@ edition = "2024"
 [dependencies]
 serde   = { workspace = true }
 bitcode = { workspace = true }
+wincode = { workspace = true }
 redis   = { workspace = true }
 tokio   = { workspace = true }

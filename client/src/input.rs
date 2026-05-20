@@ -1,5 +1,4 @@
 use bevy::prelude::*;
-use bytes::Bytes;
 
 use common::packets::PlayerInput;
 
@@ -44,9 +43,10 @@ fn send_input(
         return;
     }
 
-    let data = Bytes::from(bitcode::encode(&PlayerInput { dx, dy }));
+    let data = wincode::serialize(&PlayerInput { dx, dy })
+        .expect("failed to serialize PlayerInput");
     let stream = game_sockets::GameStream::from(0);
-    if let Err(e) = peer.send(&server_conn.0, &stream, data) {
+    if let Err(e) = peer.send(&server_conn.0, &stream, data.into()) {
         tracing::warn!("send (input): {e:?}");
     }
 }

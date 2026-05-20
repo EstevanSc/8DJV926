@@ -1,5 +1,7 @@
 use crate::heartbeat::Heartbeat;
 use crate::messages::GameMessage;
+use crate::net::{ConnectedPlayers, SimCommandSender, entity_id_from_uuid};
+use common::packets::PlayerInput;
 use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameNetworkEvent, GamePeer};
@@ -28,8 +30,10 @@ pub struct PlayerRegistry {
     pub registry: HashMap<Uuid, PlayerInfo>,
 }
 
+#[allow(dead_code)]
 pub struct PlayerInfo {
     pub id: Uuid,
+    pub entity_id: u32,
     pub username: String,
 }
 
@@ -104,46 +108,78 @@ fn bind_socket(mut commands: Commands, server_config: Res<ServerConfig>) {
     }
 }
 
-fn receive_packets(mut server: ResMut<NetworkPeer>, mut player_registry: ResMut<PlayerRegistry>) {
+fn receive_packets(
+    mut server: ResMut<NetworkPeer>,
+    mut player_registry: ResMut<PlayerRegistry>,
+    sim_tx: Res<SimCommandSender>,
+    conn_players: ResMut<ConnectedPlayers>,
+) {
     while let Ok(Some(event)) = server.peer.poll() {
         match event {
             GameNetworkEvent::Connected(conn) => {
                 println!("Connected! Client id: {:?}", conn.connection_id);
+                if let Ok(mut map) = conn_players.0.lock() {
+                    map.insert(conn.connection_id, conn);
+                }
             }
             GameNetworkEvent::Message {
                 data,
                 connection,
                 stream,
             } => {
-                let msg: GameMessage = wincode::deserialize(&data).unwrap();
-                match msg {
-                    // JOIN message
-                    GameMessage::Join { username } => {
-                        println!("Joined {}", username);
-                        let id = connection.connection_id;
-                        player_registry
-                            .registry
-                            .insert(id, PlayerInfo { id, username });
+                if let Ok(msg) = wincode::deserialize::<GameMessage>(&data) {
+                    match msg {
+                        // JOIN message
+                        GameMessage::Join { username } => {
+                            println!("Joined {}", username);
+                            let id = connection.connection_id;
+                            let entity_id = entity_id_from_uuid(id);
+                            player_registry.registry.insert(
+                                id,
+                                PlayerInfo { id, entity_id, username: username.clone() },
+                            );
+                            let _ = sim_tx.0.send(crate::net::SimCommand::PlayerJoined {
+                                entity_id,
+                                display_name: username,
+                            });
 
-                        // Send Welcome message to the player
-                        let response = GameMessage::Welcome { player_id: id };
-                        if let Ok(serialized) = wincode::serialize(&response) {
-                            server
-                                .peer
-                                .send(&connection, &stream, serialized.into())
-                                .unwrap();
-                        } else {
-                            eprintln!("Failed to serialize game message");
+                            // Send Welcome message to the player
+                            let response = GameMessage::Welcome { player_id: id };
+                            if let Ok(serialized) = wincode::serialize(&response) {
+                                server
+                                    .peer
+                                    .send(&connection, &stream, serialized.into())
+                                    .unwrap();
+                            } else {
+                                eprintln!("Failed to serialize game message");
+                            }
+                        }
+                        _ => {
+                            println!("Unexpected message {:?}", msg);
                         }
                     }
-                    _ => {
-                        println!("Unexpected message {:?}", msg);
+                } else if let Ok(input) = wincode::deserialize::<PlayerInput>(&data) {
+                    // Unreliable player-input datagram
+                    if let Some(info) = player_registry.registry.get(&connection.connection_id) {
+                        let _ = sim_tx.0.send(crate::net::SimCommand::PlayerInput {
+                            entity_id: info.entity_id,
+                            dx: input.dx,
+                            dy: input.dy,
+                        });
                     }
+                } else {
+                    eprintln!("Unknown message from {:?}", connection.connection_id);
                 }
             }
             GameNetworkEvent::Disconnected(conn) => {
-                // Remove player from registry
-                player_registry.registry.remove(&conn.connection_id);
+                if let Ok(mut map) = conn_players.0.lock() {
+                    map.remove(&conn.connection_id);
+                }
+                if let Some(info) = player_registry.registry.remove(&conn.connection_id) {
+                    let _ = sim_tx.0.send(crate::net::SimCommand::PlayerLeft {
+                        entity_id: info.entity_id,
+                    });
+                }
                 println!("Disconnected! Client id: {:?}", conn.connection_id);
             }
             _ => {}
@@ -191,3 +227,4 @@ fn send_heartbeat(
         }
     }
 }
+
