@@ -11,9 +11,9 @@ use game_sockets::GameConnection;
 // ---------------------------------------------------------------------------
 
 pub enum SimCommand {
-    PlayerJoined { entity_id: u32, display_name: String },
-    PlayerLeft   { entity_id: u32 },
-    PlayerInput  { entity_id: u32, dx: f32, dy: f32 },
+    Joined { entity_id: u32, display_name: String },
+    Left { entity_id: u32 },
+    Input { entity_id: u32, dx: f32, dy: f32 },
 }
 
 // ---------------------------------------------------------------------------

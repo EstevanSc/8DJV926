@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bytes::Bytes;
 
+use crate::authority::components::AuthorityState;
 use common::packets::PositionBatch;
 
 use super::interest::interest_query;
@@ -60,6 +61,16 @@ pub struct TickCounter(pub u32);
 #[derive(Resource, Default)]
 pub struct PlayerInputBuffer(pub HashMap<u32, Vec2>);
 
+type SnapshotQuery<'w, 's> = Query<'w, 's, (&'static Player, &'static AuthorityState, &'static Transform)>;
+type InputQuery<'w, 's> = Query<'w, 's, (
+    &'static Player,
+    &'static AuthorityState,
+    &'static MovementAcceleration,
+    &'static JumpImpulse,
+    &'static mut LinearVelocity,
+    Has<Grounded>,
+)>;
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -113,6 +124,7 @@ fn spawn_players(
                 entity_id: ev.entity_id,
                 display_name: ev.display_name.clone(),
             },
+            AuthorityState::Owned,
             Transform::from_translation(ev.position.extend(0.0)),
             GlobalTransform::default(),
             CollisionEventsEnabled,
@@ -150,7 +162,7 @@ fn despawn_players(
 /// snapshots to each connected client individually.
 fn broadcast_position_snapshots(
     mut tick: ResMut<TickCounter>,
-    query: Query<(&Player, &Transform)>,
+    query: SnapshotQuery<'_, '_>,
     conn_list: Res<ConnectedPlayers>,
     server: Res<NetworkPeer>,
 ) {
@@ -159,7 +171,8 @@ fn broadcast_position_snapshots(
     // Build the full list of (entity_id, display_name, world_pos) for this tick.
     let all_players: Vec<(u32, String, Vec2)> = query
         .iter()
-        .map(|(player, transform)| {
+        .filter(|(_, authority_state, _)| authority_state.is_snapshot_visible())
+        .map(|(player, _, transform)| {
             (player.entity_id, player.display_name.clone(), transform.translation.truncate())
         })
         .collect();
@@ -205,18 +218,18 @@ fn process_net_commands(
     let rx = cmd_rx.0.lock().unwrap();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            SimCommand::PlayerJoined { entity_id, display_name } => {
+            SimCommand::Joined { entity_id, display_name } => {
                 spawn_writer.write(SpawnPlayer {
                     entity_id,
                     display_name,
                     position: Vec2::ZERO,
                 });
             }
-            SimCommand::PlayerLeft { entity_id } => {
+            SimCommand::Left { entity_id } => {
                 despawn_writer.write(DespawnPlayer { entity_id });
                 input_buf.0.remove(&entity_id);
             }
-            SimCommand::PlayerInput { entity_id, dx, dy } => {
+            SimCommand::Input { entity_id, dx, dy } => {
                 input_buf.0.insert(entity_id, Vec2::new(dx, dy));
             }
         }
@@ -226,12 +239,16 @@ fn process_net_commands(
 /// Apply buffered player inputs via the character-controller physics.
 fn apply_player_inputs(
     time: Res<Time>,
-    mut query: Query<(&Player, &MovementAcceleration, &JumpImpulse, &mut LinearVelocity, Has<Grounded>)>,
+    mut query: InputQuery<'_, '_>,
     input_buf: Res<PlayerInputBuffer>,
 ) {
     let delta_time = time.delta_secs_f64().adjust_precision();
 
-    for (player, movement_acceleration, jump_impulse, mut linear_velocity, is_grounded) in &mut query {
+    for (player, authority_state, movement_acceleration, jump_impulse, mut linear_velocity, is_grounded) in &mut query {
+        if !authority_state.allows_local_simulation() {
+            continue;
+        }
+
         if let Some(&dir) = input_buf.0.get(&player.entity_id) {
             if dir.x != 0.0 {
                 linear_velocity.x += dir.x as Scalar * movement_acceleration.0 * delta_time;

@@ -138,7 +138,7 @@ fn receive_packets(
                                 id,
                                 PlayerInfo { id, entity_id, username: username.clone() },
                             );
-                            let _ = sim_tx.0.send(crate::net::SimCommand::PlayerJoined {
+                            let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
                                 entity_id,
                                 display_name: username,
                             });
@@ -161,7 +161,7 @@ fn receive_packets(
                 } else if let Ok(input) = wincode::deserialize::<PlayerInput>(&data) {
                     // Unreliable player-input datagram
                     if let Some(info) = player_registry.registry.get(&connection.connection_id) {
-                        let _ = sim_tx.0.send(crate::net::SimCommand::PlayerInput {
+                        let _ = sim_tx.0.send(crate::net::SimCommand::Input {
                             entity_id: info.entity_id,
                             dx: input.dx,
                             dy: input.dy,
@@ -176,7 +176,7 @@ fn receive_packets(
                     map.remove(&conn.connection_id);
                 }
                 if let Some(info) = player_registry.registry.remove(&conn.connection_id) {
-                    let _ = sim_tx.0.send(crate::net::SimCommand::PlayerLeft {
+                    let _ = sim_tx.0.send(crate::net::SimCommand::Left {
                         entity_id: info.entity_id,
                     });
                 }
@@ -202,27 +202,27 @@ fn send_heartbeat(
             port: config.port,
             zone: config.zone.clone(),
             player_count,
-            max_players: config.max_players.clone(),
+            max_players: config.max_players,
         };
 
         // Send heartbeat JSON packet to the orchestrator
-        if let Ok(json_payload) = serde_json::to_string(&heartbeat_data) {
-            if let Ok(udp_socket) = UdpSocket::bind("0.0.0.0:0") {
-                let bytes = json_payload.as_bytes();
-                if let Err(e) = udp_socket.send_to(bytes, config.orchestrator_address) {
-                    eprintln!("Failed to send heartbeat packet: {:?}", e);
-                } else {
-                    println!(
-                        "Heartbeat sent: {}/{} players. Status: {}",
-                        player_count,
-                        config.max_players,
-                        if player_count >= config.max_players {
-                            "FULL"
-                        } else {
-                            "AVAILABLE"
-                        }
-                    );
-                }
+        if let Ok(json_payload) = serde_json::to_string(&heartbeat_data)
+            && let Ok(udp_socket) = UdpSocket::bind("0.0.0.0:0")
+        {
+            let bytes = json_payload.as_bytes();
+            if let Err(e) = udp_socket.send_to(bytes, config.orchestrator_address) {
+                eprintln!("Failed to send heartbeat packet: {:?}", e);
+            } else {
+                println!(
+                    "Heartbeat sent: {}/{} players. Status: {}",
+                    player_count,
+                    config.max_players,
+                    if player_count >= config.max_players {
+                        "FULL"
+                    } else {
+                        "AVAILABLE"
+                    }
+                );
             }
         }
     }
