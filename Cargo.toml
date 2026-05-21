@@ -45,6 +45,7 @@ redis          = { version = "0.27", features = ["aio", "tokio-comp", "connectio
 
 # bevy
 bevy = { version = "0.18.1", default-features = false }
+avian2d = { git = "https://github.com/avianphysics/avian", branch = "main", default-features = false, features = ["2d", "f32", "parry-f32", "xpbd_joints", "parallel"] }
 
 # utilities
 uuid               = { version = "1", features = ["v4", "serde"] }

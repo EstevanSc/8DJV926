@@ -5,9 +5,13 @@ edition = "2024"
 
 [dependencies]
 game_sockets = { workspace = true }
+common       = { workspace = true }
 # Only enable minimal features for bevy, to disable rendering
 bevy       = { workspace = true, default-features = false }
+avian2d    = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 wincode    = { workspace = true }
 uuid       = { workspace = true }
+bytes      = { workspace = true }
+tracing    = { workspace = true }

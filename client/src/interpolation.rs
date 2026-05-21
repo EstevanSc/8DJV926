@@ -55,6 +55,7 @@ fn spawn_floor(
 
 /// Spawn a circle for each new entity_id seen in position batches.
 /// Own player is rendered green; other players are blue.
+/// A name tag is spawned as a child entity above each circle.
 fn spawn_remote_players(
     mut commands: Commands,
     mut events: MessageReader<PositionBatchReceived>,
@@ -75,6 +76,7 @@ fn spawn_remote_players(
                 } else {
                     Color::srgb(0.2, 0.6, 1.0) // blue = other players
                 };
+                let name = snap.display_name.clone();
                 commands.spawn((
                     RemotePlayer {
                         entity_id: snap.entity_id,
@@ -84,7 +86,14 @@ fn spawn_remote_players(
                     Mesh2d(meshes.add(Circle::new(16.0))),
                     MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                     Transform::from_translation(pos.extend(0.0)),
-                ));
+                )).with_children(|parent| {
+                    parent.spawn((
+                        Text2d::new(name),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::WHITE),
+                        Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
+                    ));
+                });
             }
         }
     }
