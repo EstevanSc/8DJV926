@@ -6,6 +6,9 @@ pub mod handoff;
 pub mod messages;
 pub mod systems;
 
+#[cfg(test)]
+pub mod tests;
+
 use bevy::prelude::*;
 use tracing::info;
 
