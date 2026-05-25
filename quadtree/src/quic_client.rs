@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use common::ShardData;
 use rustls::client::{ServerCertVerified, ServerCertVerifier};
 use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -35,7 +36,12 @@ fn make_client_config() -> quinn::ClientConfig {
         .with_custom_certificate_verifier(Arc::new(SkipVerification))
         .with_no_client_auth();
 
-    quinn::ClientConfig::new(Arc::new(crypto))
+    let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
+    let mut transport_config = quinn::TransportConfig::default();
+    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+    client_config.transport_config(Arc::new(transport_config));
+
+    client_config
 }
 
 /// Quadtree QUIC client that maintains a connection to the orchestrator.
@@ -45,12 +51,27 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
+    fn resolve_orchestrator_addr(orchestrator_host: &str, orchestrator_port: u16) -> Result<SocketAddr> {
+        // Accept a full socket address directly (e.g., "127.0.0.1:5000").
+        if let Ok(addr) = orchestrator_host.parse::<SocketAddr>() {
+            return Ok(addr);
+        }
+
+        // Resolve hostname plus port using system DNS (works for Docker service names).
+        let host_and_port = format!("{}:{}", orchestrator_host, orchestrator_port);
+
+        host_and_port
+            .to_socket_addrs()
+            .context("Failed to resolve orchestrator host")?
+            .next()
+            .context("No orchestrator addresses resolved")
+    }
+
     /// Create a new QUIC client and connect to the orchestrator.
     pub async fn new(orchestrator_host: &str, orchestrator_port: u16) -> Result<Self> {
-        // Resolve orchestrator address
-        let orchestrator_addr = format!("{}:{}", orchestrator_host, orchestrator_port)
-            .parse::<SocketAddr>()
-            .context("Failed to parse orchestrator address")?;
+        // Resolve orchestrator address from hostname or socket address.
+        let orchestrator_addr = Self::resolve_orchestrator_addr(orchestrator_host, orchestrator_port)
+            .context("Failed to resolve orchestrator address")?;
 
         tracing::info!("Quadtree QUIC client connecting to {}", orchestrator_addr);
 

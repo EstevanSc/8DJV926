@@ -8,6 +8,7 @@ use common::ShardData;
 use quinn::Endpoint;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -21,8 +22,14 @@ fn make_server_config() -> quinn::ServerConfig {
     let priv_key = rustls::PrivateKey(priv_key);
     let cert_chain = vec![rustls::Certificate(cert_der)];
     
-    quinn::ServerConfig::with_single_cert(cert_chain, priv_key)
-        .expect("Failed to create QUIC server config")
+    let mut server_config = quinn::ServerConfig::with_single_cert(cert_chain, priv_key)
+        .expect("Failed to create QUIC server config");
+
+    let mut transport_config = quinn::TransportConfig::default();
+    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+    server_config.transport_config(Arc::new(transport_config));
+
+    server_config
 }
 
 /// Message containing shard updates from quadtree.
