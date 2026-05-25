@@ -158,3 +158,113 @@ pub async fn spawn_server(
 
     Ok(server_id)
 }
+
+/// Spawn a new game-server container for a specific shard.
+///
+/// Similar to `spawn_server` but also:
+/// - Passes `DS_SHARD_ID=<shard_id>` to the container
+/// - Stores `shard_id` in Redis entry
+/// - Returns the Redis key for the server
+pub async fn spawn_server_for_shard(
+    docker: &Docker,
+    redis: &RedisClient,
+    port: u16,
+    shard_id: u32,
+) -> anyhow::Result<String> {
+    let server_id = Uuid::new_v4().to_string();
+
+    let public_addr = std::env::var("PUBLIC_ADDR").unwrap_or_else(|_| "localhost".to_string());
+    let zone = std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string());
+    let max_players = std::env::var("MAX_PLAYERS").unwrap_or_else(|_| "2".to_string());
+    let orch_host = std::env::var("ORCH_HOST").unwrap_or_else(|_| "orchestrator:7000".to_string());
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+
+    let env = vec![
+        format!("DS_ID={server_id}"),
+        format!("DS_PORT={port}"),
+        format!("DS_SHARD_ID={shard_id}"),
+        format!("DS_ZONE={zone}"),
+        format!("DS_PUBLIC_IP={public_addr}"),
+        format!("MAX_PLAYERS={max_players}"),
+        format!("ORCH_HOST={orch_host}"),
+        format!("RUST_LOG={rust_log}"),
+    ];
+
+    let port_key = format!("{port}/udp");
+    let host_config = HostConfig {
+        port_bindings: Some(HashMap::from([(
+            port_key,
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: Some(port.to_string()),
+            }]),
+        )])),
+        ..Default::default()
+    };
+
+    let network_name = game_network();
+    let networking_config = NetworkingConfig {
+        endpoints_config: HashMap::from([(
+            network_name,
+            EndpointSettings {
+                ..Default::default()
+            },
+        )]),
+    };
+
+    let container_name = format!("game-{server_id}");
+    let options = CreateContainerOptions {
+        name: container_name,
+        platform: None,
+    };
+
+    let config: Config<String> = Config {
+        image: Some(game_image()),
+        env: Some(env),
+        host_config: Some(host_config),
+        networking_config: Some(networking_config),
+        labels: Some(HashMap::from([
+            ("mmo.role".to_string(), "game-server".to_string()),
+            ("mmo.server-id".to_string(), server_id.clone()),
+            ("mmo.shard-id".to_string(), shard_id.to_string()),
+        ])),
+        ..Default::default()
+    };
+
+    let create_resp = docker
+        .create_container(Some(options), config)
+        .await
+        .context("create game-server container")?;
+
+    let container_id = create_resp.id;
+
+    docker
+        .start_container(&container_id, None::<StartContainerOptions<String>>)
+        .await
+        .context("start game-server container")?;
+
+    let redis_key = format!("server:{server_id}");
+    let mut fields: HashMap<&str, String> = HashMap::new();
+    fields.insert("container_id", container_id.clone());
+    fields.insert("ip", public_addr);
+    fields.insert("port", port.to_string());
+    fields.insert("shard_id", shard_id.to_string());
+    fields.insert("zone", zone);
+    fields.insert("status", "starting".to_string());
+    fields.insert("player_count", "0".to_string());
+    fields.insert("max_players", max_players.clone());
+    redis
+        .hset_multiple(&redis_key, fields)
+        .await
+        .context("pre-register server in Redis")?;
+
+    tracing::info!(
+        server_id = %server_id,
+        container_id = %container_id,
+        port,
+        shard_id,
+        "Game server container started for shard",
+    );
+
+    Ok(redis_key)
+}

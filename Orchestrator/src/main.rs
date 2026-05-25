@@ -8,6 +8,7 @@ use tokio::signal;
 mod api;
 mod config;
 mod docker_ops;
+mod quic_server;
 mod services;
 
 use common::RedisClient;
@@ -20,10 +21,11 @@ async fn main() {
     let config = Config::from_env();
 
     tracing::info!(
-        "Starting orchestrator - environment: {}, port: {}, heartbeat_port: {}, redis_url: {}",
+        "Starting orchestrator - environment: {}, port: {}, heartbeat_port: {}, quic_port: {}, redis_url: {}",
         config.environment,
         config.port,
         config.orch_port,
+        config.quic_port,
         config.redis_url
     );
 
@@ -78,25 +80,35 @@ async fn main() {
 
         let scaler_redis = redis.clone();
         let ds_base_port = config.ds_base_port;
-        let hot_servers_min = config.hot_servers_min;
-        let scaler_interval = config.scaler_interval_seconds;
-        match docker_ops::connect() {
-            Ok(docker) => {
-                tokio::spawn(async move {
-                    tracing::info!("Starting scaler task");
-                    services::scaler::start_scaler(
-                        docker,
-                        scaler_redis,
-                        hot_servers_min,
-                        ds_base_port,
-                        scaler_interval,
-                    )
-                    .await;
-                    tracing::error!("Scaler task stopped unexpectedly");
-                });
+        let quic_port = config.quic_port;
+        
+        // Start QUIC server to listen for shard updates from quadtree
+        match quic_server::start_quic_server(quic_port).await {
+            Ok(rx) => {
+                tracing::info!("QUIC server started on port {}", quic_port);
+                
+                // Start shard handler to process shard updates
+                match docker_ops::connect() {
+                    Ok(docker) => {
+                        tokio::spawn(async move {
+                            tracing::info!("Starting shard handler task");
+                            services::shard_handler::start_shard_handler(
+                                docker,
+                                scaler_redis,
+                                ds_base_port,
+                                rx,
+                            )
+                            .await;
+                            tracing::error!("Shard handler task stopped unexpectedly");
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to connect to Docker daemon — shard handler disabled: {e}");
+                    }
+                }
             }
             Err(e) => {
-                tracing::error!("Failed to connect to Docker daemon — scaler disabled: {e}");
+                tracing::error!("Failed to start QUIC server: {}", e);
             }
         }
     } else {

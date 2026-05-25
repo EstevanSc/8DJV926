@@ -1,18 +1,86 @@
+mod quic_client;
+
+use common::{ShardData, Boundary, Vec2, Quadrant};
+use quic_client::QuicClient;
 use std::mem;
 
-const WORLD_SIZE: f64 = 100.0;
-const MAX_CAPACITY: usize = 4;
-const MAX_DEPTH: u8 = 10;
-const NEARBY_MARGIN: f64 = 5.0;
+/// Load configuration from environment variables with defaults.
+struct Config {
+    world_size: f64,
+    max_capacity: usize,
+    max_depth: u8,
+    nearby_margin: f64,
+    orchestrator_host: String,
+    orchestrator_port: u16,
+    entity_add_interval_ms: u64,
+}
 
-fn main() {
+impl Config {
+    fn from_env() -> Self {
+        dotenv::dotenv().ok();
+
+        Config {
+            world_size: std::env::var("QUADTREE_WORLD_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100.0),
+            max_capacity: std::env::var("QUADTREE_MAX_CAPACITY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4),
+            max_depth: std::env::var("QUADTREE_MAX_DEPTH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            nearby_margin: std::env::var("QUADTREE_NEARBY_MARGIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5.0),
+            orchestrator_host: std::env::var("QUADTREE_ORCHESTRATOR_HOST")
+                .unwrap_or_else(|_| "localhost".to_string()),
+            orchestrator_port: std::env::var("QUADTREE_ORCHESTRATOR_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5000),
+            entity_add_interval_ms: std::env::var("QUADTREE_ENTITY_ADD_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1000),
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let config = Config::from_env();
+    tracing::info!("Quadtree starting with config: world_size={}, max_capacity={}, max_depth={}, nearby_margin={}",
+        config.world_size, config.max_capacity, config.max_depth, config.nearby_margin);
+
+    // Connect to orchestrator via QUIC
+    let quic_client = match QuicClient::new(&config.orchestrator_host, config.orchestrator_port).await {
+        Ok(client) => {
+            tracing::info!("Connected to orchestrator at {}:{}", config.orchestrator_host, config.orchestrator_port);
+            Some(client)
+        }
+        Err(e) => {
+            tracing::error!("Failed to connect to orchestrator: {}. Running without QUIC updates.", e);
+            None
+        }
+    };
+
+    run_main_loop(config, quic_client).await
+}
+
+async fn run_main_loop(config: Config, quic_client: Option<QuicClient>) -> anyhow::Result<()> {
     let boundary = Boundary {
         x: 0.0,
         y: 0.0,
-        half_size: WORLD_SIZE / 2.0,
+        half_size: config.world_size / 2.0,
     };
 
-    let mut quadtree = Quadtree::new(boundary, 0);
+    let mut quadtree = Quadtree::new(boundary, 0, config.max_depth, config.max_capacity);
 
     let mut entities = std::collections::HashMap::new();
 
@@ -30,20 +98,21 @@ fn main() {
         if counter % 2 == 0 {
             id = rand::random::<u32>();
             pos = Vec2 {
-                x: rand::random::<f64>() * WORLD_SIZE - WORLD_SIZE / 2.0,
-                y: rand::random::<f64>() * WORLD_SIZE - WORLD_SIZE / 2.0,
+                x: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
+                y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
             };
         }
         else {
             if entities.is_empty() {
                 counter += 1;
+                tokio::time::sleep(tokio::time::Duration::from_millis(config.entity_add_interval_ms)).await;
                 continue;
             }
 
             id = *entities.keys().next().unwrap();
             pos = Vec2 {
-                x: rand::random::<f64>() * WORLD_SIZE - WORLD_SIZE / 2.0,
-                y: rand::random::<f64>() * WORLD_SIZE - WORLD_SIZE / 2.0,
+                x: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
+                y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
             };
         }
 
@@ -60,7 +129,7 @@ fn main() {
                 entities.insert(id, pos);
             }
 
-            let nearby_shards = quadtree.shards_near(pos, NEARBY_MARGIN);
+            let nearby_shards = quadtree.shards_near(pos, config.nearby_margin);
             if nearby_shards.len() > 1 {
                 //émettre un `CrossingAlert`
                 println!("Entity {} is near shard boundaries: nearby shards = {:?}", id, nearby_shards);
@@ -74,7 +143,7 @@ fn main() {
         }
 
         //recreate the quadtree from scratch to simulate dynamic entity movement and shard changes
-        let mut new_quadtree = Quadtree::new(boundary, 0);
+        let mut new_quadtree = Quadtree::new(boundary, 0, config.max_depth, config.max_capacity);
         for (_id, pos) in &entities {
             new_quadtree.insert(*pos);
         }
@@ -87,7 +156,13 @@ fn main() {
         if new_shard_ids != shards {
             println!("Shard layout changed: new shard IDs = {:?}", new_shard_ids);
             shards = new_shard_ids;
-            // Here we would send the new shard layout to the orchestrator, e.g. via a message broker
+            
+            // Send shard layout to orchestrator via QUIC
+            if let Some(ref client) = quic_client {
+                if let Err(e) = client.send_shard_data(&shard_data).await {
+                    tracing::error!("Failed to send shard data to orchestrator: {}", e);
+                }
+            }
         }
         //print shard IDs and boundaries for debugging
         println!("Current Shard Layout:");
@@ -98,88 +173,8 @@ fn main() {
         counter += 1;
 
         // Sleep to simulate time passing
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        tokio::time::sleep(tokio::time::Duration::from_millis(config.entity_add_interval_ms)).await;
     }  
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Vec2 {
-    x: f64,
-    y: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Boundary {
-    x: f64,
-    y: f64,
-    half_size: f64,
-}
-
-impl Boundary {
-    fn contains(&self, e: &Vec2) -> bool {
-        let left = self.x - self.half_size;
-        let right = self.x + self.half_size;
-        let top = self.y - self.half_size;
-        let bottom = self.y + self.half_size;
-
-        e.x >= left && e.x < right &&
-        e.y >= top  && e.y < bottom
-    }
-
-    fn quadrant(&self, e: &Vec2) -> Quadrant {
-        if e.x >= self.x {
-            if e.y < self.y {
-                Quadrant::NorthEast
-            } else {
-                Quadrant::SouthEast
-            }
-        } else {
-            if e.y < self.y {
-                Quadrant::NorthWest
-            } else {
-                Quadrant::SouthWest
-            }
-        }
-    }
-
-    fn subdivide(&self) -> [Boundary; 4] {
-        let hs = self.half_size / 2.0;
-        [
-            Boundary { x: self.x + hs, y: self.y - hs, half_size: hs }, // NE
-            Boundary { x: self.x - hs, y: self.y - hs, half_size: hs }, // NW
-            Boundary { x: self.x + hs, y: self.y + hs, half_size: hs }, // SE
-            Boundary { x: self.x - hs, y: self.y + hs, half_size: hs }, // SW
-        ]
-    }
-
-    fn intersects_range(&self, pos: Vec2, margin: f64) -> bool {
-        let self_left = self.x - self.half_size;
-        let self_right = self.x + self.half_size;
-        let self_top = self.y - self.half_size;
-        let self_bottom = self.y + self.half_size;
-
-        let range_left = pos.x - margin;
-        let range_right = pos.x + margin;
-        let range_top = pos.y - margin;
-        let range_bottom = pos.y + margin;
-
-        // Returns true if the two AABBs overlap
-        self_left < range_right && self_right > range_left &&
-        self_top < range_bottom && self_bottom > range_top
-    }
-}
-
-enum Quadrant {
-    NorthEast,
-    NorthWest,
-    SouthEast,
-    SouthWest,
-}
-
-#[derive(Debug)]
-struct ShardData {
-    shard_id: Option<u32>,
-    boundary: Boundary,
 }
 
 struct Quadtree {
@@ -187,17 +182,19 @@ struct Quadtree {
     points: Vec<Vec2>,
     depth: u8,
     max_depth: u8,
+    max_capacity: usize,
     children: Option<[Box<Quadtree>; 4]>,
     shard_id: Option<u32>,  // défini uniquement sur les feuilles
 }
 
 impl Quadtree {
-    fn new(boundary: Boundary, depth: u8) -> Self {
+    fn new(boundary: Boundary, depth: u8, max_depth: u8, max_capacity: usize) -> Self {
         Self {
             boundary,
             points: Vec::new(),
             depth,
-            max_depth: MAX_DEPTH,
+            max_depth,
+            max_capacity,
             children: None,
             shard_id: Some(0),
         }
@@ -209,12 +206,12 @@ impl Quadtree {
         }
 
         if self.children.is_none() {
-            if self.points.len() < MAX_CAPACITY {
+            if self.points.len() < self.max_capacity {
                 self.points.push(point);
                 return;
             }
 
-            // For now, goes betond max. Should implement phasing
+            // For now, goes beyond max. Should implement phasing
             if self.depth >= self.max_depth {
                 self.points.push(point);
                 return;
@@ -230,10 +227,10 @@ impl Quadtree {
         let boundaries = self.boundary.subdivide();
 
         let mut children = [
-            Box::new(Quadtree::new(boundaries[0], self.depth + 1)),
-            Box::new(Quadtree::new(boundaries[1], self.depth + 1)),
-            Box::new(Quadtree::new(boundaries[2], self.depth + 1)),
-            Box::new(Quadtree::new(boundaries[3], self.depth + 1)),
+            Box::new(Quadtree::new(boundaries[0], self.depth + 1, self.max_depth, self.max_capacity)),
+            Box::new(Quadtree::new(boundaries[1], self.depth + 1, self.max_depth, self.max_capacity)),
+            Box::new(Quadtree::new(boundaries[2], self.depth + 1, self.max_depth, self.max_capacity)),
+            Box::new(Quadtree::new(boundaries[3], self.depth + 1, self.max_depth, self.max_capacity)),
         ];
 
         if self.depth == 0 {

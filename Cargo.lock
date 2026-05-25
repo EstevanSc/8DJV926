@@ -4906,6 +4906,9 @@ dependencies = [
  "bollard",
  "common",
  "dotenv",
+ "quinn 0.10.2",
+ "rcgen",
+ "rustls 0.21.12",
  "serde",
  "serde_json",
  "tokio",
@@ -5286,7 +5289,19 @@ checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
 name = "quadtree"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bytes",
+ "common",
+ "dotenv",
+ "quinn 0.10.2",
  "rand 0.7.3",
+ "rustls 0.21.12",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

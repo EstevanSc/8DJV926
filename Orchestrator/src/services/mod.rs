@@ -2,3 +2,4 @@
 
 pub mod heartbeat_listener;
 pub mod scaler;
+pub mod shard_handler;
