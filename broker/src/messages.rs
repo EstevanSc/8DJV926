@@ -1,10 +1,12 @@
-﻿#[derive(Debug, Clone)]
+﻿use uuid::Uuid;
+
+#[derive(Debug, Clone)]
 pub enum BrokerMessage {
-    Subscribe { client_id: u32, topic: [u8; 32] },         // 0x01
-    Unsubscribe { client_id: u32, topic: [u8; 32] },       // 0x02
-    Publish { topic: [u8; 32], payload: Vec<u8> },         // 0x03
-    Broadcast { payload: Vec<u8> },                        // 0x04
-    ClientInput { client_id: u32, input: [u8; 16] },       // 0x05
+    Subscribe { client_id: Uuid, topic: [u8; 32] },          // 0x01
+    Unsubscribe { client_id: Uuid, topic: [u8; 32] },        // 0x02
+    Publish { topic: [u8; 32], payload: Vec<u8> },          // 0x03
+    Broadcast { payload: Vec<u8> },                         // 0x04
+    ClientInput { client_id: Uuid, input: [u8; 16] },        // 0x05
 }
 
 impl BrokerMessage {
@@ -14,16 +16,16 @@ impl BrokerMessage {
         let body = &data[1..];
 
         match tag {
-            0x01 => { // Subscribe: client_id (4B) + topic (32B)
-                if body.len() < 36 { return None; }
-                let client_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
+            0x01 => { // Subscribe: client_id (16B) + topic (32B)
+                if body.len() < 48 { return None; }
+                let client_id = Uuid::from_slice(&body[0..16]).ok()?;
                 let mut topic = [0u8; 32];
                 topic.copy_from_slice(&body[4..36]);
                 Some(BrokerMessage::Subscribe { client_id, topic })
             }
-            0x02 => { // Unsubscribe: client_id (4B) + topic (32B)
-                if body.len() < 36 { return None; }
-                let client_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
+            0x02 => { // Unsubscribe: client_id (16B) + topic (32B)
+                if body.len() < 48 { return None; }
+                let client_id = Uuid::from_slice(&body[0..16]).ok()?;
                 let mut topic = [0u8; 32];
                 topic.copy_from_slice(&body[4..36]);
                 Some(BrokerMessage::Unsubscribe { client_id, topic })
@@ -38,11 +40,11 @@ impl BrokerMessage {
                 let payload = body[34..34 + payload_len].to_vec();
                 Some(BrokerMessage::Publish { topic, payload })
             }
-            0x05 => { // ClientInput: client_id (4B) + input (16B)
-                if body.len() < 20 { return None; }
-                let client_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
+            0x05 => { // ClientInput: client_id (16B) + input (16B)
+                if body.len() < 32 { return None; }
+                let client_id = Uuid::from_slice(&body[0..16]).ok()?;
                 let mut input = [0u8; 16];
-                input.copy_from_slice(&body[4..20]);
+                input.copy_from_slice(&body[16..32]);
                 Some(BrokerMessage::ClientInput { client_id, input })
             }
             _ => None, // 0x04 (Broadcast) is sent outbound only; shouldn't be received

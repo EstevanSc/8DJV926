@@ -7,3 +7,4 @@ edition = "2024"
 game_sockets    = { workspace = true }
 uuid            = { workspace = true }
 bytes           = { workspace = true }
+common          = {workspace = true}

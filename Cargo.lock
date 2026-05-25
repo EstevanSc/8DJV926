@@ -2034,6 +2034,7 @@ name = "broker"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "common",
  "game_sockets",
  "uuid",
 ]
@@ -2308,7 +2309,7 @@ dependencies = [
  "bitcode",
  "redis",
  "serde",
- "tokio",
+ "uuid",
  "wincode",
 ]
 
