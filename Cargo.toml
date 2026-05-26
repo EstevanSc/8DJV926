@@ -5,7 +5,7 @@ members = [
     "gatekeeper",
     "GameServer",
     "Orchestrator",
-    "game_sockets",
+    "game_sockets", "quadtree",
 ]
 resolver = "2"
 
