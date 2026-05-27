@@ -5,6 +5,7 @@ pub mod redis_client;
 pub mod redis_keys;
 pub mod server_info;
 pub mod shard_data;
+pub mod topics;
 
 pub use heartbeat::Heartbeat;
 pub use redis_client::RedisClient;

@@ -2030,6 +2030,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "broker"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "common",
+ "game_sockets",
+ "uuid",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2299,7 +2309,7 @@ dependencies = [
  "bitcode",
  "redis",
  "serde",
- "tokio",
+ "uuid",
  "wincode",
 ]
 

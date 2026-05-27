@@ -1,0 +1,10 @@
+[package]
+name = "broker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+game_sockets    = { workspace = true }
+uuid            = { workspace = true }
+bytes           = { workspace = true }
+common          = {workspace = true}
