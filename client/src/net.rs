@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 
 use bevy::prelude::*;
+use common::broker_messages::BrokerMessage;
+use common::topics::Topic;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
 use serde::{Deserialize, Serialize};
@@ -68,13 +70,13 @@ pub struct ServerConn(pub GameConnection);
 
 fn start_connect(mut commands: Commands, session: Res<GameSession>) {
     tracing::info!(
-        "Connecting to game server at {}:{}",
-        session.server_ip,
-        session.server_port
+        "Connecting to game broker at {}:{}",
+        session.broker_ip,
+        session.broker_port
     );
 
     let peer = GamePeer::new(QuicBackend::new());
-    if let Err(e) = peer.connect(&session.server_ip, session.server_port) {
+    if let Err(e) = peer.connect(&session.broker_ip, session.broker_port) {
         tracing::error!("Failed to initiate QUIC connection: {e:?}");
     }
 
@@ -107,6 +109,25 @@ fn poll_net_events(
             GameNetworkEvent::Connected(conn) => {
                 tracing::info!("QUIC connected (id={:?}); sending Join", conn.connection_id);
                 commands.insert_resource(ServerConn(conn));
+
+                if let Ok(player_id) = Uuid::parse_str(&session.player_id) {
+                    let mut payload = Vec::with_capacity(16 + 8);
+                    payload.extend_from_slice(player_id.as_bytes());
+                    payload.extend_from_slice(&0.0f32.to_le_bytes());
+                    payload.extend_from_slice(&0.0f32.to_le_bytes());
+
+                    let topic = Topic::Position.to_bytes();
+                    let publish = BrokerMessage::serialize_publish(topic, &payload);
+                    let stream = GameStream::from(0);
+
+                    if let Err(e) = peer.send(&conn, &stream, publish.into()) {
+                        tracing::error!("Failed to send initial Publish: {e:?}");
+                    } else {
+                        tracing::info!("Sent initial Publish for player_id={player_id}");
+                    }
+                } else {
+                    tracing::error!("Invalid player_id in session: '{}'", session.player_id);
+                }
 
                 if !join_sent.0 {
                     let msg = GameMessage::Join {

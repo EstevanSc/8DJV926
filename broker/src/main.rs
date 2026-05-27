@@ -1,7 +1,6 @@
 use crate::net::{BrokerConfig, BrokerState};
 
 mod net;
-mod messages;
 
 fn main() {
     let config = BrokerConfig::from_env();

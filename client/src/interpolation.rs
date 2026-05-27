@@ -141,13 +141,13 @@ fn spawn_debug_hud(
         .unwrap_or_else(|| "—".to_string());
 
     let info = format!(
-        "Player    : {}\nPlayer ID : {}\nEntity ID : {}\nServer    : {}:{}\nZone      : {}",
+        "Player    : {}\nPlayer ID : {}\nEntity ID : {}",
         session.username,
         session.player_id,
         entity_id,
-        session.server_ip,
+        /*session.server_ip,
         session.server_port,
-        session.server_zone,
+        session.server_zone,*/
     );
 
     commands

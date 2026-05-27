@@ -1,8 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
-use common::ServerInfo;
 use serde::{Deserialize, Serialize};
 
-use crate::{AppState, redis_ops};
+use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -17,7 +16,9 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub player_id: String,
-    pub server: ServerInfo,
+    //pub server: ServerInfo,
+    pub broker_ip: String,
+    pub broker_port: u16,
 }
 
 #[derive(Serialize)]
@@ -61,14 +62,14 @@ pub async fn handler(
                 return Err(err(StatusCode::UNAUTHORIZED, "invalid password"));
             }
             tracing::info!("Existing player '{username}' authenticated (id={})", row.id);
-            row.id.to_string()
+            row.unique_id.to_string()
         }
         Ok(None) => {
             // New player — create the account and log in immediately.
             match state.supabase.create_player(username, password).await {
                 Ok(row) => {
                     tracing::info!("New player '{username}' created (id={})", row.id);
-                    row.id.to_string()
+                    row.unique_id.to_string()
                 }
                 Err(e) => {
                     tracing::error!("Supabase create_player failed: {e:#}");
@@ -79,7 +80,7 @@ pub async fn handler(
     };
 
     // ── Redis: pick an available game server ────────────────────────────────
-
+    /*
     let server = redis_ops::find_available_server(&state.redis)
         .await
         .map_err(|e| {
@@ -105,11 +106,19 @@ pub async fn handler(
     tracing::info!(
         player_id = %player_id,
         server_id = %server.id,
-        "Player '{username}' assigned → {}:{} ({})",
-        server.ip,
-        server.port,
-        server.zone,
+        "Player '{username}' assigned → {}:{}",
+        broker.ip,
+        broker.port,
     );
-
-    Ok(Json(LoginResponse { player_id, server }))
+    */
+    let broker_ip = std::env::var("BROKER_IP").unwrap_or_else(|_| "127.0.0.1".into());
+    let broker_port = std::env::var("BROKER_PORT")
+        .unwrap_or_else(|_| "7776".into())
+        .parse()
+        .unwrap_or(7776);
+    Ok(Json(LoginResponse {
+        player_id,
+        broker_ip,
+        broker_port,
+    }))
 }

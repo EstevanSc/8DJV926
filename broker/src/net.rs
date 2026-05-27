@@ -3,8 +3,7 @@ use bytes::Bytes;
 use game_sockets;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream};
 use game_sockets::protocols::QuicBackend;
-use common::topics::Topic;
-use crate::messages::BrokerMessage;
+use common::broker_messages::BrokerMessage;
 
 pub struct BrokerConfig {
     pub ip: String,
@@ -93,11 +92,6 @@ impl BrokerState {
             }
             BrokerMessage::Publish {topic, payload} => {
                 self.publish(topic, payload, stream);
-            }
-            BrokerMessage::ClientInput {client_id, input: _} => {
-                let topic: Topic = Topic::Client(client_id);
-
-                self.publish(topic.to_bytes(), data.to_vec(), stream);
             }
             _ => {} // The broker shouldn't receive broadcast messages
         }
