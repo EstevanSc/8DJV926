@@ -8,4 +8,4 @@ serde   = { workspace = true }
 bitcode = { workspace = true }
 wincode = { workspace = true }
 redis   = { workspace = true }
-tokio   = { workspace = true }
+uuid   = { workspace = true }
