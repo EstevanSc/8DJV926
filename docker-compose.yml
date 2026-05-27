@@ -54,7 +54,8 @@ services:
   # ── Orchestrator ──────────────────────────────────────────────────────────
   # HTTP API on :8081  — server-fleet management.
   # UDP heartbeat listener on :7000  — receives heartbeats from game servers.
-  # Docker socket mounted so the scaler can spawn/stop game-server containers.
+  # QUIC server on :5000  — listens for shard updates from quadtree.
+  # Docker socket mounted so the server spawner can create/stop game-server containers.
   orchestrator:
     build:
       context: .
@@ -65,15 +66,16 @@ services:
     ports:
       - "8081:8081"
       - "7000:7000/udp"
+      - "5000:5000/udp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       PORT: "8081"
       ORCH_PORT: "7000"
+      ORCHESTRATOR_QUIC_PORT: "5000"
       REDIS_URL: redis://redis:6379
-      DS_BINARY_PATH: /app/mock_server.sh
       DS_BASE_PORT: "7777"
-      HOT_SERVERS_MIN: "1"
+      HOT_SERVERS_MIN: "0"
       HEARTBEAT_TTL_SECONDS: "30"
       SCALER_INTERVAL_SECONDS: "5"
       RUST_LOG: info
@@ -81,6 +83,33 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  # ── Quadtree ──────────────────────────────────────────────────────────────
+  # Spatial partitioning service that maintains dynamic shard layout.
+  # Sends shard updates to orchestrator via QUIC on :5000.
+  # Orchestrator listens and spawns/stops game servers based on shard layout.
+  quadtree:
+    build:
+      context: .
+      dockerfile: quadtree/Dockerfile
+    image: quadtree:latest
+    networks:
+      - game-net
+    environment:
+      QUADTREE_WORLD_SIZE: "${QUADTREE_WORLD_SIZE}"
+      QUADTREE_MAX_CAPACITY: "${QUADTREE_MAX_CAPACITY}"
+      QUADTREE_MAX_DEPTH: "${QUADTREE_MAX_DEPTH}"
+      QUADTREE_NEARBY_MARGIN: "${QUADTREE_NEARBY_MARGIN}"
+      QUADTREE_LISTEN_PORT: "5000"
+      QUADTREE_ORCHESTRATOR_HOST: "orchestrator"
+      QUADTREE_ORCHESTRATOR_PORT: "5000"
+      QUADTREE_ENTITY_ADD_INTERVAL_MS: "1000"
+      RUST_LOG: info
+    depends_on:
+      orchestrator:
+        condition: service_started
+    restart: unless-stopped
+
 
   # ── Broker ───────────────────────────────────────────────────────────────
   # QUIC/UDP broker on :7776  — relays pub/sub traffic for clients and shards.
