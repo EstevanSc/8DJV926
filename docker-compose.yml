@@ -108,6 +108,9 @@ services:
     depends_on:
       orchestrator:
         condition: service_started
+    restart: unless-stopped
+
+
   # ── Broker ───────────────────────────────────────────────────────────────
   # QUIC/UDP broker on :7776  — relays pub/sub traffic for clients and shards.
   broker:
