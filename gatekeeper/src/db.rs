@@ -33,6 +33,7 @@ pub struct PlayerRow {
 struct CreatePlayerBody<'a> {
     player_name: &'a str,
     password: &'a str,
+    unique_id: Uuid,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,7 @@ impl SupabaseClient {
             .json(&CreatePlayerBody {
                 player_name: name,
                 password,
+                unique_id: Uuid::new_v4(), // Generate a random UUID for the new player.
             })
             .send()
             .await
