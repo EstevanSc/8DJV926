@@ -1,5 +1,5 @@
 # docker-compose.yml
-# Unified stack: Redis · Gatekeeper · Orchestrator · Dedicated Game Server
+# Unified stack: Redis · Gatekeeper · Orchestrator · Broker · Dedicated Game Server
 #
 # Start everything:  docker compose up -d
 # Client runs locally:  cargo run -p client
@@ -108,6 +108,21 @@ services:
     depends_on:
       orchestrator:
         condition: service_started
+  # ── Broker ───────────────────────────────────────────────────────────────
+  # QUIC/UDP broker on :7776  — relays pub/sub traffic for clients and shards.
+  broker:
+    build:
+      context: .
+      dockerfile: broker/Dockerfile
+    image: broker:latest
+    networks:
+      - game-net
+    ports:
+      - "7776:7776/udp"
+    environment:
+      BROKER_PORT: "7776"
+      BROKER_PUBLIC_IP: localhost
+      RUST_LOG: info
     restart: unless-stopped
 
   game-server:
