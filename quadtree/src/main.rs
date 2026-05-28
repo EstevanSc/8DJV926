@@ -1,16 +1,14 @@
 mod quic_client;
 
 use common::broker_messages::BrokerMessage;
-use common::topics::Topic;
+use common::topics::{deserialize_position_payload, deserialize_shard_created_payload, PositionPayload, ShardCreatedPayload, Topic};
 use common::{Boundary, Quadrant, ShardData, Vec2};
 use game_sockets::GameNetworkEvent;
 use quic_client::QuicClient;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::LazyLock;
 use uuid::Uuid;
-use wincode::{SchemaRead, SchemaWrite};
 
 static QUADTREE_ID: LazyLock<Uuid> = LazyLock::new(Uuid::new_v4);
 
@@ -66,18 +64,6 @@ impl Config {
                 .unwrap_or(1000),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
-struct PositionPayload {
-    entity_id: Uuid,
-    position: Vec2,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
-struct ShardCreatedPayload {
-    shard_id: Uuid,
-    center: Vec2,
 }
 
 fn rebuild_quadtree(
@@ -214,8 +200,8 @@ async fn handle_broker_message(
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
             Topic::Position => {
-                let payload = wincode::deserialize::<PositionPayload>(&payload)
-                    .map_err(|e| anyhow::anyhow!("Failed to decode position payload: {e}"))?;
+                let payload = deserialize_position_payload(&payload)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to decode position payload"))?;
                 handle_position_payload(
                     broker_client,
                     payload,
@@ -227,8 +213,8 @@ async fn handle_broker_message(
                 .await?;
             }
             Topic::ShardCreated => {
-                let payload = wincode::deserialize::<ShardCreatedPayload>(&payload)
-                    .map_err(|e| anyhow::anyhow!("Failed to decode shard created payload: {e}"))?;
+                let payload = deserialize_shard_created_payload(&payload)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to decode shard created payload"))?;
                 handle_shard_created_payload(
                     broker_client,
                     payload,

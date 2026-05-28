@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 
 use common::broker_messages::BrokerMessage;
-use common::packets::PlayerInput;
-use common::topics::Topic;
+use common::topics::{serialize_input_payload, InputPayload, Topic};
+use common::Vec2;
 use uuid::Uuid;
 
 use super::{GameSession, GameState};
@@ -52,8 +52,10 @@ fn send_input(
         return;
     };
 
-    let payload = wincode::serialize(&PlayerInput { dx, dy })
-        .expect("failed to serialize PlayerInput");
+    let payload = serialize_input_payload(&InputPayload {
+        player_id,
+        dxdy: Vec2 { x: dx as f64, y: dy as f64 },
+    });
 
     let topic = Topic::Input(player_id).to_bytes();
     let publish = BrokerMessage::serialize_publish(topic, &payload);

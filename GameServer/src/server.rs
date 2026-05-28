@@ -3,7 +3,7 @@ use crate::messages::GameMessage;
 use crate::net::{ConnectedPlayers, SimCommandSender, entity_id_from_uuid};
 use common::broker_messages::BrokerMessage;
 use common::packets::PlayerInput;
-use common::topics::Topic;
+use common::topics::{deserialize_input_payload, Topic};
 use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameNetworkEvent, GamePeer, GameStream};
@@ -202,7 +202,7 @@ fn handle_message(
 
     if let Ok(input) = wincode::deserialize::<PlayerInput>(data) {
         // Unreliable player-input datagram
-        handle_player_input(connection.connection_id, input, player_registry, sim_tx);
+        handle_player_input(connection.connection_id, input.dx, input.dy, player_registry, sim_tx);
         return;
     }
 
@@ -219,8 +219,14 @@ fn handle_broker_message(
     match message {
         BrokerMessage::Publish { topic, payload } => match Topic::from_bytes(topic) {
             Topic::Input(player_id) => {
-                if let Ok(input) = wincode::deserialize::<PlayerInput>(&payload) {
-                    handle_player_input(player_id, input, player_registry, sim_tx);
+                if let Some(input) = deserialize_input_payload(&payload) {
+                    handle_player_input(
+                        player_id,
+                        input.dxdy.x as f32,
+                        input.dxdy.y as f32,
+                        player_registry,
+                        sim_tx,
+                    );
                 } else {
                     eprintln!("Failed to decode broker input payload from {:?}", connection.connection_id);
                 }
@@ -237,15 +243,16 @@ fn handle_broker_message(
 
 fn handle_player_input(
     player_id: Uuid,
-    input: PlayerInput,
+    dx: f32,
+    dy: f32,
     player_registry: &ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
 ) {
     if let Some(info) = player_registry.registry.get(&player_id) {
         let _ = sim_tx.0.send(crate::net::SimCommand::Input {
             entity_id: info.entity_id,
-            dx: input.dx,
-            dy: input.dy,
+            dx,
+            dy,
         });
     }
 }

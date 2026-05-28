@@ -1,4 +1,7 @@
-﻿use uuid::Uuid;
+﻿use crate::Vec2;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use wincode::{SchemaRead, SchemaWrite};
 
 #[repr(u8)]
 pub enum TopicDomain {
@@ -59,4 +62,60 @@ impl Topic {
             _ => Topic::Raw(bytes),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct ShardCreatedPayload {
+    pub shard_id: Uuid,
+    pub center: Vec2,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct PositionPayload {
+    pub entity_id: Uuid,
+    pub position: Vec2,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct InputPayload {
+    pub player_id: Uuid,
+    pub dxdy: Vec2,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct ShardSnapshotPayload {
+    pub shard_id: Uuid,
+    pub replication: Vec<u8>,
+}
+
+pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize shard created payload")
+}
+
+pub fn deserialize_shard_created_payload(bytes: &[u8]) -> Option<ShardCreatedPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_position_payload(payload: &PositionPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize position payload")
+}
+
+pub fn deserialize_position_payload(bytes: &[u8]) -> Option<PositionPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_input_payload(payload: &InputPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize input payload")
+}
+
+pub fn deserialize_input_payload(bytes: &[u8]) -> Option<InputPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_shard_snapshot_payload(payload: &ShardSnapshotPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize shard snapshot payload")
+}
+
+pub fn deserialize_shard_snapshot_payload(bytes: &[u8]) -> Option<ShardSnapshotPayload> {
+    wincode::deserialize(bytes).ok()
 }

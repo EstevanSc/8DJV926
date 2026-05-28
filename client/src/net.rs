@@ -2,7 +2,8 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::Topic;
+use common::topics::{serialize_position_payload, PositionPayload, Topic};
+use common::Vec2;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
 use serde::{Deserialize, Serialize};
@@ -111,10 +112,10 @@ fn poll_net_events(
                 commands.insert_resource(ServerConn(conn));
 
                 if let Ok(player_id) = Uuid::parse_str(&session.player_id) {
-                    let mut payload = Vec::with_capacity(16 + 8);
-                    payload.extend_from_slice(player_id.as_bytes());
-                    payload.extend_from_slice(&0.0f32.to_le_bytes());
-                    payload.extend_from_slice(&0.0f32.to_le_bytes());
+                    let payload = serialize_position_payload(&PositionPayload {
+                        entity_id: player_id,
+                        position: Vec2 { x: 0.0, y: 0.0 },
+                    });
 
                     let topic = Topic::Position.to_bytes();
                     let publish = BrokerMessage::serialize_publish(topic, &payload);
