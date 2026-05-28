@@ -12,6 +12,7 @@ COPY Orchestrator ./Orchestrator
 COPY game_sockets ./game_sockets
 COPY common ./common
 COPY quadtree ./quadtree
+COPY broker ./broker
 
 # Build the quadtree binary
 RUN cargo build --release -p quadtree
