@@ -12,6 +12,8 @@ struct Config {
     nearby_margin: f64,
     orchestrator_host: String,
     orchestrator_port: u16,
+    broker_host: String,
+    broker_port: u16,
     entity_add_interval_ms: u64,
 }
 
@@ -42,6 +44,12 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5000),
+            broker_host: std::env::var("QUADTREE_BROKER_HOST")
+                .unwrap_or_else(|_| "broker".to_string()),
+            broker_port: std::env::var("QUADTREE_BROKER_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7776),
             entity_add_interval_ms: std::env::var("QUADTREE_ENTITY_ADD_INTERVAL_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -58,8 +66,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Quadtree starting with config: world_size={}, max_capacity={}, max_depth={}, nearby_margin={}",
         config.world_size, config.max_capacity, config.max_depth, config.nearby_margin);
 
-    // Connect to orchestrator via QUIC
-    let quic_client = match QuicClient::new(&config.orchestrator_host, config.orchestrator_port).await {
+    // Connect to orchestrator and broker via separate QUIC links.
+    let orchestrator_client = match QuicClient::connect_orchestrator(&config.orchestrator_host, config.orchestrator_port).await {
         Ok(client) => {
             tracing::info!("Connected to orchestrator at {}:{}", config.orchestrator_host, config.orchestrator_port);
             Some(client)
@@ -70,10 +78,25 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    run_main_loop(config, quic_client).await
+    let broker_client = match QuicClient::connect_broker(&config.broker_host, config.broker_port).await {
+        Ok(client) => {
+            tracing::info!("Connected to broker at {}:{}", config.broker_host, config.broker_port);
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to connect to broker at {}:{}: {}", config.broker_host, config.broker_port, e);
+            None
+        }
+    };
+
+    run_main_loop(config, orchestrator_client, broker_client).await
 }
 
-async fn run_main_loop(config: Config, quic_client: Option<QuicClient>) -> anyhow::Result<()> {
+async fn run_main_loop(
+    config: Config,
+    orchestrator_client: Option<QuicClient>,
+    _broker_client: Option<QuicClient>,
+) -> anyhow::Result<()> {
     let boundary = Boundary {
         x: 0.0,
         y: 0.0,
@@ -158,7 +181,7 @@ async fn run_main_loop(config: Config, quic_client: Option<QuicClient>) -> anyho
             shards = new_shard_ids;
             
             // Send shard layout to orchestrator via QUIC
-            if let Some(ref client) = quic_client {
+            if let Some(ref client) = orchestrator_client {
                 if let Err(e) = client.send_shard_data(&shard_data).await {
                     tracing::error!("Failed to send shard data to orchestrator: {}", e);
                 }
