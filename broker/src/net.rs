@@ -31,6 +31,7 @@ pub struct BrokerState {
     peer: GamePeer,
     subscriptions: HashMap<[u8; 32], HashSet<uuid::Uuid>>,
     uuid_map: HashMap<uuid::Uuid, GameConnection>,
+    reverse_uuid_map: HashMap<GameConnection, uuid::Uuid>,  // Inverse map for removal during disconnect
 }
 
 pub fn bind_socket(config: &BrokerConfig) -> Result<GamePeer, GameSocketError> {
@@ -55,6 +56,7 @@ impl BrokerState {
             peer,
             subscriptions: HashMap::new(),
             uuid_map: HashMap::new(),
+            reverse_uuid_map: HashMap::new(),
         }
     }
     pub fn receive_packets(&mut self) {
@@ -63,7 +65,16 @@ impl BrokerState {
                 GameNetworkEvent::Connected(conn) => {
                     println!("Connected! Connection id: {:?}", conn.connection_id);
                 }
-                GameNetworkEvent::Disconnected(_) => {}
+                GameNetworkEvent::Disconnected(conn) => {
+                    if let Some(id) = self.reverse_uuid_map.remove(&conn) {
+                        self.uuid_map.remove(&id);
+
+                        // Clean the subscriptions to prevent memory leak
+                        for subscribers in self.subscriptions.values_mut() {
+                            subscribers.remove(&id);
+                        }
+                    }
+                }
                 GameNetworkEvent::Message {
                     data,
                     connection,
@@ -97,6 +108,7 @@ impl BrokerState {
             }
             BrokerMessage::Connect {client_id} => {
                 self.uuid_map.insert(client_id, connection.clone());
+                self.reverse_uuid_map.insert(connection, client_id.clone());
             }
             _ => {} // The broker shouldn't receive broadcast messages
         }
