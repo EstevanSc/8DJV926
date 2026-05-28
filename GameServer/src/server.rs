@@ -309,7 +309,7 @@ fn handle_broker_message(
     sim_tx: &Res<SimCommandSender>,
 ) {
     match message {
-        BrokerMessage::Publish { topic, payload } => match Topic::from_bytes(topic) {
+        BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
             Topic::Input(player_id) => {
                 if let Some(input) = deserialize_input_payload(&payload) {
                     handle_player_input(
@@ -324,7 +324,7 @@ fn handle_broker_message(
                 }
             }
             other => {
-                println!("Ignoring broker publish for unexpected topic {:?}", other);
+                println!("Ignoring broker broadcast for unexpected topic {:?}", other);
             }
         },
         _ => {
