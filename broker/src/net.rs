@@ -116,7 +116,7 @@ impl BrokerState {
 
     fn publish(&mut self, topic: [u8;32], payload: Vec<u8>, stream: GameStream) {
         if let Some(subscribers) = self.subscriptions.get(&topic) {
-            let broadcast_bytes = BrokerMessage::serialize_broadcast(&payload);
+            let broadcast_bytes = BrokerMessage::serialize_broadcast(topic, &payload);
             let bytes_payload = Bytes::from(broadcast_bytes);
 
             for subscriber_uuid in subscribers {

@@ -1,8 +1,18 @@
 mod quic_client;
 
-use common::{ShardData, Boundary, Vec2, Quadrant};
+use common::broker_messages::BrokerMessage;
+use common::topics::Topic;
+use common::{Boundary, Quadrant, ShardData, Vec2};
+use game_sockets::GameNetworkEvent;
 use quic_client::QuicClient;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::sync::LazyLock;
+use uuid::Uuid;
+use wincode::{SchemaRead, SchemaWrite};
+
+static QUADTREE_ID: LazyLock<Uuid> = LazyLock::new(Uuid::new_v4);
 
 /// Load configuration from environment variables with defaults.
 struct Config {
@@ -58,6 +68,245 @@ impl Config {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
+struct PositionPayload {
+    entity_id: Uuid,
+    position: Vec2,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
+struct ShardCreatedPayload {
+    shard_id: Uuid,
+    center: Vec2,
+}
+
+fn rebuild_quadtree(
+    boundary: Boundary,
+    max_depth: u8,
+    max_capacity: usize,
+    entity_positions: &HashMap<Uuid, Vec2>,
+) -> Quadtree {
+    let mut quadtree = Quadtree::new(boundary, 0, max_depth, max_capacity);
+
+    for position in entity_positions.values() {
+        quadtree.insert(*position);
+    }
+
+    quadtree
+}
+
+async fn subscribe_entity_input(
+    broker_client: &QuicClient,
+    shard_uuid: Uuid,
+    entity_id: Uuid,
+) -> anyhow::Result<()> {
+    broker_client
+        .subscribe(shard_uuid, Topic::Input(entity_id))
+        .await?;
+
+    Ok(())
+}
+
+async fn handle_position_payload(
+    broker_client: Option<&QuicClient>,
+    payload: PositionPayload,
+    quadtree: &Quadtree,
+    entity_positions: &mut HashMap<Uuid, Vec2>,
+    entity_shard_ids: &mut HashMap<Uuid, u32>,
+    shard_uuid_by_id: &HashMap<u32, Uuid>,
+) -> anyhow::Result<()> {
+    entity_positions.insert(payload.entity_id, payload.position);
+
+    let Some(shard_id) = quadtree.shard_for(payload.position) else {
+        return Ok(());
+    };
+
+    let previous_shard_id = entity_shard_ids.insert(payload.entity_id, shard_id);
+
+    if let Some(client) = broker_client {
+        if let Some(previous_shard_id) = previous_shard_id {
+            if previous_shard_id != shard_id {
+                if let Some(previous_shard_uuid) = shard_uuid_by_id.get(&previous_shard_id) {
+                    client
+                        .unsubscribe(*previous_shard_uuid, Topic::Input(payload.entity_id))
+                        .await?;
+                }
+            }
+        }
+
+        if let Some(shard_uuid) = shard_uuid_by_id.get(&shard_id) {
+            subscribe_entity_input(client, *shard_uuid, payload.entity_id).await?;
+            client
+                .subscribe(payload.entity_id, Topic::ShardSnapshot(*shard_uuid))
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_shard_created_payload(
+    broker_client: Option<&QuicClient>,
+    payload: ShardCreatedPayload,
+    quadtree: &Quadtree,
+    entity_positions: &HashMap<Uuid, Vec2>,
+    shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+) -> anyhow::Result<()> {
+    let Some(shard_id) = quadtree.shard_for(payload.center) else {
+        return Ok(());
+    };
+
+    shard_uuid_by_id.insert(shard_id, payload.shard_id);
+
+    if let Some(client) = broker_client {
+        let entity_ids_in_shard: Vec<Uuid> = entity_positions
+            .iter()
+            .filter_map(|(entity_id, position)| {
+                (quadtree.shard_for(*position) == Some(shard_id)).then_some(*entity_id)
+            })
+            .collect();
+
+        for entity_id in entity_ids_in_shard {
+            // shard subscribe to entity input for entities in the shard
+            subscribe_entity_input(client, payload.shard_id, entity_id).await?;
+            // entity subscribe to shard snapshot to receive shard layout updates
+            client.subscribe( entity_id, Topic::ShardSnapshot(payload.shard_id)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_shard_snapshot_payload(
+    payload: Vec<u8>,
+    quadtree: &mut Quadtree,
+    boundary: Boundary,
+    max_depth: u8,
+    max_capacity: usize,
+    entity_positions: &HashMap<Uuid, Vec2>,
+    shards: &mut HashSet<u32>,
+) -> anyhow::Result<()> {
+    let _ = payload;
+    *quadtree = rebuild_quadtree(boundary, max_depth, max_capacity, entity_positions);
+
+    let new_shard_ids: HashSet<u32> = quadtree
+        .collect_shards()
+        .into_iter()
+        .filter_map(|shard| shard.shard_id)
+        .collect();
+    *shards = new_shard_ids;
+
+    Ok(())
+}
+
+async fn handle_broker_message(
+    broker_client: Option<&QuicClient>,
+    message: BrokerMessage,
+    quadtree: &mut Quadtree,
+    entity_positions: &mut HashMap<Uuid, Vec2>,
+    entity_shard_ids: &mut HashMap<Uuid, u32>,
+    shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+    boundary: Boundary,
+    max_depth: u8,
+    max_capacity: usize,
+    shards: &mut HashSet<u32>,
+) -> anyhow::Result<()> {
+    match message {
+        BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
+            Topic::Position => {
+                let payload = wincode::deserialize::<PositionPayload>(&payload)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode position payload: {e}"))?;
+                handle_position_payload(
+                    broker_client,
+                    payload,
+                    quadtree,
+                    entity_positions,
+                    entity_shard_ids,
+                    shard_uuid_by_id,
+                )
+                .await?;
+            }
+            Topic::ShardCreated => {
+                let payload = wincode::deserialize::<ShardCreatedPayload>(&payload)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode shard created payload: {e}"))?;
+                handle_shard_created_payload(
+                    broker_client,
+                    payload,
+                    quadtree,
+                    entity_positions,
+                    shard_uuid_by_id,
+                )
+                .await?;
+            }
+            Topic::ShardSnapshot(_) => {
+                handle_shard_snapshot_payload(
+                    payload,
+                    quadtree,
+                    boundary,
+                    max_depth,
+                    max_capacity,
+                    entity_positions,
+                    shards,
+                )
+                .await?;
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+
+    Ok(())
+}
+
+async fn process_broker_events(
+    broker_client: &mut QuicClient,
+    quadtree: &mut Quadtree,
+    entity_positions: &mut HashMap<Uuid, Vec2>,
+    entity_shard_ids: &mut HashMap<Uuid, u32>,
+    shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+    boundary: Boundary,
+    max_depth: u8,
+    max_capacity: usize,
+    shards: &mut HashSet<u32>,
+) -> anyhow::Result<()> {
+    loop {
+        let Some(event) = broker_client.poll()? else {
+            break;
+        };
+
+        match event {
+            GameNetworkEvent::Message { data, .. } => {
+                if let Some(message) = BrokerMessage::deserialize(&data) {
+                    handle_broker_message(
+                        Some(broker_client),
+                        message,
+                        quadtree,
+                        entity_positions,
+                        entity_shard_ids,
+                        shard_uuid_by_id,
+                        boundary,
+                        max_depth,
+                        max_capacity,
+                        shards,
+                    )
+                    .await?;
+                }
+            }
+            GameNetworkEvent::Disconnected(connection) => {
+                tracing::warn!("Broker disconnected ({:?})", connection.connection_id);
+                break;
+            }
+            GameNetworkEvent::Error { inner, .. } => {
+                tracing::warn!("Broker network error: {inner}");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -89,13 +338,28 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    run_main_loop(config, orchestrator_client, broker_client).await
+    let quadtree_id = *QUADTREE_ID;
+
+    if let Some(client) = broker_client.as_ref() {
+        if let Err(e) = client.announce_connect(quadtree_id).await {
+            tracing::warn!("Failed to connect to broker: {e}");
+        }
+        if let Err(e) = client.subscribe(quadtree_id, Topic::Position).await {
+            tracing::warn!("Failed to subscribe to Position: {e}");
+        }
+        if let Err(e) = client.subscribe(quadtree_id, Topic::ShardCreated).await {
+            tracing::warn!("Failed to subscribe to ShardCreated: {e}");
+        }
+    }
+
+    run_main_loop(config, orchestrator_client, broker_client, quadtree_id).await
 }
 
 async fn run_main_loop(
     config: Config,
     orchestrator_client: Option<QuicClient>,
-    _broker_client: Option<QuicClient>,
+    mut broker_client: Option<QuicClient>,
+    _broker_client_id: Uuid,
 ) -> anyhow::Result<()> {
     let boundary = Boundary {
         x: 0.0,
@@ -105,34 +369,51 @@ async fn run_main_loop(
 
     let mut quadtree = Quadtree::new(boundary, 0, config.max_depth, config.max_capacity);
 
-    let mut entities = std::collections::HashMap::new();
+    let mut entity_positions: HashMap<Uuid, Vec2> = HashMap::new();
+    let mut entity_shard_ids: HashMap<Uuid, u32> = HashMap::new();
+    let mut shard_uuid_by_id: HashMap<u32, Uuid> = HashMap::new();
 
-    let mut shards = std::collections::HashSet::new();
+    let mut shards = HashSet::new();
 
     let mut counter = 0;
 
     //simulate a publish-subscribe system where entities are added to the quadtree and we query for nearby shards
     loop {
+        if let Some(client) = broker_client.as_mut() {
+            process_broker_events(
+                client,
+                &mut quadtree,
+                &mut entity_positions,
+                &mut entity_shard_ids,
+                &mut shard_uuid_by_id,
+                boundary,
+                config.max_depth,
+                config.max_capacity,
+                &mut shards,
+            )
+            .await?;
+        }
+
         // Simulate entity creation
 
-        let id: u32;        
+        let id: Uuid;
         let pos: Vec2;
         //on even `counter`, create a new entity with a random position and insert it into the quadtree else move an existing entity to a new random position
         if counter % 2 == 0 {
-            id = rand::random::<u32>();
+            id = Uuid::new_v4();
             pos = Vec2 {
                 x: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
                 y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
             };
         }
         else {
-            if entities.is_empty() {
+            if entity_positions.is_empty() {
                 counter += 1;
                 tokio::time::sleep(tokio::time::Duration::from_millis(config.entity_add_interval_ms)).await;
                 continue;
             }
 
-            id = *entities.keys().next().unwrap();
+            id = *entity_positions.keys().next().unwrap();
             pos = Vec2 {
                 x: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
                 y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
@@ -141,7 +422,7 @@ async fn run_main_loop(
 
 
         //if the entity already exists, verify if it has moved to a different shard
-        if let Some(old_pos) = entities.get(&id) {
+        if let Some(old_pos) = entity_positions.get(&id) {
             let old_shard = quadtree.shard_for(*old_pos);
             let new_shard = quadtree.shard_for(pos);
             if old_shard != new_shard {
@@ -149,7 +430,7 @@ async fn run_main_loop(
                 // envoyer `Unsubscribe(ancien topic)` puis `Subscribe(nouveau topic)` au broker
                 println!("Entity {} moved from shard {:?} to shard {:?}", id, old_shard, new_shard);
 
-                entities.insert(id, pos);
+                entity_positions.insert(id, pos);
             }
 
             let nearby_shards = quadtree.shards_near(pos, config.nearby_margin);
@@ -161,16 +442,12 @@ async fn run_main_loop(
 
         // If it's a new entity, just insert it into the quadtree and track its position
         else {
-            entities.insert(id, pos);
+            entity_positions.insert(id, pos);
             println!("Entity {} created at position ({:.2}, {:.2}) in shard {:?}", id, pos.x, pos.y, quadtree.shard_for(pos));
         }
 
         //recreate the quadtree from scratch to simulate dynamic entity movement and shard changes
-        let mut new_quadtree = Quadtree::new(boundary, 0, config.max_depth, config.max_capacity);
-        for (_id, pos) in &entities {
-            new_quadtree.insert(*pos);
-        }
-        quadtree = new_quadtree;
+        quadtree = rebuild_quadtree(boundary, config.max_depth, config.max_capacity, &entity_positions);
 
         // Query Shard Data that will be sent to the orchestrator to update server layout
         let shard_data = quadtree.collect_shards();

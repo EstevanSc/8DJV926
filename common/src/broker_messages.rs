@@ -5,9 +5,9 @@ pub enum BrokerMessage {
     Subscribe { client_id: Uuid, topic: [u8; 32] },         // 0x01
     Unsubscribe { client_id: Uuid, topic: [u8; 32] },       // 0x02
     Publish { topic: [u8; 32], payload: Vec<u8> },          // 0x03
-    Broadcast { payload: Vec<u8> },                         // 0x04
+    Broadcast { topic: [u8; 32], payload: Vec<u8> },        // 0x04
     Connect { client_id: Uuid },                            // 0x05
-}
+}   
 
 impl BrokerMessage {
     pub fn deserialize(data: &[u8]) -> Option<Self> {
@@ -75,9 +75,33 @@ impl BrokerMessage {
         buffer
     }
 
-    pub fn serialize_broadcast(payload: &[u8]) -> Vec<u8> {
-        let mut buffer = Vec::with_capacity(1 + 2 + payload.len());
+    pub fn serialize_subscribe(client_id: Uuid, topic: [u8; 32]) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(1 + 16 + 32);
+        buffer.push(0x01);
+        buffer.extend_from_slice(client_id.as_bytes());
+        buffer.extend_from_slice(&topic);
+        buffer
+    }
+
+    pub fn serialize_unsubscribe(client_id: Uuid, topic: [u8; 32]) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(1 + 16 + 32);
+        buffer.push(0x02);
+        buffer.extend_from_slice(client_id.as_bytes());
+        buffer.extend_from_slice(&topic);
+        buffer
+    }
+
+    pub fn serialize_connect(client_id: Uuid) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(1 + 16);
+        buffer.push(0x05);
+        buffer.extend_from_slice(client_id.as_bytes());
+        buffer
+    }
+
+    pub fn serialize_broadcast(topic: [u8; 32], payload: &[u8]) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(1 + 32 + 2 + payload.len());
         buffer.push(0x04);
+        buffer.extend_from_slice(&topic);
         buffer.extend_from_slice(&(payload.len() as u16).to_le_bytes());
         buffer.extend_from_slice(payload);
         buffer
