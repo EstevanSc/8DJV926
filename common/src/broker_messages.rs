@@ -2,10 +2,11 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub enum BrokerMessage {
-    Subscribe { client_id: Uuid, topic: [u8; 32] },          // 0x01
-    Unsubscribe { client_id: Uuid, topic: [u8; 32] },        // 0x02
+    Subscribe { client_id: Uuid, topic: [u8; 32] },         // 0x01
+    Unsubscribe { client_id: Uuid, topic: [u8; 32] },       // 0x02
     Publish { topic: [u8; 32], payload: Vec<u8> },          // 0x03
-    Broadcast { payload: Vec<u8> },                          // 0x04
+    Broadcast { payload: Vec<u8> },                         // 0x04
+    Connect { client_id: Uuid },                            // 0x05
 }
 
 impl BrokerMessage {
@@ -53,6 +54,13 @@ impl BrokerMessage {
 
                 let payload = body[34..34 + payload_len].to_vec();
                 Some(BrokerMessage::Publish { topic, payload })
+            }
+            0x05 => { // Connect: client_id (16B)
+                if body.len() < 16 {
+                    return None;
+                }
+                let client_id = Uuid::from_slice(&body[0..16]).ok()?;
+                Some(BrokerMessage::Connect { client_id })
             }
             _ => None,  // 0x04 (Broadcast) is sent outbound only; shouldn't be received
         }

@@ -30,6 +30,7 @@ impl BrokerConfig {
 pub struct BrokerState {
     peer: GamePeer,
     subscriptions: HashMap<[u8; 32], HashSet<uuid::Uuid>>,
+    uuid_map: HashMap<uuid::Uuid, GameConnection>,
 }
 
 pub fn bind_socket(config: &BrokerConfig) -> Result<GamePeer, GameSocketError> {
@@ -53,6 +54,7 @@ impl BrokerState {
         Self {
             peer,
             subscriptions: HashMap::new(),
+            uuid_map: HashMap::new(),
         }
     }
     pub fn receive_packets(&mut self) {
@@ -93,6 +95,9 @@ impl BrokerState {
             BrokerMessage::Publish {topic, payload} => {
                 self.publish(topic, payload, stream);
             }
+            BrokerMessage::Connect {client_id} => {
+                self.uuid_map.insert(client_id, connection.clone());
+            }
             _ => {} // The broker shouldn't receive broadcast messages
         }
     }
@@ -103,7 +108,7 @@ impl BrokerState {
             let bytes_payload = Bytes::from(broadcast_bytes);
 
             for subscriber_uuid in subscribers {
-                let target_conn = GameConnection::from(*subscriber_uuid);
+                let target_conn = self.uuid_map.get_mut(&subscriber_uuid).unwrap();
                 // Relay matching the incoming stream rules (e.g. Unreliable Datagram)
                 let _ = self.peer.send(&target_conn, &stream, bytes_payload.clone());
             }
