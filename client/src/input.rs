@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 
+use common::broker_messages::BrokerMessage;
 use common::packets::PlayerInput;
+use common::topics::Topic;
+use uuid::Uuid;
 
-use super::GameState;
+use super::{GameSession, GameState};
 use super::net::{ActivePeer, ServerConn};
 
 pub struct ClientInputPlugin;
@@ -15,6 +18,7 @@ impl Plugin for ClientInputPlugin {
 
 fn send_input(
     keys: Res<ButtonInput<KeyCode>>,
+    session: Res<GameSession>,
     peer_res: Option<ResMut<ActivePeer>>,
     server_conn: Option<Res<ServerConn>>,
 ) {
@@ -43,10 +47,18 @@ fn send_input(
         return;
     }
 
-    let data = wincode::serialize(&PlayerInput { dx, dy })
+    let Ok(player_id) = Uuid::parse_str(&session.player_id) else {
+        tracing::warn!("send (input): invalid player_id '{}'; skipping", session.player_id);
+        return;
+    };
+
+    let payload = wincode::serialize(&PlayerInput { dx, dy })
         .expect("failed to serialize PlayerInput");
+
+    let topic = Topic::Input(player_id).to_bytes();
+    let publish = BrokerMessage::serialize_publish(topic, &payload);
     let stream = game_sockets::GameStream::from(0);
-    if let Err(e) = peer.send(&server_conn.0, &stream, data.into()) {
-        tracing::warn!("send (input): {e:?}");
+    if let Err(e) = peer.send(&server_conn.0, &stream, publish.into()) {
+        tracing::warn!("send (input publish): {e:?}");
     }
 }
