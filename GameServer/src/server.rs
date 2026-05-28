@@ -3,10 +3,11 @@ use crate::messages::GameMessage;
 use crate::net::{ConnectedPlayers, SimCommandSender, entity_id_from_uuid};
 use common::broker_messages::BrokerMessage;
 use common::packets::PlayerInput;
-use common::topics::{deserialize_input_payload, Topic};
+use common::topics::{deserialize_input_payload, serialize_shard_created_payload, ShardCreatedPayload, Topic};
+use common::Vec2;
 use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
-use game_sockets::{GameNetworkEvent, GamePeer, GameStream};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
@@ -22,8 +23,8 @@ impl Plugin for ServerPlugin {
                 Duration::from_secs(5),
                 TimerMode::Repeating,
             )))
-            .add_systems(Startup, bind_socket)
-            .add_systems(Update, (receive_packets, send_heartbeat).chain());
+            .add_systems(Startup, (bind_socket, connect_broker).chain())
+            .add_systems(Update, (receive_packets, poll_broker_events, send_heartbeat).chain());
     }
 }
 
@@ -47,6 +48,8 @@ pub struct ServerConfig {
     /// Routable address advertised to clients via heartbeat.
     pub public_ip: String,
     pub port: u16,
+    pub broker_host: String,
+    pub broker_port: u16,
     pub zone: String,
     pub max_players: usize,
     pub orchestrator_address: SocketAddr,
@@ -57,6 +60,10 @@ impl ServerConfig {
             .unwrap_or_else(|_| "7777".to_string())
             .parse::<u16>()
             .expect("Invalid DS_PORT");
+        let broker_port = std::env::var("BROKER_PORT")
+            .unwrap_or_else(|_| "7776".to_string())
+            .parse::<u16>()
+            .expect("Invalid BROKER_PORT");
 
         let orchestrator_host =
             std::env::var("ORCH_HOST").unwrap_or_else(|_| "127.0.0.1:7000".to_string());
@@ -75,6 +82,8 @@ impl ServerConfig {
             // Set to "localhost" for local Docker dev (port-mapped to host).
             public_ip: std::env::var("DS_PUBLIC_IP").unwrap_or_else(|_| "localhost".to_string()),
             port,
+            broker_host: std::env::var("BROKER_HOST").unwrap_or_else(|_| "localhost".to_string()),
+            broker_port,
             zone: std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string()),
             max_players: std::env::var("MAX_PLAYERS")
                 .unwrap_or_else(|_| "2".to_string()) // low number to test FULL states easily
@@ -88,6 +97,13 @@ impl ServerConfig {
 #[derive(Resource)]
 pub struct NetworkPeer {
     pub peer: GamePeer,
+}
+
+#[derive(Resource)]
+pub struct BrokerPeer {
+    pub peer: GamePeer,
+    pub connection: Option<GameConnection>,
+    pub shard_uuid: Option<Uuid>,
 }
 
 #[derive(Resource)]
@@ -106,6 +122,82 @@ fn bind_socket(mut commands: Commands, server_config: Res<ServerConfig>) {
         }
         Err(e) => {
             eprintln!("Failed to listen on {}: {}", ip, e);
+        }
+    }
+}
+
+fn connect_broker(mut commands: Commands, server_config: Res<ServerConfig>) {
+    let peer = GamePeer::new(QuicBackend::new());
+
+    match peer.connect(&server_config.broker_host, server_config.broker_port) {
+        Ok(_) => {
+            println!(
+                "Connecting to broker at {}:{}",
+                server_config.broker_host, server_config.broker_port
+            );
+            commands.insert_resource(BrokerPeer {
+                peer,
+                connection: None,
+                shard_uuid: None,
+            });
+        }
+        Err(e) => {
+            eprintln!(
+                "Failed to initiate broker connection to {}:{}: {}",
+                server_config.broker_host, server_config.broker_port, e
+            );
+        }
+    }
+}
+
+fn poll_broker_events(mut broker: ResMut<BrokerPeer>) {
+    while let Ok(Some(event)) = broker.peer.poll() {
+        match event {
+            GameNetworkEvent::Connected(connection) => {
+                println!(
+                    "Broker connection established! Connection id: {:?}",
+                    connection.connection_id
+                );
+                broker.connection = Some(connection);
+
+                if broker.shard_uuid.is_none() {
+                    let shard_uuid = Uuid::new_v4();
+                    broker.shard_uuid = Some(shard_uuid);
+
+                    let stream = GameStream::from(0);
+                    let connect_message = BrokerMessage::serialize_connect(shard_uuid);
+                    if let Err(e) = broker.peer.send(&connection, &stream, connect_message.into()) {
+                        eprintln!("Failed to send broker Connect message: {:?}", e);
+                        continue;
+                    }
+
+                    let shard_created_payload = ShardCreatedPayload {
+                        shard_id: shard_uuid,
+                        center: Vec2 { x: 0.0, y: 0.0 },
+                    };
+                    let publish_message = BrokerMessage::serialize_publish(
+                        Topic::ShardCreated.to_bytes(),
+                        &serialize_shard_created_payload(&shard_created_payload),
+                    );
+
+                    if let Err(e) = broker.peer.send(&connection, &stream, publish_message.into()) {
+                        eprintln!("Failed to send broker ShardCreated publish: {:?}", e);
+                    } else {
+                        println!("Announced shard creation to broker with shard_uuid={}", shard_uuid);
+                    }
+                }
+            }
+            GameNetworkEvent::Disconnected(connection) => {
+                eprintln!(
+                    "Broker disconnected! Connection id: {:?}",
+                    connection.connection_id
+                );
+                broker.connection = None;
+            }
+            GameNetworkEvent::Error { inner, .. } => {
+                eprintln!("Broker network error: {:?}", inner);
+            }
+            _ => {}
         }
     }
 }
