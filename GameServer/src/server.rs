@@ -1,10 +1,12 @@
 use crate::heartbeat::Heartbeat;
 use crate::messages::GameMessage;
 use crate::net::{ConnectedPlayers, SimCommandSender, entity_id_from_uuid};
+use common::broker_messages::BrokerMessage;
 use common::packets::PlayerInput;
+use common::topics::Topic;
 use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
-use game_sockets::{GameNetworkEvent, GamePeer};
+use game_sockets::{GameNetworkEvent, GamePeer, GameStream};
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
@@ -127,49 +129,14 @@ fn receive_packets(
                 connection,
                 stream,
             } => {
-                if let Ok(msg) = wincode::deserialize::<GameMessage>(&data) {
-                    match msg {
-                        // JOIN message
-                        GameMessage::Join { username } => {
-                            println!("Joined {}", username);
-                            let id = connection.connection_id;
-                            let entity_id = entity_id_from_uuid(id);
-                            player_registry.registry.insert(
-                                id,
-                                PlayerInfo { id, entity_id, username: username.clone() },
-                            );
-                            let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
-                                entity_id,
-                                display_name: username,
-                            });
-
-                            // Send Welcome message to the player
-                            let response = GameMessage::Welcome { player_id: id };
-                            if let Ok(serialized) = wincode::serialize(&response) {
-                                server
-                                    .peer
-                                    .send(&connection, &stream, serialized.into())
-                                    .unwrap();
-                            } else {
-                                eprintln!("Failed to serialize game message");
-                            }
-                        }
-                        _ => {
-                            println!("Unexpected message {:?}", msg);
-                        }
-                    }
-                } else if let Ok(input) = wincode::deserialize::<PlayerInput>(&data) {
-                    // Unreliable player-input datagram
-                    if let Some(info) = player_registry.registry.get(&connection.connection_id) {
-                        let _ = sim_tx.0.send(crate::net::SimCommand::Input {
-                            entity_id: info.entity_id,
-                            dx: input.dx,
-                            dy: input.dy,
-                        });
-                    }
-                } else {
-                    eprintln!("Unknown message from {:?}", connection.connection_id);
-                }
+                handle_message(
+                    &data,
+                    connection,
+                    stream,
+                    &mut server,
+                    &mut player_registry,
+                    &sim_tx,
+                );
             }
             GameNetworkEvent::Disconnected(conn) => {
                 if let Ok(mut map) = conn_players.0.lock() {
@@ -184,6 +151,102 @@ fn receive_packets(
             }
             _ => {}
         }
+    }
+}
+
+fn handle_message(
+    data: &[u8],
+    connection: game_sockets::GameConnection,
+    stream: GameStream,
+    server: &mut ResMut<NetworkPeer>,
+    player_registry: &mut ResMut<PlayerRegistry>,
+    sim_tx: &Res<SimCommandSender>,
+) {
+    if let Some(message) = BrokerMessage::deserialize(data) {
+        handle_broker_message(message, connection, stream, player_registry, sim_tx);
+        return;
+    }
+
+    if let Ok(msg) = wincode::deserialize::<GameMessage>(data) {
+        match msg {
+            GameMessage::Join { username } => {
+                println!("Joined {}", username);
+                let id = connection.connection_id;
+                let entity_id = entity_id_from_uuid(id);
+                player_registry.registry.insert(
+                    id,
+                    PlayerInfo { id, entity_id, username: username.clone() },
+                );
+                let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
+                    entity_id,
+                    display_name: username,
+                });
+
+                // Send Welcome message to the player
+                let response = GameMessage::Welcome { player_id: id };
+                if let Ok(serialized) = wincode::serialize(&response) {
+                    server
+                        .peer
+                        .send(&connection, &stream, serialized.into())
+                        .unwrap();
+                } else {
+                    eprintln!("Failed to serialize game message");
+                }
+            }
+            _ => {
+                println!("Unexpected message {:?}", msg);
+            }
+        }
+        return;
+    }
+
+    if let Ok(input) = wincode::deserialize::<PlayerInput>(data) {
+        // Unreliable player-input datagram
+        handle_player_input(connection.connection_id, input, player_registry, sim_tx);
+        return;
+    }
+
+    eprintln!("Unknown message from {:?}", connection.connection_id);
+}
+
+fn handle_broker_message(
+    message: BrokerMessage,
+    connection: game_sockets::GameConnection,
+    _stream: GameStream,
+    player_registry: &mut ResMut<PlayerRegistry>,
+    sim_tx: &Res<SimCommandSender>,
+) {
+    match message {
+        BrokerMessage::Publish { topic, payload } => match Topic::from_bytes(topic) {
+            Topic::Input(player_id) => {
+                if let Ok(input) = wincode::deserialize::<PlayerInput>(&payload) {
+                    handle_player_input(player_id, input, player_registry, sim_tx);
+                } else {
+                    eprintln!("Failed to decode broker input payload from {:?}", connection.connection_id);
+                }
+            }
+            other => {
+                println!("Ignoring broker publish for unexpected topic {:?}", other);
+            }
+        },
+        _ => {
+            println!("Ignoring broker message {:?} from {:?}", message, connection.connection_id);
+        }
+    }
+}
+
+fn handle_player_input(
+    player_id: Uuid,
+    input: PlayerInput,
+    player_registry: &ResMut<PlayerRegistry>,
+    sim_tx: &Res<SimCommandSender>,
+) {
+    if let Some(info) = player_registry.registry.get(&player_id) {
+        let _ = sim_tx.0.send(crate::net::SimCommand::Input {
+            entity_id: info.entity_id,
+            dx: input.dx,
+            dy: input.dy,
+        });
     }
 }
 
