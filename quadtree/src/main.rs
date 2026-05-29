@@ -244,13 +244,13 @@ async fn handle_shard_snapshot_payload(
         }
     }
 
-    let new_shard_ids: HashSet<u32> = quadtree
+/*    let new_shard_ids: HashSet<u32> = quadtree
         .collect_shards()
         .into_iter()
         .filter_map(|shard| shard.shard_id)
         .collect();
     *shards = new_shard_ids;
-
+*/
     Ok(())
 }
 
@@ -515,7 +515,19 @@ async fn run_main_loop(
         }
         */
         //recreate the quadtree from scratch to simulate dynamic entity movement and shard changes
-        quadtree = rebuild_quadtree(boundary, config.max_depth, config.max_capacity, &entity_positions);
+        //quadtree = rebuild_quadtree(boundary, config.max_depth, config.max_capacity, &entity_positions);
+
+        /*//print shard IDs and boundaries for debugging
+        println!("Rebuilt Quadtree:");
+        for shard in quadtree.collect_shards() {    
+            println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
+        }
+
+        tracing::info!("Rebuilt quadtree with {} entities", entity_positions.len());
+
+        for entity_positions in entity_positions {
+            tracing::debug!("Entity {} at position ({:.2}, {:.2})", entity_positions.0, entity_positions.1.x, entity_positions.1.y);
+        }*/
 
         // Query Shard Data that will be sent to the orchestrator to update server layout
         let shard_data = quadtree.collect_shards();
@@ -533,12 +545,13 @@ async fn run_main_loop(
             }
         }
         //print shard IDs and boundaries for debugging
+        /*
         println!("Current Shard Layout:");
         for shard in &shard_data {
             println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
-        }
+        }*/
 
-        counter += 1;
+        //counter += 1;
 
         // Sleep to simulate time passing
         tokio::time::sleep(tokio::time::Duration::from_millis(config.entity_add_interval_ms)).await;
