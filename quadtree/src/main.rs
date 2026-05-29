@@ -1,7 +1,11 @@
 mod quic_client;
 
 use common::broker_messages::BrokerMessage;
-use common::topics::{deserialize_position_payload, deserialize_shard_created_payload, PositionPayload, ShardCreatedPayload, Topic};
+use common::packets::PositionBatch;
+use common::topics::{
+    deserialize_position_payload, deserialize_shard_created_payload,
+    deserialize_shard_snapshot_payload, PositionPayload, ShardCreatedPayload, Topic,
+};
 use common::{Boundary, Quadrant, ShardData, Vec2};
 use game_sockets::GameNetworkEvent;
 use quic_client::QuicClient;
@@ -81,6 +85,12 @@ fn rebuild_quadtree(
     quadtree
 }
 
+fn entity_id_from_uuid(id: Uuid) -> u32 {
+    id.as_bytes()
+        .iter()
+        .fold(0u32, |acc, &byte| acc.wrapping_add(byte as u32))
+}
+
 async fn subscribe_entity_input(
     broker_client: &QuicClient,
     shard_uuid: Uuid,
@@ -145,6 +155,10 @@ async fn handle_shard_created_payload(
     shard_uuid_by_id.insert(shard_id, payload.shard_id);
 
     if let Some(client) = broker_client {
+        client
+            .subscribe(*QUADTREE_ID, Topic::ShardSnapshot(payload.shard_id))
+            .await?;
+
         let entity_ids_in_shard: Vec<Uuid> = entity_positions
             .iter()
             .filter_map(|(entity_id, position)| {
@@ -169,11 +183,42 @@ async fn handle_shard_snapshot_payload(
     boundary: Boundary,
     max_depth: u8,
     max_capacity: usize,
-    entity_positions: &HashMap<Uuid, Vec2>,
+    entity_positions: &mut HashMap<Uuid, Vec2>,
+    entity_shard_ids: &mut HashMap<Uuid, u32>,
     shards: &mut HashSet<u32>,
 ) -> anyhow::Result<()> {
-    let _ = payload;
+    let snapshot = deserialize_shard_snapshot_payload(&payload)
+        .ok_or_else(|| anyhow::anyhow!("Failed to decode shard snapshot payload"))?;
+
+    let batch = wincode::deserialize::<PositionBatch>(&snapshot.replication)
+        .map_err(|_| anyhow::anyhow!("Failed to decode shard snapshot replication batch"))?;
+
+    let entity_uuid_by_id: HashMap<u32, Uuid> = entity_positions
+        .keys()
+        .copied()
+        .map(|uuid| (entity_id_from_uuid(uuid), uuid))
+        .collect();
+
+    for snap in batch.snapshots {
+        if let Some(entity_uuid) = entity_uuid_by_id.get(&snap.entity_id).copied() {
+            entity_positions.insert(
+                entity_uuid,
+                Vec2 {
+                    x: snap.x as f64,
+                    y: snap.y as f64,
+                },
+            );
+        }
+    }
+
     *quadtree = rebuild_quadtree(boundary, max_depth, max_capacity, entity_positions);
+
+    entity_shard_ids.clear();
+    for (entity_id, position) in entity_positions.iter() {
+        if let Some(shard_id) = quadtree.shard_for(*position) {
+            entity_shard_ids.insert(*entity_id, shard_id);
+        }
+    }
 
     let new_shard_ids: HashSet<u32> = quadtree
         .collect_shards()
@@ -202,6 +247,7 @@ async fn handle_broker_message(
             Topic::Position => {
                 let payload = deserialize_position_payload(&payload)
                     .ok_or_else(|| anyhow::anyhow!("Failed to decode position payload"))?;
+                tracing::info!("Quadtree received Position for {}", payload.entity_id);
                 handle_position_payload(
                     broker_client,
                     payload,
@@ -215,6 +261,7 @@ async fn handle_broker_message(
             Topic::ShardCreated => {
                 let payload = deserialize_shard_created_payload(&payload)
                     .ok_or_else(|| anyhow::anyhow!("Failed to decode shard created payload"))?;
+                tracing::info!("Quadtree received ShardCreated for shard {}", payload.shard_id);
                 handle_shard_created_payload(
                     broker_client,
                     payload,
@@ -225,6 +272,7 @@ async fn handle_broker_message(
                 .await?;
             }
             Topic::ShardSnapshot(_) => {
+                tracing::info!("Quadtree received ShardSnapshot");
                 handle_shard_snapshot_payload(
                     payload,
                     quadtree,
@@ -232,6 +280,7 @@ async fn handle_broker_message(
                     max_depth,
                     max_capacity,
                     entity_positions,
+                    entity_shard_ids,
                     shards,
                 )
                 .await?;
@@ -332,9 +381,13 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Err(e) = client.subscribe(quadtree_id, Topic::Position).await {
             tracing::warn!("Failed to subscribe to Position: {e}");
+        } else {
+            tracing::info!("Quadtree subscribed to Position");
         }
         if let Err(e) = client.subscribe(quadtree_id, Topic::ShardCreated).await {
             tracing::warn!("Failed to subscribe to ShardCreated: {e}");
+        } else {
+            tracing::info!("Quadtree subscribed to ShardCreated");
         }
     }
 
@@ -379,7 +432,7 @@ async fn run_main_loop(
             )
             .await?;
         }
-
+        /*
         // Simulate entity creation
 
         let id: Uuid;
@@ -405,7 +458,7 @@ async fn run_main_loop(
                 y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
             };
         }
-
+        
 
         //if the entity already exists, verify if it has moved to a different shard
         if let Some(old_pos) = entity_positions.get(&id) {
@@ -425,13 +478,13 @@ async fn run_main_loop(
                 println!("Entity {} is near shard boundaries: nearby shards = {:?}", id, nearby_shards);
             }
         }
-
+        
         // If it's a new entity, just insert it into the quadtree and track its position
         else {
             entity_positions.insert(id, pos);
             println!("Entity {} created at position ({:.2}, {:.2}) in shard {:?}", id, pos.x, pos.y, quadtree.shard_for(pos));
         }
-
+        */
         //recreate the quadtree from scratch to simulate dynamic entity movement and shard changes
         quadtree = rebuild_quadtree(boundary, config.max_depth, config.max_capacity, &entity_positions);
 
@@ -451,10 +504,10 @@ async fn run_main_loop(
             }
         }
         //print shard IDs and boundaries for debugging
-        println!("Current Shard Layout:");
-        for shard in &shard_data {
-            println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
-        }
+        //println!("Current Shard Layout:");
+        //for shard in &shard_data {
+        //    println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
+        //}
 
         counter += 1;
 

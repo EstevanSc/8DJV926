@@ -6,7 +6,7 @@ use common::Vec2;
 use uuid::Uuid;
 
 use super::{GameSession, GameState};
-use super::net::{ActivePeer, ServerConn};
+use super::net::{ActivePeer, BrokerConn};
 
 pub struct ClientInputPlugin;
 
@@ -20,9 +20,9 @@ fn send_input(
     keys: Res<ButtonInput<KeyCode>>,
     session: Res<GameSession>,
     peer_res: Option<ResMut<ActivePeer>>,
-    server_conn: Option<Res<ServerConn>>,
+    broker_conn: Option<Res<BrokerConn>>,
 ) {
-    let (Some(peer_res), Some(server_conn)) = (peer_res, server_conn) else {
+    let (Some(peer_res), Some(broker_conn)) = (peer_res, broker_conn) else {
         return;
     };
     let Ok(peer) = peer_res.0.lock() else { return };
@@ -60,7 +60,7 @@ fn send_input(
     let topic = Topic::Input(player_id).to_bytes();
     let publish = BrokerMessage::serialize_publish(topic, &payload);
     let stream = game_sockets::GameStream::from(0);
-    if let Err(e) = peer.send(&server_conn.0, &stream, publish.into()) {
+    if let Err(e) = peer.send(&broker_conn.0, &stream, publish.into()) {
         tracing::warn!("send (input publish): {e:?}");
     }
 }

@@ -39,10 +39,10 @@ WORKDIR /app
 COPY --from=builder /workspace/target/release/broker /app/broker
 
 # Defaults — overridden by docker-compose environment:
-ENV BROKER_PORT=7777
+ENV BROKER_PORT=7776
 ENV BROKER_PUBLIC_IP=localhost
 
 # QUIC/UDP port for client/shard connections
-EXPOSE 7777/udp
+EXPOSE 7776/udp
 
 CMD ["/app/broker"]

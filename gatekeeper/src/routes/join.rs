@@ -111,7 +111,9 @@ pub async fn handler(
         broker.port,
     );
     */
-    let broker_ip = std::env::var("BROKER_IP").unwrap_or_else(|_| "127.0.0.1".into());
+    let broker_ip = std::env::var("BROKER_PUBLIC_IP")
+        .or_else(|_| std::env::var("BROKER_IP"))
+        .unwrap_or_else(|_| "127.0.0.1".into());
     let broker_port = std::env::var("BROKER_PORT")
         .unwrap_or_else(|_| "7776".into())
         .parse()

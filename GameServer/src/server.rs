@@ -3,11 +3,15 @@ use crate::messages::GameMessage;
 use crate::net::{ConnectedPlayers, SimCommandSender, entity_id_from_uuid};
 use common::broker_messages::BrokerMessage;
 use common::packets::PlayerInput;
-use common::topics::{deserialize_input_payload, serialize_shard_created_payload, ShardCreatedPayload, Topic};
+use common::packets::PositionBatch;
+use common::topics::{
+    deserialize_input_payload, deserialize_shard_snapshot_payload, serialize_shard_created_payload,
+    serialize_shard_snapshot_payload, ShardCreatedPayload, ShardSnapshotPayload, Topic,
+};
 use common::Vec2;
 use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
@@ -103,6 +107,8 @@ pub struct NetworkPeer {
 pub struct BrokerPeer {
     pub peer: GamePeer,
     pub connection: Option<GameConnection>,
+    pub control_stream: Option<GameStream>,
+    pub snapshot_stream: Option<GameStream>,
     pub shard_uuid: Option<Uuid>,
 }
 
@@ -138,6 +144,8 @@ fn connect_broker(mut commands: Commands, server_config: Res<ServerConfig>) {
             commands.insert_resource(BrokerPeer {
                 peer,
                 connection: None,
+                control_stream: None,
+                snapshot_stream: None,
                 shard_uuid: None,
             });
         }
@@ -159,32 +167,22 @@ fn poll_broker_events(mut broker: ResMut<BrokerPeer>) {
                     connection.connection_id
                 );
                 broker.connection = Some(connection);
-
-                if broker.shard_uuid.is_none() {
-                    let shard_uuid = Uuid::new_v4();
-                    broker.shard_uuid = Some(shard_uuid);
-
-                    let stream = GameStream::from(0);
-                    let connect_message = BrokerMessage::serialize_connect(shard_uuid);
-                    if let Err(e) = broker.peer.send(&connection, &stream, connect_message.into()) {
-                        eprintln!("Failed to send broker Connect message: {:?}", e);
-                        continue;
+                if let Err(e) = broker.peer.create_stream(connection, GameStreamReliability::Reliable) {
+                    eprintln!("Failed to create broker control stream: {:?}", e);
+                }
+                if let Err(e) = broker.peer.create_stream(connection, GameStreamReliability::Unreliable) {
+                    eprintln!("Failed to create broker snapshot stream: {:?}", e);
+                }
+            }
+            GameNetworkEvent::StreamCreated(connection, stream) => {
+                if broker.connection == Some(connection) {
+                    if stream.is_reliable() && broker.control_stream.is_none() {
+                        broker.control_stream = Some(stream);
+                    } else if !stream.is_reliable() && broker.snapshot_stream.is_none() {
+                        broker.snapshot_stream = Some(stream);
                     }
 
-                    let shard_created_payload = ShardCreatedPayload {
-                        shard_id: shard_uuid,
-                        center: Vec2 { x: 0.0, y: 0.0 },
-                    };
-                    let publish_message = BrokerMessage::serialize_publish(
-                        Topic::ShardCreated.to_bytes(),
-                        &serialize_shard_created_payload(&shard_created_payload),
-                    );
-
-                    if let Err(e) = broker.peer.send(&connection, &stream, publish_message.into()) {
-                        eprintln!("Failed to send broker ShardCreated publish: {:?}", e);
-                    } else {
-                        println!("Announced shard creation to broker with shard_uuid={}", shard_uuid);
-                    }
+                    try_announce_shard_creation(&mut broker);
                 }
             }
             GameNetworkEvent::Disconnected(connection) => {
@@ -193,6 +191,8 @@ fn poll_broker_events(mut broker: ResMut<BrokerPeer>) {
                     connection.connection_id
                 );
                 broker.connection = None;
+                broker.control_stream = None;
+                broker.snapshot_stream = None;
             }
             GameNetworkEvent::Error { inner, .. } => {
                 eprintln!("Broker network error: {:?}", inner);
@@ -244,6 +244,44 @@ fn receive_packets(
             _ => {}
         }
     }
+}
+
+fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>) {
+    if broker.shard_uuid.is_some() {
+        return;
+    }
+
+    let (Some(connection), Some(control_stream)) = (
+        broker.connection,
+        broker.control_stream.clone(),
+    ) else {
+        return;
+    };
+
+    let shard_uuid = Uuid::new_v4();
+    broker.shard_uuid = Some(shard_uuid);
+
+    let connect_message = BrokerMessage::serialize_connect(shard_uuid);
+    if let Err(e) = broker.peer.send(&connection, &control_stream, connect_message.into()) {
+        eprintln!("Failed to send broker Connect message: {:?}", e);
+        return;
+    }
+
+    let shard_created_payload = ShardCreatedPayload {
+        shard_id: shard_uuid,
+        center: Vec2 { x: 0.0, y: 0.0 },
+    };
+    let publish_message = BrokerMessage::serialize_publish(
+        Topic::ShardCreated.to_bytes(),
+        &serialize_shard_created_payload(&shard_created_payload),
+    );
+
+    if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
+        eprintln!("Failed to send broker ShardCreated publish: {:?}", e);
+        return;
+    }
+
+    println!("Announced shard creation to broker with shard_uuid={}", shard_uuid);
 }
 
 fn handle_message(
@@ -333,6 +371,45 @@ fn handle_broker_message(
     }
 }
 
+pub(crate) fn publish_shard_snapshot(broker: &mut ResMut<BrokerPeer>, batch: &PositionBatch) {
+    let Some(connection) = broker.connection else {
+        return;
+    };
+
+    let Some(stream) = broker.snapshot_stream.clone() else {
+        return;
+    };
+
+    let Some(shard_uuid) = broker.shard_uuid else {
+        return;
+    };
+
+    let Ok(snapshot_bytes) = wincode::serialize(batch) else {
+        eprintln!("Failed to serialize shard snapshot state");
+        return;
+    };
+
+    let payload = ShardSnapshotPayload {
+        shard_id: shard_uuid,
+        replication: snapshot_bytes,
+    };
+
+    let payload_bytes = serialize_shard_snapshot_payload(&payload);
+    if deserialize_shard_snapshot_payload(&payload_bytes).is_none() {
+        eprintln!("Failed to validate shard snapshot payload round-trip");
+        return;
+    }
+
+    let publish_message = BrokerMessage::serialize_publish(
+        Topic::ShardSnapshot(shard_uuid).to_bytes(),
+        &payload_bytes,
+    );
+
+    if let Err(e) = broker.peer.send(&connection, &stream, publish_message.into()) {
+        eprintln!("Failed to send broker ShardSnapshot publish: {:?}", e);
+    }
+}
+
 fn handle_player_input(
     player_id: Uuid,
     dx: f32,
@@ -387,6 +464,5 @@ fn send_heartbeat(
                 );
             }
         }
-    }
-}
+    }}
 

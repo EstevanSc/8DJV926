@@ -3,14 +3,12 @@ use avian2d::{math::*, prelude::*};
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use bytes::Bytes;
 
 use crate::authority::components::AuthorityState;
-use common::packets::PositionBatch;
+use common::packets::{PositionBatch, PositionSnapshot};
 
-use super::interest::interest_query;
-use super::net::{ConnectedPlayers, SimCommand, SimCommandReceiver, entity_id_from_uuid};
-use super::server::NetworkPeer;
+use super::net::{SimCommand, SimCommandReceiver};
+use super::server::{publish_shard_snapshot, BrokerPeer};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
@@ -42,7 +40,7 @@ impl Plugin for SimulationPlugin {
             .add_systems(FixedUpdate, spawn_players.after(process_net_commands))
             .add_systems(FixedUpdate, despawn_players.after(spawn_players))
             .add_systems(FixedUpdate, apply_player_inputs.after(despawn_players))
-            .add_systems(FixedUpdate, broadcast_position_snapshots.after(apply_player_inputs));
+            .add_systems(FixedUpdate, publish_shard_snapshots.after(apply_player_inputs));
     }
 }
 
@@ -160,48 +158,42 @@ fn despawn_players(
 
 /// Every tick: collect positions of all players and broadcast interest-filtered
 /// snapshots to each connected client individually.
-fn broadcast_position_snapshots(
+fn build_position_batch(
     mut tick: ResMut<TickCounter>,
     query: SnapshotQuery<'_, '_>,
-    conn_list: Res<ConnectedPlayers>,
-    server: Res<NetworkPeer>,
-) {
+) -> Option<PositionBatch> {
     tick.0 = tick.0.wrapping_add(1);
 
-    // Build the full list of (entity_id, display_name, world_pos) for this tick.
-    let all_players: Vec<(u32, String, Vec2)> = query
+    let snapshots: Vec<PositionSnapshot> = query
         .iter()
         .filter(|(_, authority_state, _)| authority_state.is_snapshot_visible())
         .map(|(player, _, transform)| {
-            (player.entity_id, player.display_name.clone(), transform.translation.truncate())
+            let position = transform.translation.truncate();
+            PositionSnapshot {
+                entity_id: player.entity_id,
+                display_name: player.display_name.clone(),
+                x: position.x as f32,
+                y: position.y as f32,
+                vx: 0.0,
+                vy: 0.0,
+            }
         })
         .collect();
 
-    if all_players.is_empty() {
-        return;
+    if snapshots.is_empty() {
+        return None;
     }
 
-    let stream = game_sockets::GameStream::from(0);
-    let conns = conn_list.0.lock().unwrap();
-    for (conn_uuid, conn) in conns.iter() {
-        // Derive this connection's entity_id and find their world position.
-        let observer_id = entity_id_from_uuid(*conn_uuid);
-        let observer_pos = all_players
-            .iter()
-            .find(|(id, _, _)| *id == observer_id)
-            .map(|(_, _, pos)| *pos)
-            .unwrap_or(Vec2::ZERO);
+    Some(PositionBatch { tick: tick.0, snapshots })
+}
 
-        let snapshots = interest_query(observer_pos, &all_players);
-        let batch = PositionBatch { tick: tick.0, snapshots };
-        match wincode::serialize(&batch) {
-            Ok(bytes) => {
-                if let Err(e) = server.peer.send(conn, &stream, Bytes::from(bytes)) {
-                    tracing::warn!("send error: {e}");
-                }
-            }
-            Err(e) => tracing::warn!("Failed to serialize PositionBatch: {e}"),
-        }
+fn publish_shard_snapshots(
+    tick: ResMut<TickCounter>,
+    query: SnapshotQuery<'_, '_>,
+    mut broker: ResMut<BrokerPeer>,
+) {
+    if let Some(batch) = build_position_batch(tick, query) {
+        publish_shard_snapshot(&mut broker, &batch);
     }
 }
 

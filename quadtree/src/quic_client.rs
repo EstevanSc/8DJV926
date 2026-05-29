@@ -5,7 +5,7 @@ use bytes::Bytes;
 use common::topics::Topic;
 use common::{BrokerMessage, ShardData};
 use game_sockets::protocols::QuicBackend;
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub struct QuicClient {
     peer: GamePeer,
     connection: GameConnection,
+    control_stream: GameStream,
     label: String,
 }
 
@@ -57,12 +58,16 @@ impl QuicClient {
 
         let mut peer = peer;
         let connection = Self::wait_for_connection(&mut peer, label).await?;
+        peer.create_stream(connection, GameStreamReliability::Reliable)
+            .with_context(|| format!("Failed to create {} control stream", label))?;
+        let control_stream = GameStream::new(1, GameStreamReliability::Reliable);
 
         tracing::info!("{} QUIC link connected (id={:?})", label, connection.connection_id);
 
         Ok(Self {
             peer,
             connection,
+            control_stream,
             label: label.to_string(),
         })
     }
@@ -80,10 +85,8 @@ impl QuicClient {
     }
 
     async fn send_bytes(&self, bytes: Vec<u8>, context: &str) -> Result<()> {
-        let stream = GameStream::from(0);
-
         self.peer
-            .send(&self.connection, &stream, Bytes::from(bytes))
+            .send(&self.connection, &self.control_stream, Bytes::from(bytes))
             .with_context(|| format!("Failed to send {} on {} link", context, self.label))?;
 
         Ok(())

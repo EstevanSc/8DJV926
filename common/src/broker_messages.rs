@@ -62,7 +62,23 @@ impl BrokerMessage {
                 let client_id = Uuid::from_slice(&body[0..16]).ok()?;
                 Some(BrokerMessage::Connect { client_id })
             }
-            _ => None,  // 0x04 (Broadcast) is sent outbound only; shouldn't be received
+            0x04 => { // Broadcast: topic (32B) + payload_len (2B) + payload // Note: This message type is only sent by the broker, the other parts use this deserialization.
+                if body.len() < 34 {
+                    return None;
+                }
+
+                let mut topic = [0u8; 32];
+                topic.copy_from_slice(&body[0..32]);
+                let payload_len = u16::from_le_bytes(body[32..34].try_into().ok()?) as usize;
+
+                if body.len() < 34 + payload_len {
+                    return None;
+                }
+
+                let payload = body[34..34 + payload_len].to_vec();
+                Some(BrokerMessage::Broadcast { topic, payload })
+            }
+            _ => None,
         }
     }
 

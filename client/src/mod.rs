@@ -4,7 +4,6 @@ pub mod login;
 pub mod net;
 
 use bevy::prelude::*;
-use rustls;
 
 use self::input::ClientInputPlugin;
 use self::interpolation::InterpolationPlugin;
