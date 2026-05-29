@@ -200,9 +200,12 @@ fn publish_shard_snapshots(
 /// Poll the net→sim command channel and translate commands into Bevy messages.
 fn process_net_commands(
     cmd_rx: Res<SimCommandReceiver>,
+    mut commands: Commands,
     mut spawn_writer: MessageWriter<SpawnPlayer>,
     mut despawn_writer: MessageWriter<DespawnPlayer>,
     mut input_buf: ResMut<PlayerInputBuffer>,
+    tick: Res<TickCounter>,
+    query: Query<(Entity, &Player, &Transform, Option<&LinearVelocity>)>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -223,6 +226,23 @@ fn process_net_commands(
             }
             SimCommand::Input { entity_id, dx, dy } => {
                 input_buf.0.insert(entity_id, Vec2::new(dx, dy));
+            }
+            
+            SimCommand::CrossingAlert { entity_id, target_shard_id } => {
+                for (entity, player, transform, velocity) in &query {
+                    if player.entity_id == entity_id {
+                        let vel = velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
+                        // ask authority to hand off this player to the target shard, including current position, velocity, and state
+                        let request = crate::authority::build_handoff_request(
+                            entity_id, 
+                            transform.translation.truncate(), 
+                            vel, 
+                            [0u8; 64]
+                        );
+                        crate::authority::begin_handoff(&mut commands, entity, target_shard_id, request, tick.0);
+                        break;
+                    }
+                }
             }
         }
     }

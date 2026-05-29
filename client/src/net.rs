@@ -9,7 +9,7 @@ use common::topics::{
 };
 use common::Vec2;
 use game_sockets::protocols::QuicBackend;
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wincode::{SchemaRead, SchemaWrite};
@@ -114,12 +114,22 @@ fn poll_net_events(
                     tracing::error!("Invalid player_id in session: '{}'", session.player_id);
                     continue;
                 };
+
+                if let Err(e) = peer.create_stream(conn, GameStreamReliability::Reliable) {
+                    tracing::error!("Failed to create reliable stream: {e:?}");
+                }
+                if let Err(e) = peer.create_stream(conn, GameStreamReliability::Unreliable) {
+                    tracing::error!("Failed to create unreliable stream: {e:?}");
+                }
+
+                let reliable_stream = GameStream::new(1, GameStreamReliability::Reliable);
+
                 // Register this player with the broker before gameplay publishes start.
-                let stream = GameStream::from(0);
                 let connect_message = BrokerMessage::serialize_connect(player_id);
-                if let Err(e) = peer.send(&conn, &stream, connect_message.into()) {
+                if let Err(e) = peer.send(&conn, &reliable_stream, connect_message.into()) {
                     tracing::error!("Failed to send broker Connect: {e:?}");
                 }
+                
                 
                 // Send an initial position publish so downstream broker consumers have a baseline.
                 let payload = serialize_position_payload(&PositionPayload {
@@ -129,7 +139,8 @@ fn poll_net_events(
 
                 let topic = Topic::Position.to_bytes();
                 let publish = BrokerMessage::serialize_publish(topic, &payload);
-                if let Err(e) = peer.send(&conn, &stream, publish.into()) {
+                
+                if let Err(e) = peer.send(&conn, &reliable_stream, publish.into()) {
                     tracing::error!("Failed to send initial Publish: {e:?}");
                 } else {
                     tracing::info!("Sent initial Publish for player_id={player_id}");

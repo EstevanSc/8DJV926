@@ -5,6 +5,7 @@ use common::packets::PositionBatch;
 use common::topics::{
     deserialize_position_payload, deserialize_shard_created_payload,
     deserialize_shard_snapshot_payload, PositionPayload, ShardCreatedPayload, Topic,
+    CrossingAlertPayload, serialize_crossing_alert_payload,
 };
 use common::{Boundary, Quadrant, ShardData, Vec2};
 use game_sockets::GameNetworkEvent;
@@ -110,6 +111,7 @@ async fn handle_position_payload(
     entity_positions: &mut HashMap<Uuid, Vec2>,
     entity_shard_ids: &mut HashMap<Uuid, u32>,
     shard_uuid_by_id: &HashMap<u32, Uuid>,
+    nearby_margin: f64,
 ) -> anyhow::Result<()> {
     entity_positions.insert(payload.entity_id, payload.position);
 
@@ -118,6 +120,28 @@ async fn handle_position_payload(
     };
 
     let previous_shard_id = entity_shard_ids.insert(payload.entity_id, shard_id);
+
+    // Boundary check for CrossingAlert 
+    let nearby_shards = quadtree.shards_near(payload.position, nearby_margin);
+    for near_id in nearby_shards {
+        if near_id != shard_id {
+            if let Some(target_uuid) = shard_uuid_by_id.get(&near_id) {
+                if let Some(source_uuid) = shard_uuid_by_id.get(&shard_id) {
+                    let alert = CrossingAlertPayload {
+                        entity_id: entity_id_from_uuid(payload.entity_id),
+                        target_shard_id: near_id,
+                        target_shard_uuid: *target_uuid,
+                    };
+                    if let Some(client) = broker_client {
+                        let _ = client.publish(
+                            Topic::CrossingAlert(*source_uuid),
+                            &serialize_crossing_alert_payload(&alert)
+                        ).await;
+                    }
+                }
+            }
+        }
+    }
 
     if let Some(client) = broker_client {
         if let Some(previous_shard_id) = previous_shard_id {
@@ -241,6 +265,7 @@ async fn handle_broker_message(
     max_depth: u8,
     max_capacity: usize,
     shards: &mut HashSet<u32>,
+    nearby_margin: f64,
 ) -> anyhow::Result<()> {
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
@@ -255,6 +280,7 @@ async fn handle_broker_message(
                     entity_positions,
                     entity_shard_ids,
                     shard_uuid_by_id,
+                    nearby_margin,
                 )
                 .await?;
             }
@@ -272,7 +298,7 @@ async fn handle_broker_message(
                 .await?;
             }
             Topic::ShardSnapshot(_) => {
-                tracing::info!("Quadtree received ShardSnapshot");
+                //tracing::info!("Quadtree received ShardSnapshot");
                 handle_shard_snapshot_payload(
                     payload,
                     quadtree,
@@ -303,6 +329,7 @@ async fn process_broker_events(
     max_depth: u8,
     max_capacity: usize,
     shards: &mut HashSet<u32>,
+    nearby_margin: f64,
 ) -> anyhow::Result<()> {
     loop {
         let Some(event) = broker_client.poll()? else {
@@ -323,6 +350,7 @@ async fn process_broker_events(
                         max_depth,
                         max_capacity,
                         shards,
+                        nearby_margin,
                     )
                     .await?;
                 }
@@ -429,6 +457,7 @@ async fn run_main_loop(
                 config.max_depth,
                 config.max_capacity,
                 &mut shards,
+                config.nearby_margin,
             )
             .await?;
         }

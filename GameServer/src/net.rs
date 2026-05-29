@@ -14,6 +14,8 @@ pub enum SimCommand {
     Joined { entity_id: u32, display_name: String },
     Left { entity_id: u32 },
     Input { entity_id: u32, dx: f32, dy: f32 },
+    
+    CrossingAlert { entity_id: u32, target_shard_id: u32 },
 }
 
 // ---------------------------------------------------------------------------

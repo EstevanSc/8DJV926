@@ -112,6 +112,14 @@ impl QuicClient {
         self.send_bytes(BrokerMessage::serialize_connect(client_id), "connect").await
     }
 
+    pub async fn publish(&self, topic: Topic, payload: &[u8]) -> Result<()> {
+        self.send_bytes(
+            BrokerMessage::serialize_publish(topic.to_bytes(), payload),
+            "publish",
+        )
+        .await
+    }
+
     /// Send shard data to the orchestrator using the shared binary schema.
     pub async fn send_shard_data(&self, shard_data: &[ShardData]) -> Result<()> {
         let payload = ShardData::encode_batch(shard_data)
