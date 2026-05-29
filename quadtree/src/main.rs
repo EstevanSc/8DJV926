@@ -533,10 +533,10 @@ async fn run_main_loop(
             }
         }
         //print shard IDs and boundaries for debugging
-        //println!("Current Shard Layout:");
-        //for shard in &shard_data {
-        //    println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
-        //}
+        println!("Current Shard Layout:");
+        for shard in &shard_data {
+            println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
+        }
 
         counter += 1;
 

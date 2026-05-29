@@ -85,7 +85,6 @@ fn start_connect(mut commands: Commands, session: Res<GameSession>) {
     commands.insert_resource(ActivePeer(Mutex::new(peer)));
     commands.insert_resource(ConnectTimeout(Timer::from_seconds(10.0, TimerMode::Once)));
 }
-
 fn poll_net_events(
     mut commands: Commands,
     session: Res<GameSession>,
@@ -107,46 +106,49 @@ fn poll_net_events(
         };
         match event {
             GameNetworkEvent::Connected(conn) => {
-                tracing::info!("QUIC connected (id={:?}); entering game", conn.connection_id);
+                tracing::info!("QUIC connected (id={:?}); opening streams...", conn.connection_id);
                 commands.insert_resource(BrokerConn(conn));
 
+                if let Err(e) = peer.create_stream(conn, GameStreamReliability::Reliable) {
+                    tracing::error!("Failed to initiate reliable stream: {e:?}");
+                }
+                if let Err(e) = peer.create_stream(conn, GameStreamReliability::Unreliable) {
+                    tracing::error!("Failed to initiate unreliable stream: {e:?}");
+                }
+                
+                commands.remove_resource::<ConnectTimeout>();
+            }
+
+            GameNetworkEvent::StreamCreated(conn, stream) => {
                 let Ok(player_id) = Uuid::parse_str(&session.player_id) else {
                     tracing::error!("Invalid player_id in session: '{}'", session.player_id);
                     continue;
                 };
 
-                if let Err(e) = peer.create_stream(conn, GameStreamReliability::Reliable) {
-                    tracing::error!("Failed to create reliable stream: {e:?}");
-                }
-                if let Err(e) = peer.create_stream(conn, GameStreamReliability::Unreliable) {
-                    tracing::error!("Failed to create unreliable stream: {e:?}");
-                }
+                if stream.is_reliable() {
+                    tracing::info!("Reliable stream is ready! Registering client_id={player_id}");
+                    
+                    let connect_message = BrokerMessage::serialize_connect(player_id);
+                    if let Err(e) = peer.send(&conn, &stream, connect_message.into()) {
+                        tracing::error!("Failed to send broker Connect: {e:?}");
+                    }
 
-                let reliable_stream = GameStream::new(1, GameStreamReliability::Reliable);
+                    next_state.set(GameState::InGame);
+                } 
+                else {
+                    let payload = serialize_position_payload(&PositionPayload {
+                        entity_id: player_id,
+                        position: Vec2 { x: 0.0, y: 0.0 },
+                    });
 
-                // Register this player with the broker before gameplay publishes start.
-                let connect_message = BrokerMessage::serialize_connect(player_id);
-                if let Err(e) = peer.send(&conn, &reliable_stream, connect_message.into()) {
-                    tracing::error!("Failed to send broker Connect: {e:?}");
+                    let topic = Topic::Position.to_bytes();
+                    let publish = BrokerMessage::serialize_publish(topic, &payload);
+                    if let Err(e) = peer.send(&conn, &stream, publish.into()) {
+                        tracing::error!("Failed to send initial Publish: {e:?}");
+                    } else {
+                        tracing::info!("Sent initial baseline Position Publish for player_id={player_id}");
+                    }
                 }
-                
-                
-                // Send an initial position publish so downstream broker consumers have a baseline.
-                let payload = serialize_position_payload(&PositionPayload {
-                    entity_id: player_id,
-                    position: Vec2 { x: 0.0, y: 0.0 },
-                });
-
-                let topic = Topic::Position.to_bytes();
-                let publish = BrokerMessage::serialize_publish(topic, &payload);
-                
-                if let Err(e) = peer.send(&conn, &reliable_stream, publish.into()) {
-                    tracing::error!("Failed to send initial Publish: {e:?}");
-                } else {
-                    tracing::info!("Sent initial Publish for player_id={player_id}");
-                }
-                commands.remove_resource::<ConnectTimeout>();
-                next_state.set(GameState::InGame);
             }
 
             GameNetworkEvent::Disconnected(conn) => {
@@ -167,9 +169,13 @@ fn poll_net_events(
 fn tick_connect_timeout(
     mut commands: Commands,
     time: Res<Time>,
-    mut timeout: ResMut<ConnectTimeout>,
+    timeout: Option<ResMut<ConnectTimeout>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
+    let Some(mut timeout) = timeout else {
+        return;
+    };
+
     if timeout.0.tick(time.delta()).just_finished() {
         tracing::warn!("Connection timed out — returning to login");
         commands.remove_resource::<ConnectTimeout>();
