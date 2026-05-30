@@ -562,6 +562,36 @@ pub(crate) fn publish_shard_snapshot(broker: &mut ResMut<BrokerPeer>, batch: &Po
     }
 }
 
+pub(crate) fn publish_ghost_update(
+    broker: &mut ResMut<BrokerPeer>,
+    shard_map: &Res<ShardUuidById>,
+    source_shard_id: u32,
+    update: &crate::authority::GhostUpdate,
+) {
+    let Some(connection) = broker.connection else {
+        eprintln!("Cannot publish ghost update: no broker connection");
+        return;
+    };
+
+    let Some(stream) = broker.control_stream.clone() else {
+        eprintln!("Cannot publish ghost update: no broker control stream");
+        return;
+    };
+
+    let Some(shard_uuid) = shard_map.0.get(&source_shard_id).copied() else {
+        eprintln!("Cannot publish ghost update: unknown shard id {}", source_shard_id);
+        return;
+    };
+
+    let envelope = crate::authority::AuthorityEnvelope::GhostUpdate(*update);
+    let payload = envelope.encode();
+    let publish_message = BrokerMessage::serialize_publish(Topic::GhostUpdate(shard_uuid).to_bytes(), &payload);
+
+    if let Err(e) = broker.peer.send(&connection, &stream, publish_message.into()) {
+        eprintln!("Failed to send broker GhostUpdate publish: {:?}", e);
+    }
+}
+
 fn handle_player_input(
     player_id: Uuid,
     dx: f32,
