@@ -148,7 +148,6 @@ async fn handle_starting_position_payload(
 
     entity_shard_ids.insert(payload.entity_id, shard_id);
 
-    /*
     // Boundary check for CrossingAlert 
     let nearby_shards = quadtree.shards_near(payload.position, nearby_margin);
     for near_id in nearby_shards {
@@ -170,8 +169,7 @@ async fn handle_starting_position_payload(
             }
         }
     }
-    */
-
+    
     if let Some(client) = broker_client {
         subscribe_entity_disconnect(client, *QUADTREE_ID, payload.entity_id).await?;
 
@@ -301,6 +299,8 @@ async fn handle_shard_snapshot_payload(
         .map(|uuid| (entity_id_from_uuid(uuid), uuid))
         .collect();
 
+    let old_entity_positions = entity_positions.clone();
+
     for snap in batch.snapshots {
         if let Some(entity_uuid) = entity_uuid_by_id.get(&snap.entity_id).copied() {
             entity_positions.insert(
@@ -312,13 +312,41 @@ async fn handle_shard_snapshot_payload(
             );
         }
     }
+    
+    let config = Config::from_env();
 
-    //print the entity_positions for debugging
-    /*print!("entity_positions after shard snapshot update: ");
     for (entity_id, position) in entity_positions.iter() {
-        print!("{}: ({:.2}, {:.2}), ", entity_id, position.x, position.y);
+        if let Some(old_position) = old_entity_positions.get(entity_id) {
+            if (position.x - old_position.x).abs() > f64::EPSILON
+                || (position.y - old_position.y).abs() > f64::EPSILON
+            {
+                // Boundary check for CrossingAlert 
+                let nearby_shards = quadtree.shards_near(*position, config.nearby_margin);
+                for near_id in nearby_shards {
+                    let shard_id = entity_shard_ids.get(entity_id);
+                    if let Some(shard_id) = shard_id {
+                        if near_id != *shard_id {
+                            if let Some(target_uuid) = shard_uuid_by_id.get(&near_id) {
+                                if let Some(source_uuid) = shard_uuid_by_id.get(shard_id) {
+                                    let alert = CrossingAlertPayload {
+                                        entity_id: entity_id_from_uuid(*entity_id),
+                                        target_shard_id: near_id,
+                                        target_shard_uuid: *target_uuid,
+                                    };
+                                    if let Some(client) = broker_client {
+                                        let _ = client.publish(
+                                            Topic::CrossingAlert(*source_uuid),
+                                            &serialize_crossing_alert_payload(&alert)
+                                        ).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    println!();*/
 
     let quadtree_shard_set_before: HashSet<u32> = quadtree
         .collect_shards()
@@ -350,12 +378,6 @@ async fn handle_shard_snapshot_payload(
             shard_uuid_by_id.remove(&id);
         }
     }
-
-
-
-
-
-
 
     let previous_shard_ids = entity_shard_ids.clone();
 

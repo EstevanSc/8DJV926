@@ -1,5 +1,4 @@
-﻿use core::str;
-use std::collections::{HashMap, HashSet};
+﻿use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use game_sockets;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
@@ -35,7 +34,7 @@ pub struct BrokerState {
     subscriptions: HashMap<[u8; 32], HashSet<uuid::Uuid>>,
     uuid_map: HashMap<uuid::Uuid, GameConnection>,
     reverse_uuid_map: HashMap<GameConnection, uuid::Uuid>, 
-    BROKER_STREAM: GameStream // Inverse map for removal during disconnect
+    broker_stream: GameStream // Inverse map for removal during disconnect
 }
 
 pub fn bind_socket(config: &BrokerConfig) -> Result<GamePeer, GameSocketError> {
@@ -61,7 +60,7 @@ impl BrokerState {
             subscriptions: HashMap::new(),
             uuid_map: HashMap::new(),
             reverse_uuid_map: HashMap::new(),
-            BROKER_STREAM: GameStream::new(12, GameStreamReliability::Reliable), // Control stream for broker-originated messages
+            broker_stream: GameStream::new(12, GameStreamReliability::Reliable), // Control stream for broker-originated messages
         }
     }
     pub fn receive_packets(&mut self) {
@@ -73,10 +72,11 @@ impl BrokerState {
                 GameNetworkEvent::Disconnected(conn) => {
 
                     println!("Disconnected! Connection id: {:?}", conn.connection_id);
-                    let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { entity_id: conn.connection_id });
-                    let topic = Topic::Disconnect(conn.connection_id).to_bytes();
-
-                    self.publish(topic, disconnected_payload, self.BROKER_STREAM.clone());
+                    if let Some(entity_id) = self.reverse_uuid_map.get(&conn).cloned() {
+                        let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { entity_id });
+                        let topic = Topic::Disconnect(entity_id).to_bytes();
+                        self.publish(topic, disconnected_payload, self.broker_stream.clone());
+                    }
 
                     if let Some(id) = self.reverse_uuid_map.remove(&conn) {
                         self.uuid_map.remove(&id);
@@ -154,7 +154,7 @@ impl BrokerState {
                 }
             }
         } else {
-            println!("Broker: publish had no subscribers for topic");
+            println!("Broker: publish had no subscribers for topic {:?}", Topic::from_bytes(topic));
         }
     }
 }
