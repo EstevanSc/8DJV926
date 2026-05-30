@@ -72,8 +72,8 @@ impl BrokerState {
                 GameNetworkEvent::Disconnected(conn) => {
 
                     println!("Disconnected! Connection id: {:?}", conn.connection_id);
-                    let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { entity_id: conn.connection_id });
                     if let Some(entity_id) = self.reverse_uuid_map.get(&conn).cloned() {
+                        let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { entity_id });
                         let topic = Topic::Disconnect(entity_id).to_bytes();
                         self.publish(topic, disconnected_payload, self.broker_stream.clone());
                     }
