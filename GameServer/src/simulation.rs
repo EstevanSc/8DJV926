@@ -5,10 +5,11 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::authority::components::AuthorityState;
+use crate::authority::{GhostReplica, GhostUpdate};
 use common::packets::{PositionBatch, PositionSnapshot};
 
 use super::net::{SimCommand, SimCommandReceiver};
-use super::server::{publish_shard_snapshot, BrokerPeer};
+use super::server::{publish_ghost_update, publish_shard_snapshot, BrokerPeer, ShardUuidById};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
@@ -60,6 +61,13 @@ pub struct TickCounter(pub u32);
 pub struct PlayerInputBuffer(pub HashMap<u32, Vec2>);
 
 type SnapshotQuery<'w, 's> = Query<'w, 's, (&'static Player, &'static AuthorityState, &'static Transform)>;
+type GhostUpdateQuery<'w, 's> = Query<'w, 's, (
+    &'static Player,
+    &'static AuthorityState,
+    &'static Transform,
+    Option<&'static LinearVelocity>,
+    &'static GhostReplica,
+)>;
 type InputQuery<'w, 's> = Query<'w, 's, (
     &'static Player,
     &'static AuthorityState,
@@ -190,10 +198,37 @@ fn build_position_batch(
 fn publish_shard_snapshots(
     tick: ResMut<TickCounter>,
     query: SnapshotQuery<'_, '_>,
+    ghost_query: GhostUpdateQuery<'_, '_>,
     mut broker: ResMut<BrokerPeer>,
+    shard_map: Res<ShardUuidById>,
 ) {
     if let Some(batch) = build_position_batch(tick, query) {
         publish_shard_snapshot(&mut broker, &batch);
+    }
+
+    // Send ghost updates to the broker so they can be forwarded to the source shard.
+    for (player, authority_state, transform, velocity, ghost_replica) in &ghost_query {
+        if !matches!(*authority_state, AuthorityState::Ghost) {
+            continue;
+        }
+
+        let position = transform.translation.truncate();
+        let velocity = velocity
+            .map(|value| Vec2::new(value.x, value.y))
+            .unwrap_or(Vec2::ZERO);
+
+        let update = GhostUpdate {
+            entity_id: player.entity_id,
+            pos: position,
+            vel: velocity,
+        };
+
+        publish_ghost_update(
+            &mut broker,
+            &shard_map,
+            ghost_replica.source_shard_id,
+            &update,
+        );
     }
 }
 
