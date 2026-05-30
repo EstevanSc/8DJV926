@@ -11,13 +11,13 @@ use common::packets::PositionBatch;
 use common::{Boundary, Quadrant, ShardData, Vec2};
 use game_sockets::GameNetworkEvent;
 use quic_client::QuicClient;
+use wincode::config;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::LazyLock;
 use uuid::Uuid;
 
 static QUADTREE_ID: LazyLock<Uuid> = LazyLock::new(Uuid::new_v4);
-
 /// Load configuration from environment variables with defaults.
 struct Config {
     world_size: f64,
@@ -148,6 +148,7 @@ async fn handle_starting_position_payload(
 
     entity_shard_ids.insert(payload.entity_id, shard_id);
 
+    /*
     // Boundary check for CrossingAlert 
     let nearby_shards = quadtree.shards_near(payload.position, nearby_margin);
     for near_id in nearby_shards {
@@ -169,7 +170,7 @@ async fn handle_starting_position_payload(
             }
         }
     }
-    
+    */
     if let Some(client) = broker_client {
         subscribe_entity_disconnect(client, *QUADTREE_ID, payload.entity_id).await?;
 
@@ -236,8 +237,25 @@ async fn handle_shard_created_payload(
     }
     println!();
 
+    let center = quadtree.shard_center(shard_id).unwrap_or(Vec2 { x: 0.0, y: 0.0 });
+
     shard_uuid_by_id.insert(shard_id, payload.shard_id);
-    print!("Shard {} created with ID {:?} at center ({:.2}, {:.2})\n", shard_id, payload.shard_id, payload.center.x, payload.center.y);
+    print!("Shard {} created with ID {:?} at center ({:.2}, {:.2})\n", shard_id, payload.shard_id, center.x, center.y);
+
+    let config  = Config::from_env();
+
+    let close_shards = quadtree.shards_near(center, config.nearby_margin);
+
+    //subscribe the shard to the ghostupdates of its close shards to receive updates about nearby entities that may be relevant for crossing alerts
+    for close_id in close_shards {
+        if close_id != shard_id {
+            if let Some(close_uuid) = shard_uuid_by_id.get(&close_id) {
+                if let Some(client) = broker_client {
+                    client.subscribe(payload.shard_id, Topic::ShardSnapshot(*close_uuid)).await?;
+                }
+            }
+        }
+    }
 
     if let Some(client) = broker_client {
         client
@@ -285,6 +303,7 @@ async fn handle_shard_snapshot_payload(
     entity_positions: &mut HashMap<Uuid, Vec2>,
     entity_shard_ids: &mut HashMap<Uuid, u32>,
     shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+    ghost_entity_ids: &mut HashMap<Uuid, HashSet<Uuid>>,
     broker_client: Option<&QuicClient>,
 ) -> anyhow::Result<()> {
     let snapshot = deserialize_shard_snapshot_payload(&payload)
@@ -320,30 +339,43 @@ async fn handle_shard_snapshot_payload(
             if (position.x - old_position.x).abs() > f64::EPSILON
                 || (position.y - old_position.y).abs() > f64::EPSILON
             {
-                // Boundary check for CrossingAlert 
                 let nearby_shards = quadtree.shards_near(*position, config.nearby_margin);
-                for near_id in nearby_shards {
-                    let shard_id = entity_shard_ids.get(entity_id);
-                    if let Some(shard_id) = shard_id {
-                        if near_id != *shard_id {
-                            if let Some(target_uuid) = shard_uuid_by_id.get(&near_id) {
-                                if let Some(source_uuid) = shard_uuid_by_id.get(shard_id) {
-                                    let alert = CrossingAlertPayload {
-                                        entity_id: entity_id_from_uuid(*entity_id),
-                                        target_shard_id: near_id,
-                                        target_shard_uuid: *target_uuid,
-                                    };
-                                    if let Some(client) = broker_client {
-                                        let _ = client.publish(
-                                            Topic::CrossingAlert(*source_uuid),
-                                            &serialize_crossing_alert_payload(&alert)
-                                        ).await;
-                                    }
-                                }
+
+                if !ghost_entity_ids.contains_key(entity_id) || ghost_entity_ids.get(entity_id).unwrap().is_disjoint(&nearby_shards.iter().filter_map(|id| shard_uuid_by_id.get(id)).copied().collect()) {
+                    println!("Entity {} moved from ({:.2}, {:.2}) to ({:.2}, {:.2})", entity_id, old_position.x, old_position.y, position.x, position.y);
+
+                    if ghost_entity_ids.contains_key(entity_id) {
+                        let old_shards = ghost_entity_ids.get(entity_id).cloned().unwrap_or_default();
+
+                        for shard in old_shards {
+                            if let Some(client) = broker_client {
+                                client.unsubscribe(shard, Topic::GhostUpdate(*entity_id)).await?;
                             }
                         }
                     }
+            
+                    ghost_entity_ids.insert(*entity_id, nearby_shards.iter().filter_map(|id| shard_uuid_by_id.get(id)).copied().collect());
+
+                    let new_shards = ghost_entity_ids.get(entity_id).cloned().unwrap_or_default();
+
+                    for shard in new_shards {
+                        if let Some(client) = broker_client {
+                            client.subscribe(shard, Topic::GhostUpdate(*entity_id)).await?;
+                        }
+                    } 
                 }
+
+                //publish a ghost update 
+                if let Some(client) = broker_client {
+                    let payload = PositionPayload {
+                        entity_id: *entity_id,
+                        position: *position,
+                    };
+                    let _ = client.publish(
+                        Topic::GhostUpdate(payload.entity_id),
+                        &serialize_forced_position_update_payload(&payload)
+                    ).await;
+                }               
             }
         }
     }
@@ -459,6 +491,7 @@ async fn handle_broker_message(
     entity_positions: &mut HashMap<Uuid, Vec2>,
     entity_shard_ids: &mut HashMap<Uuid, u32>,
     shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+    ghost_entity_ids: &mut HashMap<Uuid, HashSet<Uuid>>,
     boundary: Boundary,
     max_depth: u8,
     max_capacity: usize,
@@ -518,6 +551,7 @@ async fn handle_broker_message(
                     entity_positions,
                     entity_shard_ids,
                     shard_uuid_by_id,
+                    ghost_entity_ids,
                     broker_client,
                 )
                 .await?;
@@ -536,6 +570,7 @@ async fn process_broker_events(
     entity_positions: &mut HashMap<Uuid, Vec2>,
     entity_shard_ids: &mut HashMap<Uuid, u32>,
     shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+    ghost_entity_ids: &mut HashMap<Uuid, HashSet<Uuid>>,
     boundary: Boundary,
     max_depth: u8,
     max_capacity: usize,
@@ -557,6 +592,7 @@ async fn process_broker_events(
                         entity_positions,
                         entity_shard_ids,
                         shard_uuid_by_id,
+                        ghost_entity_ids,
                         boundary,
                         max_depth,
                         max_capacity,
@@ -650,8 +686,8 @@ async fn run_main_loop(
     let mut entity_positions: HashMap<Uuid, Vec2> = HashMap::new();
     let mut entity_shard_ids: HashMap<Uuid, u32> = HashMap::new();
     let mut shard_uuid_by_id: HashMap<u32, Uuid> = HashMap::new();
-
     let mut shards = HashSet::new();
+    let mut ghost_entity_ids: HashMap<Uuid, HashSet<Uuid>> = HashMap::new();
 
     //simulate a publish-subscribe system where entities are added to the quadtree and we query for nearby shards
     loop {
@@ -662,6 +698,7 @@ async fn run_main_loop(
                 &mut entity_positions,
                 &mut entity_shard_ids,
                 &mut shard_uuid_by_id,
+                &mut ghost_entity_ids,
                 boundary,
                 config.max_depth,
                 config.max_capacity,
@@ -937,4 +974,26 @@ impl Quadtree {
             }
         }
     }
+
+    fn shard_center(&self, shard_id: u32) -> Option<Vec2> {
+        if let Some(id) = self.shard_id {
+            if id == shard_id {
+                return Some(Vec2 {
+                    x: self.boundary.x,
+                    y: self.boundary.y,
+                });
+            }
+        }
+
+        if let Some(children) = &self.children {
+            for child in children {
+                if let Some(center) = child.shard_center(shard_id) {
+                    return Some(center);
+                }
+            }
+        }
+
+        None
+    }
+
 }

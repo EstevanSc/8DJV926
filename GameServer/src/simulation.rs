@@ -174,7 +174,7 @@ fn build_position_batch(
 
     let snapshots: Vec<PositionSnapshot> = query
         .iter()
-        .filter(|(_, authority_state, _)| authority_state.is_snapshot_visible())
+        //.filter(|(_, authority_state, _)| authority_state.is_snapshot_visible())
         .map(|(player, _, transform)| {
             let position = transform.translation.truncate();
             PositionSnapshot {
