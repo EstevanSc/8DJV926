@@ -11,6 +11,7 @@ use common::topics::{
     deserialize_input_payload, deserialize_shard_snapshot_payload, serialize_shard_created_payload,
     serialize_shard_snapshot_payload, ShardCreatedPayload, ShardSnapshotPayload, Topic,
     deserialize_crossing_alert_payload,
+    deserialize_forced_position_update_payload,
 };
 use common::Vec2;
 use bevy::prelude::*;
@@ -360,6 +361,7 @@ fn handle_message(
                 let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
                     entity_id,
                     display_name: username,
+                    position: Vec2 { x: 0.0, y: 0.0 }
                 });
 
                 // Send Welcome message to the player
@@ -411,6 +413,19 @@ fn handle_broker_message(
                     );
                 } else {
                     eprintln!("Failed to decode broker input payload from {:?}", connection.connection_id);
+                }
+            }
+            Topic::ForcedPositionUpdate(player_id) => {
+                if let Some(position_update) = deserialize_forced_position_update_payload(&payload) {
+                    handle_player_position_update(
+                        player_id,
+                        position_update.position.x as f32,
+                        position_update.position.y as f32,
+                        player_registry,
+                        sim_tx,
+                    );
+                } else {
+                    eprintln!("Failed to decode broker forced position update payload from {:?}", connection.connection_id);
                 }
             }
             Topic::CrossingAlert(_) => {
@@ -560,6 +575,7 @@ fn handle_player_input(
         let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
             entity_id,
             display_name: username,
+            position: Vec2 { x: 0.0, y: 0.0 }, // Default spawn position, could be randomized or sent by the client in a more complex implementation
         });
     }
 
@@ -568,6 +584,33 @@ fn handle_player_input(
             entity_id: info.entity_id,
             dx,
             dy,
+        });
+    }
+}
+
+fn handle_player_position_update(
+    player_id: Uuid,
+    x: f32,
+    y: f32,
+    player_registry: &mut ResMut<PlayerRegistry>,
+    sim_tx: &Res<SimCommandSender>,
+) {
+        // Auto-Join if unknown
+    if !player_registry.registry.contains_key(&player_id) {
+        println!("Premier input de {}, auto-join sur ce shard !", player_id);
+        
+        let entity_id = crate::net::entity_id_from_uuid(player_id);
+        let username = format!("Player_{}", entity_id);
+
+        player_registry.registry.insert(
+            player_id,
+            PlayerInfo { id: player_id, entity_id, username: username.clone() },
+        );
+
+        let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
+            entity_id,
+            display_name: username,
+            position: Vec2 { x: x as f64, y: y as f64 },
         });
     }
 }

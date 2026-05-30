@@ -6,6 +6,7 @@ use common::topics::{
     deserialize_position_payload, deserialize_shard_created_payload,
     deserialize_shard_snapshot_payload, PositionPayload, ShardCreatedPayload, Topic,
     CrossingAlertPayload, serialize_crossing_alert_payload,
+    serialize_forced_position_update_payload,
 };
 use common::{Boundary, Quadrant, ShardData, Vec2};
 use game_sockets::GameNetworkEvent;
@@ -104,6 +105,18 @@ async fn subscribe_entity_input(
     Ok(())
 }
 
+async fn subscribe_entity_position_updates(
+    broker_client: &QuicClient,
+    shard_uuid: Uuid,
+    entity_id: Uuid,
+) -> anyhow::Result<()> {
+    broker_client
+        .subscribe(shard_uuid, Topic::ForcedPositionUpdate(entity_id))
+        .await?;
+
+    Ok(())
+}
+
 async fn handle_position_payload(
     broker_client: Option<&QuicClient>,
     payload: PositionPayload,
@@ -150,12 +163,24 @@ async fn handle_position_payload(
                     client
                         .unsubscribe(*previous_shard_uuid, Topic::Input(payload.entity_id))
                         .await?;
+                    client
+                        .unsubscribe(*previous_shard_uuid, Topic::ForcedPositionUpdate(payload.entity_id))
+                        .await?;
                 }
             }
         }
 
         if let Some(shard_uuid) = shard_uuid_by_id.get(&shard_id) {
             subscribe_entity_input(client, *shard_uuid, payload.entity_id).await?;
+            subscribe_entity_position_updates(client, *shard_uuid, payload.entity_id).await?;
+            
+            if let Some(client) = broker_client {
+                let _ = client.publish(
+                    Topic::ForcedPositionUpdate(payload.entity_id),
+                    &serialize_forced_position_update_payload(&payload)
+                ).await;
+            }
+
             client
                 .subscribe(payload.entity_id, Topic::ShardSnapshot(*shard_uuid))
                 .await?;
@@ -193,6 +218,7 @@ async fn handle_shard_created_payload(
         for entity_id in entity_ids_in_shard {
             // shard subscribe to entity input for entities in the shard
             subscribe_entity_input(client, payload.shard_id, entity_id).await?;
+            subscribe_entity_position_updates(client, payload.shard_id, entity_id).await?;
             // entity subscribe to shard snapshot to receive shard layout updates
             client.subscribe( entity_id, Topic::ShardSnapshot(payload.shard_id)).await?;
         }
@@ -209,7 +235,6 @@ async fn handle_shard_snapshot_payload(
     max_capacity: usize,
     entity_positions: &mut HashMap<Uuid, Vec2>,
     entity_shard_ids: &mut HashMap<Uuid, u32>,
-    shards: &mut HashSet<u32>,
 ) -> anyhow::Result<()> {
     let snapshot = deserialize_shard_snapshot_payload(&payload)
         .ok_or_else(|| anyhow::anyhow!("Failed to decode shard snapshot payload"))?;
@@ -264,7 +289,7 @@ async fn handle_broker_message(
     boundary: Boundary,
     max_depth: u8,
     max_capacity: usize,
-    shards: &mut HashSet<u32>,
+   // shards: &mut HashSet<u32>,
     nearby_margin: f64,
 ) -> anyhow::Result<()> {
     match message {
@@ -307,7 +332,6 @@ async fn handle_broker_message(
                     max_capacity,
                     entity_positions,
                     entity_shard_ids,
-                    shards,
                 )
                 .await?;
             }
@@ -328,7 +352,7 @@ async fn process_broker_events(
     boundary: Boundary,
     max_depth: u8,
     max_capacity: usize,
-    shards: &mut HashSet<u32>,
+    //shards: &mut HashSet<u32>,
     nearby_margin: f64,
 ) -> anyhow::Result<()> {
     loop {
@@ -349,7 +373,7 @@ async fn process_broker_events(
                         boundary,
                         max_depth,
                         max_capacity,
-                        shards,
+                        // shards,
                         nearby_margin,
                     )
                     .await?;
@@ -442,8 +466,6 @@ async fn run_main_loop(
 
     let mut shards = HashSet::new();
 
-    let mut counter = 0;
-
     //simulate a publish-subscribe system where entities are added to the quadtree and we query for nearby shards
     loop {
         if let Some(client) = broker_client.as_mut() {
@@ -456,7 +478,7 @@ async fn run_main_loop(
                 boundary,
                 config.max_depth,
                 config.max_capacity,
-                &mut shards,
+               // &mut shards,
                 config.nearby_margin,
             )
             .await?;

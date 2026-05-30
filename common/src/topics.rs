@@ -9,6 +9,7 @@ pub enum TopicDomain {
     Position = 0x02,
     Input = 0x03,
     ShardSnapshot = 0x04,
+    ForcedPositionUpdate = 0x05,
     CrossingAlert = 0x10,
     HandoffRequest = 0x20,
     HandoffAccept = 0x21,
@@ -22,6 +23,7 @@ pub enum Topic {
     ShardCreated,        // For shard creation events
     Position,   // For specific positions updates
     Input(Uuid), // For client inputs updates, uuid identifies the client
+    ForcedPositionUpdate(Uuid), // For forced position updates, uuid identifies the entity
     ShardSnapshot(Uuid), // For shard snapshot updates, uuid identifies the shard
     CrossingAlert(Uuid),   // For quadtree to alert a shard, uuid identifies the source shard
     HandoffRequest(Uuid),  // uuid identifies the destination shard
@@ -49,6 +51,10 @@ impl Topic {
             }
             Topic::ShardSnapshot(uuid) => {
                 bytes[0] = TopicDomain::ShardSnapshot as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::ForcedPositionUpdate(uuid) => {
+                bytes[0] = TopicDomain::ForcedPositionUpdate as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
             Topic::CrossingAlert(uuid) => {
@@ -94,6 +100,10 @@ impl Topic {
             0x04 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::ShardSnapshot(uuid)
+            }
+            0x05 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::ForcedPositionUpdate(uuid)
             }
             0x10 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
@@ -192,5 +202,13 @@ pub fn serialize_crossing_alert_payload(payload: &CrossingAlertPayload) -> Vec<u
 }
 
 pub fn deserialize_crossing_alert_payload(bytes: &[u8]) -> Option<CrossingAlertPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_forced_position_update_payload(payload: &PositionPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize forced position update payload")
+}
+
+pub fn deserialize_forced_position_update_payload(bytes: &[u8]) -> Option<PositionPayload> {
     wincode::deserialize(bytes).ok()
 }

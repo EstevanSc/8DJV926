@@ -213,11 +213,12 @@ fn process_net_commands(
     let rx = cmd_rx.0.lock().unwrap();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            SimCommand::Joined { entity_id, display_name } => {
+            SimCommand::Joined { entity_id, display_name, position } => {
+                let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
                 spawn_writer.write(SpawnPlayer {
                     entity_id,
                     display_name,
-                    position: Vec2::ZERO,
+                    position: new_position,
                 });
             }
             SimCommand::Left { entity_id } => {
