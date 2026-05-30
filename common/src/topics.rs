@@ -16,6 +16,7 @@ pub enum TopicDomain {
     HandoffReject = 0x22,
     GhostUpdate = 0x23,
     HandoffComplete = 0x24,
+    Disconnect = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,6 +32,7 @@ pub enum Topic {
     HandoffReject(Uuid),   // uuid identifies the source shard
     GhostUpdate(Uuid),     // uuid identifies the destination shard
     HandoffComplete(Uuid), // uuid identifies the source shard
+    Disconnect(Uuid), // For disconnect events
     Raw([u8; 32]),     // Fallback
 }
 
@@ -81,6 +83,10 @@ impl Topic {
                 bytes[0] = TopicDomain::HandoffComplete as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
+            Topic::Disconnect(uuid) => {
+                bytes[0] = TopicDomain::Disconnect as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -129,6 +135,10 @@ impl Topic {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::HandoffComplete(uuid)
             }
+            0xFF => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::Disconnect(uuid)
+            }
             _ => Topic::Raw(bytes),
         }
     }
@@ -163,6 +173,11 @@ pub struct CrossingAlertPayload {
     pub entity_id: u32,
     pub target_shard_id: u32,
     pub target_shard_uuid: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DisconnectPayload {
+    pub entity_id: Uuid,
 }
 
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
@@ -210,5 +225,13 @@ pub fn serialize_forced_position_update_payload(payload: &PositionPayload) -> Ve
 }
 
 pub fn deserialize_forced_position_update_payload(bytes: &[u8]) -> Option<PositionPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_disconnect_payload(payload: &DisconnectPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize disconnect payload")
+}
+
+pub fn deserialize_disconnect_payload(bytes: &[u8]) -> Option<DisconnectPayload> {
     wincode::deserialize(bytes).ok()
 }

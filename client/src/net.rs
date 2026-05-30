@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
 use common::packets::{PositionBatch, PositionSnapshot};
 use common::topics::{
-    deserialize_shard_snapshot_payload, serialize_position_payload, PositionPayload,
+    deserialize_shard_snapshot_payload, serialize_starting_position_payload, PositionPayload,
     ShardSnapshotPayload, Topic,
 };
 use common::Vec2;
@@ -136,17 +136,17 @@ fn poll_net_events(
                     next_state.set(GameState::InGame);
                 } 
                 else {
-                    let payload = serialize_position_payload(&PositionPayload {
+                    let payload = serialize_starting_position_payload(&PositionPayload {
                         entity_id: player_id,
                         position: Vec2 { x: 0.0, y: 0.0 },
                     });
 
-                    let topic = Topic::Position.to_bytes();
+                    let topic = Topic::StartingPosition.to_bytes();
                     let publish = BrokerMessage::serialize_publish(topic, &payload);
                     if let Err(e) = peer.send(&conn, &stream, publish.into()) {
                         tracing::error!("Failed to send initial Publish: {e:?}");
                     } else {
-                        tracing::info!("Sent initial baseline Position Publish for player_id={player_id}");
+                        tracing::info!("Sent initial baseline StartingPosition Publish for player_id={player_id}");
                     }
                 }
             }

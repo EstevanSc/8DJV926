@@ -415,6 +415,14 @@ fn handle_broker_message(
                     eprintln!("Failed to decode broker input payload from {:?}", connection.connection_id);
                 }
             }
+            Topic::Disconnect(player_id) => {
+                trace!("Received disconnect broadcast for player_id={}", player_id);
+                if let Some(info) = player_registry.registry.remove(&player_id) {
+                    let _ = sim_tx.0.send(crate::net::SimCommand::Left {
+                        entity_id: info.entity_id,
+                    });
+                }
+            }
             Topic::ForcedPositionUpdate(player_id) => {
                 if let Some(position_update) = deserialize_forced_position_update_payload(&payload) {
                     handle_player_position_update(
@@ -430,6 +438,7 @@ fn handle_broker_message(
             }
             Topic::CrossingAlert(_) => {
                 if let Some(p) = deserialize_crossing_alert_payload(&payload) {
+                    trace!("Received crossing alert for entity_id={} targeting shard_id={}", p.entity_id, p.target_shard_id);
                     // Mémorise la correspondance UUID <-> u32 transmise par le Quadtree
                     shard_map.0.insert(p.target_shard_id, p.target_shard_uuid);
                     

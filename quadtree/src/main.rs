@@ -2,7 +2,7 @@ mod quic_client;
 
 use common::broker_messages::BrokerMessage;
 use common::packets::PositionBatch;
-use common::topics::{
+    use common::topics::{
     deserialize_starting_position_payload, deserialize_shard_created_payload,
     deserialize_shard_snapshot_payload, PositionPayload, ShardCreatedPayload, Topic,
     CrossingAlertPayload, serialize_crossing_alert_payload,
@@ -102,6 +102,8 @@ async fn subscribe_entity_input(
         .subscribe(shard_uuid, Topic::Input(entity_id))
         .await?;
 
+    subscribe_entity_disconnect(broker_client, shard_uuid, entity_id).await?;
+
     Ok(())
 }
 
@@ -112,6 +114,18 @@ async fn subscribe_entity_position_updates(
 ) -> anyhow::Result<()> {
     broker_client
         .subscribe(shard_uuid, Topic::ForcedPositionUpdate(entity_id))
+        .await?;
+
+    Ok(())
+}
+
+async fn subscribe_entity_disconnect(
+    broker_client: &QuicClient,
+    listener_uuid: Uuid,
+    entity_id: Uuid,
+) -> anyhow::Result<()> {
+    broker_client
+        .subscribe(listener_uuid, Topic::Disconnect(entity_id))
         .await?;
 
     Ok(())
@@ -159,6 +173,8 @@ async fn handle_starting_position_payload(
     */
 
     if let Some(client) = broker_client {
+        subscribe_entity_disconnect(client, *QUADTREE_ID, payload.entity_id).await?;
+
         if let Some(shard_uuid) = shard_uuid_by_id.get(&shard_id) {
             subscribe_entity_input(client, *shard_uuid, payload.entity_id).await?;
             subscribe_entity_position_updates(client, *shard_uuid, payload.entity_id).await?;
@@ -230,7 +246,7 @@ async fn handle_shard_created_payload(
             .subscribe(*QUADTREE_ID, Topic::ShardSnapshot(payload.shard_id))
             .await?;
 
-        /*
+        
         let entity_ids_in_shard: Vec<Uuid> = entity_positions
             .iter()
             .filter_map(|(entity_id, position)| {
@@ -242,10 +258,21 @@ async fn handle_shard_created_payload(
             // shard subscribe to entity input for entities in the shard
             subscribe_entity_input(client, payload.shard_id, entity_id).await?;
             subscribe_entity_position_updates(client, payload.shard_id, entity_id).await?;
+
+            let position_payload: PositionPayload = PositionPayload {
+                entity_id,
+                position: *entity_positions.get(&entity_id).unwrap(),
+            };
+
+            if let Some(client) = broker_client {
+                    let _ = client.publish(
+                        Topic::ForcedPositionUpdate(position_payload.entity_id),
+                        &serialize_forced_position_update_payload(&position_payload)
+                    ).await;
+            }
             // entity subscribe to shard snapshot to receive shard layout updates
             client.subscribe( entity_id, Topic::ShardSnapshot(payload.shard_id)).await?;
         }
-        */
     }
 
     Ok(())
@@ -324,6 +351,12 @@ async fn handle_shard_snapshot_payload(
         }
     }
 
+
+
+
+
+
+
     let previous_shard_ids = entity_shard_ids.clone();
 
     entity_shard_ids.clear();
@@ -375,6 +408,18 @@ async fn handle_shard_snapshot_payload(
                 subscribe_entity_input(client, *shard_uuid, *entity_id).await?;
                 subscribe_entity_position_updates(client, *shard_uuid, *entity_id).await?;
 
+                let payload = PositionPayload {
+                    entity_id: *entity_id,
+                    position: *position,
+                };
+
+                if let Some(client) = broker_client {
+                    let _ = client.publish(
+                        Topic::ForcedPositionUpdate(payload.entity_id),
+                        &serialize_forced_position_update_payload(&payload)
+                    ).await;
+                }
+
                 client
                     .subscribe(*entity_id, Topic::ShardSnapshot(*shard_uuid))
                     .await?;
@@ -414,6 +459,18 @@ async fn handle_broker_message(
                     nearby_margin,
                 )
                 .await?;
+            }
+            Topic::Disconnect(entity_id) => {
+                tracing::info!("Quadtree received Disconnect for entity {}", entity_id);
+                entity_positions.remove(&entity_id);
+                if let Some(shard_id) = entity_shard_ids.remove(&entity_id) {
+                    if let Some(shard_uuid) = shard_uuid_by_id.get(&shard_id) {
+                        if let Some(client) = broker_client {
+                            client.unsubscribe(*shard_uuid, Topic::Input(entity_id)).await?;
+                            client.unsubscribe(*shard_uuid, Topic::ForcedPositionUpdate(entity_id)).await?;
+                        }
+                    }
+                }
             }
             Topic::ShardCreated => {
                 let payload: ShardCreatedPayload = deserialize_shard_created_payload(&payload)

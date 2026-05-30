@@ -1,10 +1,12 @@
-﻿use std::collections::{HashMap, HashSet};
+﻿use core::str;
+use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use game_sockets;
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
 use game_sockets::protocols::QuicBackend;
 use common::broker_messages::BrokerMessage;
 use common::topics::Topic;
+use common::topics::{DisconnectPayload, serialize_disconnect_payload};
 
 pub struct BrokerConfig {
     pub ip: String,
@@ -32,7 +34,8 @@ pub struct BrokerState {
     peer: GamePeer,
     subscriptions: HashMap<[u8; 32], HashSet<uuid::Uuid>>,
     uuid_map: HashMap<uuid::Uuid, GameConnection>,
-    reverse_uuid_map: HashMap<GameConnection, uuid::Uuid>,  // Inverse map for removal during disconnect
+    reverse_uuid_map: HashMap<GameConnection, uuid::Uuid>, 
+    BROKER_STREAM: GameStream // Inverse map for removal during disconnect
 }
 
 pub fn bind_socket(config: &BrokerConfig) -> Result<GamePeer, GameSocketError> {
@@ -58,6 +61,7 @@ impl BrokerState {
             subscriptions: HashMap::new(),
             uuid_map: HashMap::new(),
             reverse_uuid_map: HashMap::new(),
+            BROKER_STREAM: GameStream::new(12, GameStreamReliability::Reliable), // Control stream for broker-originated messages
         }
     }
     pub fn receive_packets(&mut self) {
@@ -67,6 +71,13 @@ impl BrokerState {
                     println!("Connected! Connection id: {:?}", conn.connection_id);
                 }
                 GameNetworkEvent::Disconnected(conn) => {
+
+                    println!("Disconnected! Connection id: {:?}", conn.connection_id);
+                    let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { entity_id: conn.connection_id });
+                    let topic = Topic::Disconnect(conn.connection_id).to_bytes();
+
+                    self.publish(topic, disconnected_payload, self.BROKER_STREAM.clone());
+
                     if let Some(id) = self.reverse_uuid_map.remove(&conn) {
                         self.uuid_map.remove(&id);
 
@@ -109,8 +120,8 @@ impl BrokerState {
                 self.subscriptions.entry(topic).or_default().remove(&client_id);
             }
             BrokerMessage::Publish {topic, payload} => {
-                let topic_desc = Topic::from_bytes(topic);
-                println!("Broker: Publish received - topic={:?}, payload_len={}", topic_desc, payload.len());
+                //let topic_desc = Topic::from_bytes(topic);
+                // println!("Broker: Publish received - topic={:?}, payload_len={}", topic_desc, payload.len());
                 self.publish(topic, payload, stream);
             }
             BrokerMessage::Connect {client_id} => {
@@ -124,7 +135,7 @@ impl BrokerState {
 
     fn publish(&mut self, topic: [u8;32], payload: Vec<u8>, stream: GameStream) {
         if let Some(subscribers) = self.subscriptions.get(&topic) {
-            println!("Broker: publishing to {} subscribers", subscribers.len());
+            //println!("Broker: publishing to {} subscribers", subscribers.len());
             let broadcast_bytes = BrokerMessage::serialize_broadcast(topic, &payload);
             let bytes_payload = Bytes::from(broadcast_bytes);
 
