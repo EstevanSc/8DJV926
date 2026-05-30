@@ -60,7 +60,7 @@ impl BrokerState {
             subscriptions: HashMap::new(),
             uuid_map: HashMap::new(),
             reverse_uuid_map: HashMap::new(),
-            broker_stream: GameStream::new(12, GameStreamReliability::Reliable), // Control stream for broker-originated messages
+            broker_stream: GameStream::new(1, GameStreamReliability::Reliable), // Control stream for broker-originated messages
         }
     }
     pub fn receive_packets(&mut self) {
