@@ -21,7 +21,7 @@ pub enum TopicDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Topic {
     ShardCreated,        // For shard creation events
-    Position,   // For specific positions updates
+    StartingPosition,   // For specific positions updates
     Input(Uuid), // For client inputs updates, uuid identifies the client
     ForcedPositionUpdate(Uuid), // For forced position updates, uuid identifies the entity
     ShardSnapshot(Uuid), // For shard snapshot updates, uuid identifies the shard
@@ -42,7 +42,7 @@ impl Topic {
             Topic::ShardCreated => {
                 bytes[0] = TopicDomain::ShardCreated as u8;
             }
-            Topic::Position => {
+            Topic::StartingPosition => {
                 bytes[0] = TopicDomain::Position as u8;
             }
             Topic::Input(uuid) => {
@@ -91,7 +91,7 @@ impl Topic {
         match bytes[0] {
             0x01 => Topic::ShardCreated,
             0x02 => {
-                Topic::Position
+                Topic::StartingPosition
             }
             0x03 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
@@ -173,11 +173,11 @@ pub fn deserialize_shard_created_payload(bytes: &[u8]) -> Option<ShardCreatedPay
     wincode::deserialize(bytes).ok()
 }
 
-pub fn serialize_position_payload(payload: &PositionPayload) -> Vec<u8> {
-    wincode::serialize(payload).expect("failed to serialize position payload")
+pub fn serialize_starting_position_payload(payload: &PositionPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize starting position payload")
 }
 
-pub fn deserialize_position_payload(bytes: &[u8]) -> Option<PositionPayload> {
+pub fn deserialize_starting_position_payload(bytes: &[u8]) -> Option<PositionPayload> {
     wincode::deserialize(bytes).ok()
 }
 

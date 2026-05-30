@@ -3,7 +3,7 @@ mod quic_client;
 use common::broker_messages::BrokerMessage;
 use common::packets::PositionBatch;
 use common::topics::{
-    deserialize_position_payload, deserialize_shard_created_payload,
+    deserialize_starting_position_payload, deserialize_shard_created_payload,
     deserialize_shard_snapshot_payload, PositionPayload, ShardCreatedPayload, Topic,
     CrossingAlertPayload, serialize_crossing_alert_payload,
     serialize_forced_position_update_payload,
@@ -117,7 +117,7 @@ async fn subscribe_entity_position_updates(
     Ok(())
 }
 
-async fn handle_position_payload(
+async fn handle_starting_position_payload(
     broker_client: Option<&QuicClient>,
     payload: PositionPayload,
     quadtree: &Quadtree,
@@ -132,8 +132,9 @@ async fn handle_position_payload(
         return Ok(());
     };
 
-    let previous_shard_id = entity_shard_ids.insert(payload.entity_id, shard_id);
+    entity_shard_ids.insert(payload.entity_id, shard_id);
 
+    /*
     // Boundary check for CrossingAlert 
     let nearby_shards = quadtree.shards_near(payload.position, nearby_margin);
     for near_id in nearby_shards {
@@ -155,21 +156,9 @@ async fn handle_position_payload(
             }
         }
     }
+    */
 
     if let Some(client) = broker_client {
-        if let Some(previous_shard_id) = previous_shard_id {
-            if previous_shard_id != shard_id {
-                if let Some(previous_shard_uuid) = shard_uuid_by_id.get(&previous_shard_id) {
-                    client
-                        .unsubscribe(*previous_shard_uuid, Topic::Input(payload.entity_id))
-                        .await?;
-                    client
-                        .unsubscribe(*previous_shard_uuid, Topic::ForcedPositionUpdate(payload.entity_id))
-                        .await?;
-                }
-            }
-        }
-
         if let Some(shard_uuid) = shard_uuid_by_id.get(&shard_id) {
             subscribe_entity_input(client, *shard_uuid, payload.entity_id).await?;
             subscribe_entity_position_updates(client, *shard_uuid, payload.entity_id).await?;
@@ -197,17 +186,51 @@ async fn handle_shard_created_payload(
     entity_positions: &HashMap<Uuid, Vec2>,
     shard_uuid_by_id: &mut HashMap<u32, Uuid>,
 ) -> anyhow::Result<()> {
-    let Some(shard_id) = quadtree.shard_for(payload.center) else {
+   /* 
+   let Some(shard_id) = quadtree.shard_for(payload.center) else {
         return Ok(());
     };
+    */
+    let quadtree_shard_set: HashSet<u32> = quadtree
+        .collect_shards()
+        .iter()
+        .filter_map(|s| s.shard_id)
+        .collect();
+
+    let currently_known_shard_ids: HashSet<u32> = shard_uuid_by_id.keys().copied().collect();
+
+    //select a shard ID that exists in the quadtree but is not yet known by the quadtree service
+    let shard_id = match quadtree_shard_set.difference(&currently_known_shard_ids).next() {
+        Some(id) => *id,
+        None => {
+            tracing::warn!("Received ShardCreated for shard ID {} but no unknown shard IDs are available in the quadtree", payload.shard_id);
+            return Ok(());
+        }
+    };
+
+    //print the quadtree set
+    print!("Quadtree shards: ");
+    for shard_id in &quadtree_shard_set {
+        print!("{} ", shard_id);
+    }
+    println!();
+
+    //print the currently known shard IDs
+    print!("Currently known shard IDs: ");
+    for shard_id in &currently_known_shard_ids {
+        print!("{} ", shard_id);
+    }
+    println!();
 
     shard_uuid_by_id.insert(shard_id, payload.shard_id);
+    print!("Shard {} created with ID {:?} at center ({:.2}, {:.2})\n", shard_id, payload.shard_id, payload.center.x, payload.center.y);
 
     if let Some(client) = broker_client {
         client
             .subscribe(*QUADTREE_ID, Topic::ShardSnapshot(payload.shard_id))
             .await?;
 
+        /*
         let entity_ids_in_shard: Vec<Uuid> = entity_positions
             .iter()
             .filter_map(|(entity_id, position)| {
@@ -222,6 +245,7 @@ async fn handle_shard_created_payload(
             // entity subscribe to shard snapshot to receive shard layout updates
             client.subscribe( entity_id, Topic::ShardSnapshot(payload.shard_id)).await?;
         }
+        */
     }
 
     Ok(())
@@ -235,6 +259,8 @@ async fn handle_shard_snapshot_payload(
     max_capacity: usize,
     entity_positions: &mut HashMap<Uuid, Vec2>,
     entity_shard_ids: &mut HashMap<Uuid, u32>,
+    shard_uuid_by_id: &mut HashMap<u32, Uuid>,
+    broker_client: Option<&QuicClient>,
 ) -> anyhow::Result<()> {
     let snapshot = deserialize_shard_snapshot_payload(&payload)
         .ok_or_else(|| anyhow::anyhow!("Failed to decode shard snapshot payload"))?;
@@ -260,7 +286,45 @@ async fn handle_shard_snapshot_payload(
         }
     }
 
+    //print the entity_positions for debugging
+    /*print!("entity_positions after shard snapshot update: ");
+    for (entity_id, position) in entity_positions.iter() {
+        print!("{}: ({:.2}, {:.2}), ", entity_id, position.x, position.y);
+    }
+    println!();*/
+
+    let quadtree_shard_set_before: HashSet<u32> = quadtree
+        .collect_shards()
+        .iter()
+        .filter_map(|s| s.shard_id)
+        .collect();
+
+    let quadtree_size_before = quadtree_shard_set_before.len();
+
     *quadtree = rebuild_quadtree(boundary, max_depth, max_capacity, entity_positions);
+
+    let quadtree_shard_set_after: HashSet<u32> = quadtree
+        .collect_shards()
+        .iter()
+        .filter_map(|s| s.shard_id)
+        .collect();
+
+    let quadtree_size_after = quadtree_shard_set_after.len();
+
+    if quadtree_size_before != quadtree_size_after {
+        //remove from shard_uuid_by_id any shard IDs that no longer exist in the quadtree
+        let removed_shard_ids: Vec<u32> = shard_uuid_by_id
+            .keys()
+            .copied()
+            .filter(|id| !quadtree_shard_set_after.contains(id))
+            .collect();
+
+        for id in removed_shard_ids {
+            shard_uuid_by_id.remove(&id);
+        }
+    }
+
+    let previous_shard_ids = entity_shard_ids.clone();
 
     entity_shard_ids.clear();
     for (entity_id, position) in entity_positions.iter() {
@@ -268,14 +332,56 @@ async fn handle_shard_snapshot_payload(
             entity_shard_ids.insert(*entity_id, shard_id);
         }
     }
+    
+    //check if any entity has moved to a different shard and update subscriptions accordingly
+    for (entity_id, position) in entity_positions.iter() {
+        let previous_shard_id = previous_shard_ids.get(entity_id);
+        let shard_id = entity_shard_ids.get(entity_id);
 
-/*    let new_shard_ids: HashSet<u32> = quadtree
-        .collect_shards()
-        .into_iter()
-        .filter_map(|shard| shard.shard_id)
-        .collect();
-    *shards = new_shard_ids;
-*/
+        let Some(previous_shard_id) = previous_shard_id else {
+            //tracing::warn!("Entity {} does not have a previous shard ID, skipping subscription update", entity_id);
+            continue;
+        };
+
+        let Some(shard_id) = shard_id else {
+            //tracing::warn!("Entity {} is not currently in any shard, skipping subscription update", entity_id);
+            continue;
+        };
+
+        if previous_shard_id == shard_id {
+            //tracing::info!("Entity {} remains in the same shard {}", entity_id, shard_id);
+            continue;
+        }
+
+        if !shard_uuid_by_id.contains_key(&shard_id) {
+            //revert to previous shard ID if the new shard ID is not recognized (this can happen if the entity moved to a different shard before the quadtree service received the ShardSnapshot update for the new shard)
+            entity_shard_ids.insert(*entity_id, *previous_shard_id);
+            continue;
+        }
+
+        if let Some(client) = broker_client {
+            if let Some(previous_shard_uuid) = shard_uuid_by_id.get(&previous_shard_id) {
+                client
+                    .unsubscribe(*previous_shard_uuid, Topic::Input(*entity_id))
+                    .await?;
+                client
+                    .unsubscribe(*previous_shard_uuid, Topic::ForcedPositionUpdate(*entity_id))
+                    .await?;
+            }
+            
+            if let Some(shard_uuid) = shard_uuid_by_id.get(&shard_id) {
+
+                println!("Entity {} moved from shard {} to shard {}", entity_id, previous_shard_id, shard_id);
+                subscribe_entity_input(client, *shard_uuid, *entity_id).await?;
+                subscribe_entity_position_updates(client, *shard_uuid, *entity_id).await?;
+
+                client
+                    .subscribe(*entity_id, Topic::ShardSnapshot(*shard_uuid))
+                    .await?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -294,11 +400,11 @@ async fn handle_broker_message(
 ) -> anyhow::Result<()> {
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
-            Topic::Position => {
-                let payload = deserialize_position_payload(&payload)
-                    .ok_or_else(|| anyhow::anyhow!("Failed to decode position payload"))?;
-                tracing::info!("Quadtree received Position for {}", payload.entity_id);
-                handle_position_payload(
+            Topic::StartingPosition => {
+                let payload = deserialize_starting_position_payload(&payload)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to decode starting position payload"))?;
+                tracing::info!("Quadtree received StartingPosition for {}", payload.entity_id);
+                handle_starting_position_payload(
                     broker_client,
                     payload,
                     quadtree,
@@ -310,7 +416,7 @@ async fn handle_broker_message(
                 .await?;
             }
             Topic::ShardCreated => {
-                let payload = deserialize_shard_created_payload(&payload)
+                let payload: ShardCreatedPayload = deserialize_shard_created_payload(&payload)
                     .ok_or_else(|| anyhow::anyhow!("Failed to decode shard created payload"))?;
                 tracing::info!("Quadtree received ShardCreated for shard {}", payload.shard_id);
                 handle_shard_created_payload(
@@ -332,6 +438,8 @@ async fn handle_broker_message(
                     max_capacity,
                     entity_positions,
                     entity_shard_ids,
+                    shard_uuid_by_id,
+                    broker_client,
                 )
                 .await?;
             }
@@ -431,10 +539,10 @@ async fn main() -> anyhow::Result<()> {
         if let Err(e) = client.announce_connect(quadtree_id).await {
             tracing::warn!("Failed to connect to broker: {e}");
         }
-        if let Err(e) = client.subscribe(quadtree_id, Topic::Position).await {
-            tracing::warn!("Failed to subscribe to Position: {e}");
+        if let Err(e) = client.subscribe(quadtree_id, Topic::StartingPosition).await {
+            tracing::warn!("Failed to subscribe to StartingPosition: {e}");
         } else {
-            tracing::info!("Quadtree subscribed to Position");
+            tracing::info!("Quadtree subscribed to StartingPosition");
         }
         if let Err(e) = client.subscribe(quadtree_id, Topic::ShardCreated).await {
             tracing::warn!("Failed to subscribe to ShardCreated: {e}");
@@ -555,6 +663,9 @@ async fn run_main_loop(
         let shard_data = quadtree.collect_shards();
         // Check if the shard layout has changed and if so, update the `shards` set and print the new layout
         let new_shard_ids: std::collections::HashSet<u32> = shard_data.iter().filter_map(|s| s.shard_id).collect();
+
+        println!("Previous shard IDs: {:?}", shards);
+        println!("Current shard IDs: {:?}", new_shard_ids);
         if new_shard_ids != shards {
             println!("Shard layout changed: new shard IDs = {:?}", new_shard_ids);
             shards = new_shard_ids;
