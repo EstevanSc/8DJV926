@@ -1,6 +1,7 @@
 use std::env;
 
 use bevy::prelude::*;
+use uuid::Uuid;
 
 use super::messages::HandoffRequest;
 
@@ -35,6 +36,7 @@ impl AuthorityState {
 pub struct GhostReplica {
     pub source_shard_id: u32,
     pub source_entity_id: u32,
+    pub source_entity_uuid: Uuid,
 }
 
 /// Pending handoff data for a local entity.
@@ -50,7 +52,6 @@ pub struct HandoffRequestState {
 #[derive(Resource, Debug, Clone)]
 pub struct AuthorityConfig {
     pub local_shard_id: u32,
-    pub handoff_margin: f32,
 }
 
 impl Default for AuthorityConfig {
@@ -62,11 +63,7 @@ impl Default for AuthorityConfig {
             .unwrap_or(0);
 
         Self {
-            local_shard_id,
-            handoff_margin: env::var("DS_HANDOFF_MARGIN")
-                .ok()
-                .and_then(|value| value.parse::<f32>().ok())
-                .unwrap_or(48.0),
+            local_shard_id
         }
     }
 }

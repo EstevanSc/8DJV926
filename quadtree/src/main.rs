@@ -1,12 +1,12 @@
 mod quic_client;
 
 use common::broker_messages::BrokerMessage;
-use common::packets::PositionBatch;
+use common::packets::{PositionBatch, SnapshotAuthority};
     use common::topics::{
     deserialize_starting_position_payload, deserialize_shard_created_payload,
     deserialize_shard_snapshot_payload, PositionPayload, ShardCreatedPayload, Topic,
     CrossingAlertPayload, serialize_crossing_alert_payload,
-    serialize_forced_position_update_payload,
+        serialize_forced_position_update_payload,
 };
 use common::{Boundary, Quadrant, ShardData, Vec2};
 use game_sockets::GameNetworkEvent;
@@ -321,6 +321,10 @@ async fn handle_shard_snapshot_payload(
     let old_entity_positions = entity_positions.clone();
 
     for snap in batch.snapshots {
+        if matches!(snap.authority, SnapshotAuthority::Ghost) {
+            continue;
+        }
+
         if let Some(entity_uuid) = entity_uuid_by_id.get(&snap.entity_id).copied() {
             entity_positions.insert(
                 entity_uuid,
@@ -342,7 +346,7 @@ async fn handle_shard_snapshot_payload(
                 let nearby_shards = quadtree.shards_near(*position, config.nearby_margin);
 
                 if !ghost_entity_ids.contains_key(entity_id) || ghost_entity_ids.get(entity_id).unwrap().is_disjoint(&nearby_shards.iter().filter_map(|id| shard_uuid_by_id.get(id)).copied().collect()) {
-                    println!("Entity {} moved from ({:.2}, {:.2}) to ({:.2}, {:.2})", entity_id, old_position.x, old_position.y, position.x, position.y);
+                    println!("Ghost Entity {} moved from ({:.2}, {:.2}) to ({:.2}, {:.2})", entity_id, old_position.x, old_position.y, position.x, position.y);
 
                     if ghost_entity_ids.contains_key(entity_id) {
                         let old_shards = ghost_entity_ids.get(entity_id).cloned().unwrap_or_default();
@@ -953,6 +957,12 @@ impl Quadtree {
         self.collect_shards_near(pos, margin, &mut shards);
         shards.sort_unstable();
         shards.dedup();
+
+        // remove the shard in which `pos` is located so the shard with authority doesn't get ghost updates (to avoid flickering )
+        if let Some(shard_id) = self.shard_for(pos) {
+            shards.retain(|id| *id != shard_id); // we will see later for authority margin management
+        }
+        println!("shards_near: pos=({:.2}, {:.2}), margin={:.2} => nearby shard IDs = {:?}", pos.x, pos.y, margin, shards);
         shards
     }
 

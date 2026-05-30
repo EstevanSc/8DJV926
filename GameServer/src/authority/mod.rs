@@ -41,7 +41,6 @@ impl Plugin for AuthorityPlugin {
 fn log_authority_startup(config: Res<components::AuthorityConfig>) {
     info!(
         local_shard_id = config.local_shard_id,
-        handoff_margin = config.handoff_margin,
         "Authority subsystem initialized"
     );
 }

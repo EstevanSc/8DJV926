@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::packets::{PositionBatch, PositionSnapshot};
+use common::packets::{PositionBatch, PositionSnapshot, SnapshotAuthority};
 use common::topics::{
     deserialize_shard_snapshot_payload, serialize_starting_position_payload, PositionPayload,
     ShardSnapshotPayload, Topic,
@@ -242,6 +242,7 @@ fn emit_snapshot_batch(
                 .map(|player| PositionSnapshot {
                     entity_id: player.entity_id,
                     display_name: player.username,
+                    authority: SnapshotAuthority::Owned,
                     x: 0.0,
                     y: 0.0,
                     vx: 0.0,

@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use tracing::debug;
+use uuid::Uuid;
 
 use super::components::{AuthorityState, GhostReplica};
 
@@ -21,6 +22,7 @@ pub fn spawn_ghost_entity(
             GhostReplica {
                 source_shard_id,
                 source_entity_id: entity_id,
+                source_entity_uuid: Uuid::nil(),
             },
             Transform::from_translation(position.extend(0.0)),
             GlobalTransform::default(),

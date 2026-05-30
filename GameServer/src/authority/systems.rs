@@ -1,11 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use avian2d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use tracing::{debug, info, trace, warn};
 
 use super::components::{AuthorityState, GhostReplica, HandoffRequestState};
-use super::ghost::apply_ghost_update;
+use super::ghost::{apply_ghost_update, spawn_ghost_entity};
 use super::handoff::{finalize_handoff, reject_handoff};
 use super::messages::{
     AuthorityEnvelope, GhostUpdate, HandoffAccept, HandoffComplete, HandoffReject, HandoffRequest,
@@ -15,8 +15,8 @@ use crate::simulation::{Player, TickCounter};
 /// Local inbox and outbox for authority traffic.
 #[derive(Resource, Default)]
 pub struct AuthorityBus {
-    pub inbound: VecDeque<AuthorityEnvelope>,
-    pub outbound: VecDeque<AuthorityEnvelope>,
+    pub inbound: VecDeque<AuthorityEnvelope>, 
+    pub outbound: VecDeque<AuthorityEnvelope>, // No outbound for now
     pub pending_requests: VecDeque<HandoffRequest>,
     pub pending_accepts: VecDeque<HandoffAccept>,
     pub pending_rejects: VecDeque<HandoffReject>,
@@ -40,6 +40,7 @@ type GhostUpdateQuery<'w, 's> = Query<
     'w,
     's,
     (
+        Entity,
         &'static mut Transform,
         &'static AuthorityState,
         &'static GhostReplica,
@@ -68,7 +69,7 @@ pub fn route_inbound_messages(mut bus: ResMut<AuthorityBus>) {
             }
             AuthorityEnvelope::GhostUpdate(update) => {
                 trace!(entity_id = update.entity_id, "Queued ghost update");
-                bus.pending_ghost_updates.push_back(update);
+                bus.pending_ghost_updates.push_back(update); // Queue ghost update for processing in authority/systems.rs/apply_ghost_updates
             }
             AuthorityEnvelope::HandoffComplete(complete) => {
                 info!(entity_id = complete.entity_id, "Queued handoff complete");
@@ -116,19 +117,46 @@ pub fn apply_handoff_requests(
 }
 
 /// Applies queued ghost updates to local replicas.
-pub fn apply_ghost_updates(mut bus: ResMut<AuthorityBus>, mut query: GhostUpdateQuery<'_, '_>) {
+pub fn apply_ghost_updates(
+    mut commands: Commands,
+    mut bus: ResMut<AuthorityBus>,
+    mut query: GhostUpdateQuery<'_, '_>,
+) {
+    let mut latest_updates: HashMap<u32, Vec2> = HashMap::new();
+
     while let Some(update) = bus.pending_ghost_updates.pop_front() {
-        for (mut transform, state, ghost) in &mut query {
-            if matches!(*state, AuthorityState::Ghost) && ghost.source_entity_id == update.entity_id
-            {
+        latest_updates.insert(update.entity_id, update.pos);
+    }
+
+    for (entity_id, position) in latest_updates {
+        let mut matching_ghosts = Vec::new();
+
+        for (entity, mut transform, state, ghost) in &mut query {
+            if matches!(*state, AuthorityState::Ghost) && ghost.source_entity_id == entity_id {
+                matching_ghosts.push((entity, ghost.source_shard_id));
                 trace!(
-                    entity_id = update.entity_id,
+                    entity_id,
                     source_shard_id = ghost.source_shard_id,
                     "Applying ghost update"
                 );
-                apply_ghost_update(&mut transform, update.pos);
-                break;
+                apply_ghost_update(&mut transform, position);
             }
+        }
+
+        if matching_ghosts.is_empty() {
+            debug!(entity_id, "Spawning ghost entity from first ghost update");
+            spawn_ghost_entity(&mut commands, entity_id, 0, position);
+            continue;
+        }
+
+        for (duplicate_entity, source_shard_id) in matching_ghosts.into_iter().skip(1) {
+            warn!(
+                entity_id,
+                source_shard_id,
+                duplicate_entity = ?duplicate_entity,
+                "Despawning duplicate ghost entity"
+            );
+            commands.entity(duplicate_entity).despawn();
         }
     }
 }
@@ -174,9 +202,4 @@ pub fn complete_handoffs(
             }
         }
     }
-}
-
-/// Drops outbound packets until a real transport is wired in.
-pub fn flush_outbox(mut bus: ResMut<AuthorityBus>) {
-    while let Some(_message) = bus.outbound.pop_front() {}
 }

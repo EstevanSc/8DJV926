@@ -12,7 +12,7 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players)
+                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -28,6 +28,13 @@ pub struct RemotePlayer {
     pub entity_id: u32,
     pub target: Vec2,
     pub prev: Vec2,
+}
+
+/// Marks the text label attached to a remote player.
+#[derive(Component)]
+pub struct RemotePlayerLabel {
+    pub entity_id: u32,
+    pub display_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,11 +94,16 @@ fn spawn_remote_players(
                     MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                     Transform::from_translation(pos.extend(0.0)),
                 )).with_children(|parent| {
+                    let label_text = format_remote_player_label(&name, pos);
                     parent.spawn((
-                        Text2d::new(name),
+                        Text2d::new(label_text),
                         TextFont { font_size: 12.0, ..default() },
                         TextColor(Color::WHITE),
                         Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
+                        RemotePlayerLabel {
+                            entity_id: snap.entity_id,
+                            display_name: name,
+                        },
                     ));
                 });
             }
@@ -127,6 +139,27 @@ fn interpolate_remote_players(
         let next = current.lerp(remote.target, alpha);
         transform.translation = next.extend(transform.translation.z);
     }
+}
+
+/// Update the text shown under each remote player to include its rounded position.
+fn update_remote_player_labels(
+    query: Query<(&RemotePlayer, &Transform, &Children)>,
+    mut labels: Query<(&RemotePlayerLabel, &mut Text2d)>,
+) {
+    for (remote, transform, children) in &query {
+        let position = transform.translation.truncate();
+        for child in children.iter() {
+            if let Ok((tag, mut text)) = labels.get_mut(child) {
+                if tag.entity_id == remote.entity_id {
+                    text.0 = format_remote_player_label(&tag.display_name, position);
+                }
+            }
+        }
+    }
+}
+
+fn format_remote_player_label(name: &str, position: Vec2) -> String {
+    format!("{}\n({:03.0}, {:03.0})", name, position.x, position.y)
 }
 
 /// Spawn a top-left debug overlay showing session info. Cleared with the rest

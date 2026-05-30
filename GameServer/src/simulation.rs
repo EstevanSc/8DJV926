@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::authority::components::AuthorityState;
-use crate::authority::{GhostReplica, GhostUpdate};
-use common::packets::{PositionBatch, PositionSnapshot};
+use crate::authority::GhostReplica;
+use common::packets::{PositionBatch, PositionSnapshot, SnapshotAuthority};
 
 use super::net::{SimCommand, SimCommandReceiver};
-use super::server::{publish_ghost_update, publish_shard_snapshot, BrokerPeer, ShardUuidById};
+use super::server::{publish_shard_snapshot, BrokerPeer};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
@@ -41,7 +41,12 @@ impl Plugin for SimulationPlugin {
             .add_systems(FixedUpdate, spawn_players.after(process_net_commands))
             .add_systems(FixedUpdate, despawn_players.after(spawn_players))
             .add_systems(FixedUpdate, apply_player_inputs.after(despawn_players))
-            .add_systems(FixedUpdate, publish_shard_snapshots.after(apply_player_inputs));
+            .add_systems(
+                FixedUpdate,
+                publish_shard_snapshots
+                    .after(apply_player_inputs)
+                    .after(crate::authority::systems::apply_ghost_updates),
+            );
     }
 }
 
@@ -174,12 +179,16 @@ fn build_position_batch(
 
     let snapshots: Vec<PositionSnapshot> = query
         .iter()
-        //.filter(|(_, authority_state, _)| authority_state.is_snapshot_visible())
-        .map(|(player, _, transform)| {
+        .map(|(player, authority_state, transform)| {
             let position = transform.translation.truncate();
             PositionSnapshot {
                 entity_id: player.entity_id,
                 display_name: player.display_name.clone(),
+                authority: if authority_state.is_ghost() {
+                    SnapshotAuthority::Ghost
+                } else {
+                    SnapshotAuthority::Owned
+                },
                 x: position.x as f32,
                 y: position.y as f32,
                 vx: 0.0,
@@ -200,35 +209,13 @@ fn publish_shard_snapshots(
     query: SnapshotQuery<'_, '_>,
     ghost_query: GhostUpdateQuery<'_, '_>,
     mut broker: ResMut<BrokerPeer>,
-    shard_map: Res<ShardUuidById>,
 ) {
     if let Some(batch) = build_position_batch(tick, query) {
+        /*println!("Publishing shard snapshot for tick {}, containing {} player(s)", batch.tick, batch.snapshots.len());
+        for snap in &batch.snapshots {
+            println!("  entity_id={}, name={}, pos=({:.1}, {:.1})", snap.entity_id, snap.display_name, snap.x, snap.y);
+        }*/
         publish_shard_snapshot(&mut broker, &batch);
-    }
-
-    // Send ghost updates to the broker so they can be forwarded to the source shard.
-    for (player, authority_state, transform, velocity, ghost_replica) in &ghost_query {
-        if !matches!(*authority_state, AuthorityState::Ghost) {
-            continue;
-        }
-
-        let position = transform.translation.truncate();
-        let velocity = velocity
-            .map(|value| Vec2::new(value.x, value.y))
-            .unwrap_or(Vec2::ZERO);
-
-        let update = GhostUpdate {
-            entity_id: player.entity_id,
-            pos: position,
-            vel: velocity,
-        };
-
-        publish_ghost_update(
-            &mut broker,
-            &shard_map,
-            ghost_replica.source_shard_id,
-            &update,
-        );
     }
 }
 

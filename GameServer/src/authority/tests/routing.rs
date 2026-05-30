@@ -31,7 +31,6 @@ fn authority_bus_routes_messages_into_queues() {
             AuthorityEnvelope::GhostUpdate(GhostUpdate {
                 entity_id: 4,
                 pos: Vec2::new(5.0, 6.0),
-                vel: Vec2::new(7.0, 8.0),
             }),
             AuthorityEnvelope::HandoffComplete(HandoffComplete { entity_id: 5 }),
         ]),

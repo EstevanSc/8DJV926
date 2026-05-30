@@ -39,7 +39,6 @@ fn authority_messages_roundtrip() {
         AuthorityEnvelope::GhostUpdate(GhostUpdate {
             entity_id: 13,
             pos: Vec2::new(-10.0, 20.0),
-            vel: Vec2::new(1.0, 2.0),
         }),
         AuthorityEnvelope::HandoffComplete(HandoffComplete { entity_id: 14 }),
     ];

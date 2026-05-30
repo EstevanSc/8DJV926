@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use common::constants::INTEREST_RADIUS_TILES;
-use common::packets::PositionSnapshot;
+use common::packets::{PositionSnapshot, SnapshotAuthority};
 
 /// Tile size in world units — determines the interest bubble radius.
 const TILE_SIZE: f32 = 32.0;
@@ -19,6 +19,7 @@ pub fn interest_query(
         .map(|(entity_id, name, pos)| PositionSnapshot {
             entity_id: *entity_id,
             display_name: name.clone(),
+            authority: SnapshotAuthority::Owned,
             x: pos.x,
             y: pos.y,
             vx: 0.0,

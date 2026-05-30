@@ -9,8 +9,8 @@ use common::packets::PlayerInput;
 use common::packets::PositionBatch;
 use common::topics::{
     deserialize_input_payload, deserialize_shard_snapshot_payload, serialize_shard_created_payload,
-    serialize_shard_snapshot_payload, ShardCreatedPayload, ShardSnapshotPayload, Topic,
-    deserialize_crossing_alert_payload,
+    serialize_shard_snapshot_payload, serialize_forced_position_update_payload,
+    PositionPayload, ShardCreatedPayload, ShardSnapshotPayload, Topic,
     deserialize_forced_position_update_payload,
 };
 use common::Vec2;
@@ -344,7 +344,7 @@ fn handle_message(
     shard_map: &mut ResMut<ShardUuidById>,
 ) {
     if let Some(message) = BrokerMessage::deserialize(data) {
-        handle_broker_message(message, connection, stream, player_registry, sim_tx, authority_bus, shard_map);
+        handle_broker_message(message, connection, stream, player_registry, sim_tx, authority_bus);
         return;
     }
 
@@ -398,7 +398,6 @@ fn handle_broker_message(
     player_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
     authority_bus: &mut ResMut<AuthorityBus>,
-    shard_map: &mut ResMut<ShardUuidById>,
 ) {
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
@@ -436,23 +435,28 @@ fn handle_broker_message(
                     eprintln!("Failed to decode broker forced position update payload from {:?}", connection.connection_id);
                 }
             }
-            Topic::CrossingAlert(_) => {
-                if let Some(p) = deserialize_crossing_alert_payload(&payload) {
-                    trace!("Received crossing alert for entity_id={} targeting shard_id={}", p.entity_id, p.target_shard_id);
-                    // Mémorise la correspondance UUID <-> u32 transmise par le Quadtree
-                    shard_map.0.insert(p.target_shard_id, p.target_shard_uuid);
-                    
-                    let _ = sim_tx.0.send(crate::net::SimCommand::CrossingAlert {
-                        entity_id: p.entity_id,
-                        target_shard_id: p.target_shard_id,
-                    });
-                }
-            }
-            Topic::HandoffRequest(_) | Topic::HandoffAccept(_) | Topic::HandoffReject(_) | Topic::GhostUpdate(_) | Topic::HandoffComplete(_) => {
+            Topic::HandoffRequest(_) | Topic::HandoffAccept(_) | Topic::HandoffReject(_) | Topic::HandoffComplete(_) => {
                 if let Ok(envelope) = AuthorityEnvelope::decode(&payload) {
-                    authority_bus.inbound.push_back(envelope);
+                    authority_bus.inbound.push_back(envelope); // Queue envelope for processing  in authority/system.rs/route_inbound_messages
                 } else {
                     eprintln!("Failed to decode authority packet from wire");
+                }
+            }
+            Topic::GhostUpdate(_) => {
+                if let Some(position_update) = deserialize_forced_position_update_payload(&payload) {
+                    let entity_id = entity_id_from_uuid(position_update.entity_id);
+                    authority_bus.inbound.push_back(AuthorityEnvelope::GhostUpdate(
+                        crate::authority::GhostUpdate {
+                            entity_id,
+                            pos: bevy::prelude::Vec2::new(
+                                position_update.position.x as f32,
+                                position_update.position.y as f32,
+                            ),
+                        },
+                    ));
+                    println!("Received ghost update for entity_id={} from shard, pos=({:.1}, {:.1})", entity_id, position_update.position.x, position_update.position.y);
+                } else {
+                    eprintln!("Failed to decode ghost update payload from wire");
                 }
             }
             _ => {}
@@ -562,35 +566,6 @@ pub(crate) fn publish_shard_snapshot(broker: &mut ResMut<BrokerPeer>, batch: &Po
     }
 }
 
-pub(crate) fn publish_ghost_update(
-    broker: &mut ResMut<BrokerPeer>,
-    shard_map: &Res<ShardUuidById>,
-    source_shard_id: u32,
-    update: &crate::authority::GhostUpdate,
-) {
-    let Some(connection) = broker.connection else {
-        eprintln!("Cannot publish ghost update: no broker connection");
-        return;
-    };
-
-    let Some(stream) = broker.control_stream.clone() else {
-        eprintln!("Cannot publish ghost update: no broker control stream");
-        return;
-    };
-
-    let Some(shard_uuid) = shard_map.0.get(&source_shard_id).copied() else {
-        eprintln!("Cannot publish ghost update: unknown shard id {}", source_shard_id);
-        return;
-    };
-
-    let envelope = crate::authority::AuthorityEnvelope::GhostUpdate(*update);
-    let payload = envelope.encode();
-    let publish_message = BrokerMessage::serialize_publish(Topic::GhostUpdate(shard_uuid).to_bytes(), &payload);
-
-    if let Err(e) = broker.peer.send(&connection, &stream, publish_message.into()) {
-        eprintln!("Failed to send broker GhostUpdate publish: {:?}", e);
-    }
-}
 
 fn handle_player_input(
     player_id: Uuid,

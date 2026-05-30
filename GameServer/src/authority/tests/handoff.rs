@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use bevy::prelude::*;
+use uuid::Uuid;
 
 use crate::authority::components::{AuthorityState, GhostReplica};
 use crate::authority::handoff::{begin_handoff, finalize_handoff, reject_handoff};
@@ -57,6 +58,7 @@ fn advance_transition(
                 .insert((AuthorityState::Ghost, GhostReplica {
                     source_shard_id: 9,
                     source_entity_id: 100,
+                    source_entity_uuid: Uuid::new_v4(),
                 }));
             stage.0 = 2;
         }
@@ -96,7 +98,7 @@ fn authority_state_transitions_cycle() {
 }
 
 fn spawn_ghost(mut commands: Commands) {
-    let entity = crate::authority::spawn_ghost_entity(&mut commands, 55, 13, Vec2::new(1.0, 2.0));
+    let entity = crate::authority::spawn_ghost_entity(&mut commands, 100, 13, Vec2::new(1.0, 2.0));
     commands.insert_resource(TestEntity(entity));
 }
 
