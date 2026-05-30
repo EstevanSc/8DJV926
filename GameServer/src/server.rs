@@ -323,7 +323,7 @@ fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>) {
         Topic::HandoffRequest(shard_uuid),
         Topic::HandoffAccept(shard_uuid),
         Topic::HandoffReject(shard_uuid),
-        Topic::GhostUpdate(shard_uuid),
+        //Topic::GhostUpdate(shard_uuid),
         Topic::HandoffComplete(shard_uuid),
     ] {
         let sub = BrokerMessage::serialize_subscribe(shard_uuid, topic.to_bytes());
