@@ -42,10 +42,11 @@ pub struct GhostReplica {
 /// Pending handoff data for a local entity.
 #[derive(Debug, Clone, Component)]
 pub struct HandoffRequestState {
-    pub target_shard_id: u32,
+    pub target_shard_uuid: Uuid,
     pub request: HandoffRequest,
     pub requested_tick: u32,
     pub dispatched: bool,
+    pub accepted: bool,
 }
 
 /// Runtime configuration for authority behavior.

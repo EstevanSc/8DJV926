@@ -186,6 +186,8 @@ fn build_position_batch(
                 display_name: player.display_name.clone(),
                 authority: if authority_state.is_ghost() {
                     SnapshotAuthority::Ghost
+                } else if matches!(authority_state, AuthorityState::PendingHandoff) {
+                    SnapshotAuthority::PendingHandOff
                 } else {
                     SnapshotAuthority::Owned
                 },
@@ -227,7 +229,7 @@ fn process_net_commands(
     mut despawn_writer: MessageWriter<DespawnPlayer>,
     mut input_buf: ResMut<PlayerInputBuffer>,
     tick: Res<TickCounter>,
-    query: Query<(Entity, &Player, &Transform, Option<&LinearVelocity>)>,
+    mut query: Query<(Entity, &Player, &mut AuthorityState, &mut Transform, Option<&LinearVelocity>)>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -237,11 +239,25 @@ fn process_net_commands(
         match cmd {
             SimCommand::Joined { entity_id, display_name, position } => {
                 let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
-                spawn_writer.write(SpawnPlayer {
-                    entity_id,
-                    display_name,
-                    position: new_position,
-                });
+                
+                let mut exists = false;
+                for (_, player, mut auth, mut transform, _) in &mut query {
+                    if player.entity_id == entity_id {
+                        *auth = AuthorityState::Owned;
+                        transform.translation = new_position.extend(transform.translation.z);
+                        exists = true;
+                        tracing::info!("Promoted ghost to Owned entity for {}", entity_id);
+                        break;
+                    }
+                }
+                
+                if !exists {
+                    spawn_writer.write(SpawnPlayer {
+                        entity_id,
+                        display_name,
+                        position: new_position,
+                    });
+                }
             }
             SimCommand::Left { entity_id } => {
                 despawn_writer.write(DespawnPlayer { entity_id });
@@ -251,18 +267,21 @@ fn process_net_commands(
                 input_buf.0.insert(entity_id, Vec2::new(dx, dy));
             }
             
-            SimCommand::CrossingAlert { entity_id, target_shard_id } => {
-                for (entity, player, transform, velocity) in &query {
+            SimCommand::CrossingAlert { entity_id, target_shard_uuid } => {
+                for (entity, player, authority_state, transform, velocity) in &mut query {
                     if player.entity_id == entity_id {
-                        let vel = velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
-                        // ask authority to hand off this player to the target shard, including current position, velocity, and state
-                        let request = crate::authority::build_handoff_request(
-                            entity_id, 
-                            transform.translation.truncate(), 
-                            vel, 
-                            [0u8; 64]
-                        );
-                        crate::authority::begin_handoff(&mut commands, entity, target_shard_id, request, tick.0);
+                        // FIX : On ignore l'alerte si l'entité est déjà en cours de transfert (PendingHandoff) !
+                        if *authority_state == AuthorityState::Owned {
+                            let vel = velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
+                            // ask authority to hand off this player to the target shard, including current position, velocity, and state
+                            let request = crate::authority::build_handoff_request(
+                                entity_id, 
+                                transform.translation.truncate(), 
+                                vel, 
+                                [0u8; 64]
+                            );
+                            crate::authority::begin_handoff(&mut commands, entity, target_shard_uuid, request, tick.0);
+                        }
                         break;
                     }
                 }

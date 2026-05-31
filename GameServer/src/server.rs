@@ -8,9 +8,12 @@ use common::broker_messages::BrokerMessage;
 use common::packets::PlayerInput;
 use common::packets::PositionBatch;
 use common::topics::{
-    deserialize_input_payload, deserialize_shard_snapshot_payload, serialize_shard_created_payload,
-    serialize_shard_snapshot_payload, serialize_forced_position_update_payload,
-    PositionPayload, ShardCreatedPayload, ShardSnapshotPayload, Topic,
+    deserialize_crossing_alert_payload, deserialize_handoff_request_payload,
+    deserialize_handoff_complete_payload,
+    deserialize_input_payload, deserialize_shard_snapshot_payload,
+    serialize_handoff_request_payload, serialize_shard_created_payload,
+    serialize_shard_snapshot_payload,
+    HandoffRequestPayload, ShardCreatedPayload, ShardSnapshotPayload, Topic,
     deserialize_forced_position_update_payload,
 };
 use common::Vec2;
@@ -202,6 +205,7 @@ fn poll_broker_events(
                     &mut server,
                     &mut player_registry,
                     &sim_tx,
+                    Some(&mut broker),
                     &mut authority_bus,
                     &mut shard_map,
                 );
@@ -262,6 +266,7 @@ fn receive_packets(
                     &mut server,
                     &mut player_registry,
                     &sim_tx,
+                    None,
                     &mut authority_bus,
                     &mut shard_map,
                 );
@@ -340,11 +345,20 @@ fn handle_message(
     server: &mut ResMut<NetworkPeer>,
     player_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
+    broker: Option<&mut ResMut<BrokerPeer>>,
     authority_bus: &mut ResMut<AuthorityBus>,
-    shard_map: &mut ResMut<ShardUuidById>,
+    _shard_map: &mut ResMut<ShardUuidById>,
 ) {
     if let Some(message) = BrokerMessage::deserialize(data) {
-        handle_broker_message(message, connection, stream, player_registry, sim_tx, authority_bus);
+        handle_broker_message(
+            message,
+            connection,
+            stream,
+            player_registry,
+            sim_tx,
+            broker,
+            authority_bus,
+        );
         return;
     }
 
@@ -397,10 +411,28 @@ fn handle_broker_message(
     _stream: GameStream,
     player_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
+    broker: Option<&mut ResMut<BrokerPeer>>,
     authority_bus: &mut ResMut<AuthorityBus>,
 ) {
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
+            Topic::CrossingAlert(source_shard_uuid) => {
+                if let Some(crossing_alert) = deserialize_crossing_alert_payload(&payload) {
+                    let entity_id = entity_id_from_uuid(crossing_alert.entity_uuid);
+                    let _ = sim_tx.0.send(crate::net::SimCommand::CrossingAlert {
+                        entity_id,
+                        target_shard_uuid: crossing_alert.target_shard_uuid,
+                    });
+                    tracing::trace!(
+                        source_shard_uuid = ?source_shard_uuid,
+                        target_shard_uuid = ?crossing_alert.target_shard_uuid,
+                        entity_id,
+                        "Received crossing alert"
+                    );
+                } else {
+                    eprintln!("Failed to decode crossing alert payload from {:?}", connection.connection_id);
+                }
+            }
             Topic::Input(player_id) => {
                 if let Some(input) = deserialize_input_payload(&payload) {
                     handle_player_input(
@@ -435,11 +467,80 @@ fn handle_broker_message(
                     eprintln!("Failed to decode broker forced position update payload from {:?}", connection.connection_id);
                 }
             }
-            Topic::HandoffRequest(_) | Topic::HandoffAccept(_) | Topic::HandoffReject(_) | Topic::HandoffComplete(_) => {
-                if let Ok(envelope) = AuthorityEnvelope::decode(&payload) {
-                    authority_bus.inbound.push_back(envelope); // Queue envelope for processing  in authority/system.rs/route_inbound_messages
+            Topic::HandoffRequest(target_shard_uuid) => {
+                if let Some(request) = deserialize_handoff_request_payload(&payload) {
+                    let player_count = player_registry.registry.len();
+                    // Temporary capacity gate; replace with shard load/scaling policy later.
+                    let allow_handoff = player_count < 100;
+
+                    if let Some(broker) = broker {
+                        let response_topic = if allow_handoff {
+                            Topic::HandoffAccept(request.source_shard_uuid)
+                        } else {
+                            Topic::HandoffReject(request.source_shard_uuid)
+                        };
+
+                        let response_message = BrokerMessage::serialize_publish(
+                            response_topic.to_bytes(),
+                            &serialize_handoff_request_payload(&request),
+                        );
+
+                        let _ = broker.peer.send(&connection, &_stream, response_message.into());
+                    }
+
+                    tracing::info!(
+                        target_shard_uuid = ?target_shard_uuid,
+                        source_shard_uuid = ?request.source_shard_uuid,
+                        entity_id = request.entity_id,
+                        player_count,
+                        allow_handoff,
+                        "Processed handoff request"
+                    );
                 } else {
-                    eprintln!("Failed to decode authority packet from wire");
+                    eprintln!("Failed to decode handoff request payload from {:?}", connection.connection_id);
+                }
+            }
+            Topic::HandoffAccept(_) => {
+                if let Some(request) = deserialize_handoff_request_payload(&payload) {
+                    authority_bus
+                        .inbound
+                        .push_back(AuthorityEnvelope::HandoffAccept(crate::authority::HandoffAccept {
+                            entity_id: request.entity_id,
+                        }));
+                } else {
+                    eprintln!("Failed to decode handoff accept payload from {:?}", connection.connection_id);
+                }
+            }
+            Topic::HandoffReject(_) => {
+                if let Some(request) = deserialize_handoff_request_payload(&payload) {
+                    authority_bus
+                        .inbound
+                        .push_back(AuthorityEnvelope::HandoffReject(crate::authority::HandoffReject {
+                            entity_id: request.entity_id,
+                        }));
+                } else {
+                    eprintln!("Failed to decode handoff reject payload from {:?}", connection.connection_id);
+                }
+            }
+            Topic::HandoffComplete(_) => {
+                if let Some(complete) = deserialize_handoff_complete_payload(&payload) {
+                    tracing::info!(
+                        entity_id = complete.entity_id,
+                        source_shard_id = ?complete.source_shard_id,
+                        target_shard_id = ?complete.target_shard_id,
+                        result = ?complete.result,
+                        "Received handoff complete"
+                    );
+
+                    if complete.result.is_transfer() {
+                        authority_bus
+                            .inbound
+                            .push_back(AuthorityEnvelope::HandoffComplete(crate::authority::HandoffComplete {
+                                entity_id: complete.entity_id,
+                            }));
+                    }
+                } else {
+                    eprintln!("Failed to decode handoff complete payload from wire");
                 }
             }
             Topic::GhostUpdate(_) => {
@@ -467,8 +568,7 @@ fn handle_broker_message(
 
 fn flush_authority_outbox(
     mut bus: ResMut<AuthorityBus>,
-    mut broker: ResMut<BrokerPeer>,
-    shard_map: Res<ShardUuidById>,
+    broker: ResMut<BrokerPeer>,
     query: Query<(&crate::simulation::Player, &HandoffRequestState)>,
     ghost_query: Query<(&crate::simulation::Player, &GhostReplica)>,
 ) {
@@ -483,25 +583,32 @@ fn flush_authority_outbox(
         
         let target_uuid = match &message {
             AuthorityEnvelope::HandoffRequest(req) => {
-                // Injection de l'UUID source dans les 16 premiers octets du state array (offset 21)
-                if raw_bytes.len() >= 37 {
-                    raw_bytes[21..37].copy_from_slice(self_uuid.as_bytes());
+                if let Some((_, request_state)) = query.iter().find(|(p, _)| p.entity_id == req.entity_id) {
+                    let payload = HandoffRequestPayload {
+                        source_shard_uuid: self_uuid,
+                        entity_id: req.entity_id,
+                        target_shard_uuid: request_state.target_shard_uuid,
+                        position: common::Vec2 { x: req.pos.x as f64, y: req.pos.y as f64 },
+                        velocity: common::Vec2 { x: req.vel.x as f64, y: req.vel.y as f64 },
+                        state: req.state.to_vec(),
+                    };
+
+                    raw_bytes = serialize_handoff_request_payload(&payload);
+                    request_state.target_shard_uuid
+                } else {
+                    Uuid::nil()
                 }
-                query.iter()
-                    .find(|(p, _)| p.entity_id == req.entity_id)
-                    .and_then(|(_, s)| shard_map.0.get(&s.target_shard_id).copied())
-                    .unwrap_or(Uuid::nil())
             },
             AuthorityEnvelope::GhostUpdate(update) => {
                 query.iter()
                     .find(|(p, _)| p.entity_id == update.entity_id)
-                    .and_then(|(_, s)| shard_map.0.get(&s.target_shard_id).copied())
+                    .and_then(|(_, s)| Some(s.target_shard_uuid))
                     .unwrap_or(Uuid::nil())
             },
             AuthorityEnvelope::HandoffComplete(complete) => {
                 ghost_query.iter()
                     .find(|(p, _)| p.entity_id == complete.entity_id)
-                    .and_then(|(_, g)| shard_map.0.get(&g.source_shard_id).copied())
+                        .and_then(|(_, _g)| Some(Uuid::nil()))
                     .unwrap_or(Uuid::nil())
             },
             _ => Uuid::nil(),
@@ -576,8 +683,6 @@ fn handle_player_input(
 ) {
     // Auto-Join if unknown
     if !player_registry.registry.contains_key(&player_id) {
-        println!("Premier input de {}, auto-join sur ce shard !", player_id);
-        
         let entity_id = crate::net::entity_id_from_uuid(player_id);
         let username = format!("Player_{}", entity_id);
 
@@ -586,11 +691,6 @@ fn handle_player_input(
             PlayerInfo { id: player_id, entity_id, username: username.clone() },
         );
 
-        let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
-            entity_id,
-            display_name: username,
-            position: Vec2 { x: 0.0, y: 0.0 }, // Default spawn position, could be randomized or sent by the client in a more complex implementation
-        });
     }
 
     if let Some(info) = player_registry.registry.get(&player_id) {

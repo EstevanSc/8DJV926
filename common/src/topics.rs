@@ -168,6 +168,50 @@ pub struct ShardSnapshotPayload {
     pub replication: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct HandoffRequestPayload {
+    pub source_shard_uuid: Uuid,
+    pub entity_id: u32,
+    pub target_shard_uuid: Uuid,
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub state: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq, Eq)]
+pub enum HandoffResult {
+    Transfer,
+    Canceled,
+}
+
+impl HandoffResult {
+    pub fn is_transfer(self) -> bool {
+        matches!(self, Self::Transfer)
+    }
+
+    pub fn is_canceled(self) -> bool {
+        matches!(self, Self::Canceled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct HandoffCompletePayload {
+    pub result: HandoffResult,
+    pub entity_id: u32,
+    pub source_shard_id: Uuid,
+    pub target_shard_id: Uuid,
+}
+
+impl HandoffCompletePayload {
+    pub fn is_transfer(self) -> bool {
+        self.result.is_transfer()
+    }
+
+    pub fn is_canceled(self) -> bool {
+        self.result.is_canceled()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct CrossingAlertPayload {
     pub source_shard_uuid: Uuid,
@@ -209,6 +253,22 @@ pub fn serialize_shard_snapshot_payload(payload: &ShardSnapshotPayload) -> Vec<u
 }
 
 pub fn deserialize_shard_snapshot_payload(bytes: &[u8]) -> Option<ShardSnapshotPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_handoff_request_payload(payload: &HandoffRequestPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize handoff request payload")
+}
+
+pub fn deserialize_handoff_request_payload(bytes: &[u8]) -> Option<HandoffRequestPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_handoff_complete_payload(payload: &HandoffCompletePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize handoff complete payload")
+}
+
+pub fn deserialize_handoff_complete_payload(bytes: &[u8]) -> Option<HandoffCompletePayload> {
     wincode::deserialize(bytes).ok()
 }
 

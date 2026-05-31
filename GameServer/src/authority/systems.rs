@@ -6,7 +6,7 @@ use tracing::{debug, info, trace, warn};
 
 use super::components::{AuthorityState, GhostReplica, HandoffRequestState};
 use super::ghost::{apply_ghost_update, spawn_ghost_entity};
-use super::handoff::{finalize_handoff, reject_handoff};
+use super::handoff::{accept_handoff, downgrade_to_ghost, finalize_handoff, reject_handoff};
 use super::messages::{
     AuthorityEnvelope, GhostUpdate, HandoffAccept, HandoffComplete, HandoffReject, HandoffRequest,
 };
@@ -47,8 +47,16 @@ type GhostUpdateQuery<'w, 's> = Query<
     ),
 >;
 
-type HandoffCompleteQuery<'w, 's> =
-    Query<'w, 's, (Entity, &'static Player, &'static AuthorityState)>;
+type HandoffCompleteQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Player,
+        &'static AuthorityState,
+        Option<&'static mut HandoffRequestState>,
+    ),
+>;
 
 /// Routes raw inbound messages into typed queues.
 pub fn route_inbound_messages(mut bus: ResMut<AuthorityBus>) {
@@ -105,7 +113,7 @@ pub fn apply_handoff_requests(
 
         info!(
             entity_id = player.entity_id,
-            target_shard_id = request_state.target_shard_id,
+            target_shard_uuid = ?request_state.target_shard_uuid,
             tick = tick.0,
             "Dispatching handoff request"
         );
@@ -165,22 +173,24 @@ pub fn apply_ghost_updates(
 pub fn complete_handoffs(
     mut bus: ResMut<AuthorityBus>,
     mut commands: Commands,
-    query: HandoffCompleteQuery<'_, '_>,
+    mut query: HandoffCompleteQuery<'_, '_>,
 ) {
     while let Some(accept) = bus.pending_accepts.pop_front() {
-        for (entity, player, state) in &query {
+        for (_entity, player, state, request_state) in &mut query {
             if player.entity_id == accept.entity_id
                 && matches!(*state, AuthorityState::PendingHandoff)
             {
                 info!(entity_id = accept.entity_id, "Handoff accepted");
-                finalize_handoff(&mut commands, entity);
+                if let Some(mut request_state) = request_state {
+                    accept_handoff(&mut request_state);
+                }
                 break;
             }
         }
     }
 
     while let Some(reject) = bus.pending_rejects.pop_front() {
-        for (entity, player, state) in &query {
+        for (entity, player, state, _) in &mut query {
             if player.entity_id == reject.entity_id
                 && matches!(*state, AuthorityState::PendingHandoff)
             {
@@ -191,15 +201,28 @@ pub fn complete_handoffs(
         }
     }
 
+    let mut remaining_completes = VecDeque::new();
+
     while let Some(complete) = bus.pending_completes.pop_front() {
-        for (entity, player, state) in &query {
+        let mut finalized = false;
+
+        for (entity, player, state, request_state) in &mut query {
             if player.entity_id == complete.entity_id
                 && matches!(*state, AuthorityState::PendingHandoff)
             {
-                info!(entity_id = complete.entity_id, "Handoff completed");
-                finalize_handoff(&mut commands, entity);
+                if request_state.as_ref().is_some_and(|request_state| request_state.accepted) {
+                    info!(entity_id = complete.entity_id, "Handoff completed - Relinquishing authority");
+                    downgrade_to_ghost(&mut commands, entity);
+                    finalized = true;
+                }
                 break;
             }
         }
+
+        if !finalized {
+            remaining_completes.push_back(complete);
+        }
     }
+
+    bus.pending_completes = remaining_completes;
 }

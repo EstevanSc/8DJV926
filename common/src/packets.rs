@@ -9,6 +9,7 @@ use wincode::{SchemaRead, SchemaWrite};
 #[derive(Debug, Clone, Copy, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq, Eq)]
 pub enum SnapshotAuthority {
     Owned,
+    PendingHandOff,
     Ghost,
 }
 
