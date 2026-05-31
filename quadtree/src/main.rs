@@ -345,6 +345,10 @@ async fn handle_shard_snapshot_payload(
             {
                 let nearby_shards = quadtree.shards_near(*position, config.nearby_margin);
 
+                if nearby_shards.is_empty() {
+                    continue;
+                }
+
                 if !ghost_entity_ids.contains_key(entity_id) || ghost_entity_ids.get(entity_id).unwrap().is_disjoint(&nearby_shards.iter().filter_map(|id| shard_uuid_by_id.get(id)).copied().collect()) {
                     println!("Ghost Entity {} moved from ({:.2}, {:.2}) to ({:.2}, {:.2})", entity_id, old_position.x, old_position.y, position.x, position.y);
 
