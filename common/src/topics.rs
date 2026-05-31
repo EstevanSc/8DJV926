@@ -170,9 +170,9 @@ pub struct ShardSnapshotPayload {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct CrossingAlertPayload {
-    pub entity_id: u32,
-    pub target_shard_id: u32,
+    pub source_shard_uuid: Uuid,
     pub target_shard_uuid: Uuid,
+    pub entity_uuid: Uuid,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]

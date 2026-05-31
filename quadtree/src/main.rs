@@ -372,6 +372,25 @@ async fn handle_shard_snapshot_payload(
                     continue;
                 }
 
+                for nearby_shard_id in &nearby_shards {
+                    if let Some(target_shard_uuid) = shard_uuid_by_id.get(nearby_shard_id) {
+                        if let Some(client) = broker_client {
+                            let alert = CrossingAlertPayload {
+                                source_shard_uuid: snapshot.shard_id,
+                                target_shard_uuid: *target_shard_uuid,
+                                entity_uuid: *entity_id,
+                            };
+
+                            let _ = client
+                                .publish(
+                                    Topic::CrossingAlert(snapshot.shard_id),
+                                    &serialize_crossing_alert_payload(&alert),
+                                )
+                                .await;
+                        }
+                    }
+                }
+
                 if !ghost_entity_ids.contains_key(entity_id) || ghost_entity_ids.get(entity_id).unwrap().is_disjoint(&nearby_shards.iter().filter_map(|id| shard_uuid_by_id.get(id)).copied().collect()) {
                     println!("Ghost Entity {} moved from ({:.2}, {:.2}) to ({:.2}, {:.2})", entity_id, old_position.x, old_position.y, position.x, position.y);
 
