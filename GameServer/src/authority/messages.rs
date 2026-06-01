@@ -41,7 +41,6 @@ pub struct HandoffReject {
 pub struct GhostUpdate {
     pub entity_id: u32,
     pub pos: Vec2,
-    pub vel: Vec2,
 }
 
 /// Final handoff signal once authority is transferred.
@@ -97,8 +96,6 @@ impl AuthorityEnvelope {
                 bytes.put_u32_le(message.entity_id);
                 bytes.put_f32_le(message.pos.x);
                 bytes.put_f32_le(message.pos.y);
-                bytes.put_f32_le(message.vel.x);
-                bytes.put_f32_le(message.vel.y);
             }
             Self::HandoffComplete(message) => {
                 bytes.put_u8(TAG_HANDOFF_COMPLETE);
@@ -134,8 +131,7 @@ impl AuthorityEnvelope {
             TAG_GHOST_UPDATE => {
                 let entity_id = read_u32(&mut cursor)?;
                 let pos = read_vec2(&mut cursor)?;
-                let vel = read_vec2(&mut cursor)?;
-                Self::GhostUpdate(GhostUpdate { entity_id, pos, vel })
+                Self::GhostUpdate(GhostUpdate { entity_id, pos })
             }
             TAG_HANDOFF_COMPLETE => Self::HandoffComplete(HandoffComplete {
                 entity_id: read_u32(&mut cursor)?,

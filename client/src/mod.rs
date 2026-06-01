@@ -4,7 +4,6 @@ pub mod login;
 pub mod net;
 
 use bevy::prelude::*;
-use rustls;
 
 use self::input::ClientInputPlugin;
 use self::interpolation::InterpolationPlugin;
@@ -17,9 +16,11 @@ use self::net::ClientNetPlugin;
 pub struct GameSession {
     pub player_id: String,
     pub username: String,
-    pub server_ip: String,
+    pub broker_ip: String,
+    pub broker_port: u16,
+    /*pub server_ip: String,
     pub server_port: u16,
-    pub server_zone: String,
+    pub server_zone: String,*/
 }
 
 /// Top-level app states.

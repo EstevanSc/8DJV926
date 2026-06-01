@@ -1,16 +1,17 @@
 //! Shared shard data structures for quadtree and orchestrator communication.
 
 use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 /// 2D position vector
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct Vec2 {
     pub x: f64,
     pub y: f64,
 }
 
 /// Boundary of a shard in 2D space (axis-aligned bounding box).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct Boundary {
     pub x: f64,
     pub y: f64,
@@ -84,8 +85,18 @@ impl Boundary {
 }
 
 /// Data for a single shard, communicated from quadtree to orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct ShardData {
     pub shard_id: Option<u32>,
     pub boundary: Boundary,
+}
+
+impl ShardData {
+    pub fn encode_batch(shard_data: &[ShardData]) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(shard_data)
+    }
+
+    pub fn decode_batch(data: &[u8]) -> serde_json::Result<Vec<ShardData>> {
+        serde_json::from_slice(data)
+    }
 }

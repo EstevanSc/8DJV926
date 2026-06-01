@@ -2310,6 +2310,7 @@ dependencies = [
  "bitcode",
  "redis",
  "serde",
+ "serde_json",
  "uuid",
  "wincode",
 ]
@@ -4915,17 +4916,18 @@ dependencies = [
  "anyhow",
  "axum",
  "bollard",
+ "bytes",
  "common",
  "dotenv",
- "quinn 0.10.2",
+ "game_sockets",
  "rcgen",
- "rustls 0.21.12",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wincode",
 ]
 
 [[package]]
@@ -5304,15 +5306,14 @@ dependencies = [
  "bytes",
  "common",
  "dotenv",
- "quinn 0.10.2",
+ "game_sockets",
  "rand 0.7.3",
- "rustls 0.21.12",
  "serde",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wincode",
 ]
 
 [[package]]

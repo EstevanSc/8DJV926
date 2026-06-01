@@ -1,142 +1,130 @@
-//! QUIC client for quadtree to send shard updates to orchestrator.
-//!
-//! Establishes a persistent connection to the orchestrator and sends
-//! ShardData updates as JSON messages over QUIC unidirectional streams.
+//! QUIC client wrapper used by the quadtree for separate orchestrator and broker connections.
 
 use anyhow::{anyhow, Context, Result};
-use common::ShardData;
-use rustls::client::{ServerCertVerified, ServerCertVerifier};
-use std::net::SocketAddr;
-use std::net::ToSocketAddrs;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use bytes::Bytes;
+use common::topics::Topic;
+use common::{BrokerMessage, ShardData};
+use game_sockets::protocols::QuicBackend;
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
+use std::time::Duration;
+use uuid::Uuid;
 
-/// Minimal server cert verifier that skips all verification for local dev.
-#[derive(Debug)]
-struct SkipVerification;
-
-impl ServerCertVerifier for SkipVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-}
-
-/// Create a QUIC client config (skips all server cert verification).
-fn make_client_config() -> quinn::ClientConfig {
-    let crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_custom_certificate_verifier(Arc::new(SkipVerification))
-        .with_no_client_auth();
-
-    let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
-    let mut transport_config = quinn::TransportConfig::default();
-    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-    client_config.transport_config(Arc::new(transport_config));
-
-    client_config
-}
-
-/// Quadtree QUIC client that maintains a connection to the orchestrator.
+/// Quadtree QUIC connection that maintains a single target connection.
 pub struct QuicClient {
-    _endpoint: quinn::Endpoint,
-    connection: Arc<Mutex<Option<quinn::Connection>>>,
+    peer: GamePeer,
+    connection: GameConnection,
+    control_stream: GameStream,
+    label: String,
 }
 
 impl QuicClient {
-    fn resolve_orchestrator_addr(orchestrator_host: &str, orchestrator_port: u16) -> Result<SocketAddr> {
-        // Accept a full socket address directly (e.g., "127.0.0.1:5000").
-        if let Ok(addr) = orchestrator_host.parse::<SocketAddr>() {
-            return Ok(addr);
+    async fn wait_for_connection(peer: &mut GamePeer, label: &str) -> Result<GameConnection> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            while let Ok(Some(event)) = GamePeer::poll(peer) {
+                match event {
+                    GameNetworkEvent::Connected(connection) => {
+                        return Ok(connection);
+                    }
+                    GameNetworkEvent::Disconnected(connection) => {
+                        return Err(anyhow!(
+                            "{} connection closed before it became ready ({:?})",
+                            label,
+                            connection.connection_id
+                        ));
+                    }
+                    GameNetworkEvent::Error { inner, .. } => {
+                        return Err(anyhow!("{} connection error: {}", label, inner));
+                    }
+                    _ => {}
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("{} connection timed out", label));
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-
-        // Resolve hostname plus port using system DNS (works for Docker service names).
-        let host_and_port = format!("{}:{}", orchestrator_host, orchestrator_port);
-
-        host_and_port
-            .to_socket_addrs()
-            .context("Failed to resolve orchestrator host")?
-            .next()
-            .context("No orchestrator addresses resolved")
     }
 
-    /// Create a new QUIC client and connect to the orchestrator.
-    pub async fn new(orchestrator_host: &str, orchestrator_port: u16) -> Result<Self> {
-        // Resolve orchestrator address from hostname or socket address.
-        let orchestrator_addr = Self::resolve_orchestrator_addr(orchestrator_host, orchestrator_port)
-            .context("Failed to resolve orchestrator address")?;
+    async fn connect(label: &str, host: &str, port: u16) -> Result<Self> {
+        tracing::info!("Connecting {} QUIC link to {}:{}", label, host, port);
 
-        tracing::info!("Quadtree QUIC client connecting to {}", orchestrator_addr);
+        let peer = GamePeer::new(QuicBackend::new());
+        peer.connect(host, port)
+            .with_context(|| format!("Failed to start {} QUIC connection", label))?;
 
-        // Create a QUIC client configuration (skips server cert verification)
-        let client_config = make_client_config();
+        let mut peer = peer;
+        let connection = Self::wait_for_connection(&mut peer, label).await?;
+        peer.create_stream(connection, GameStreamReliability::Reliable)
+            .with_context(|| format!("Failed to create {} control stream", label))?;
+        let control_stream = GameStream::new(1, GameStreamReliability::Reliable);
 
-        // Create endpoint on a local address (OS will assign port)
-        let socket = std::net::UdpSocket::bind("[::]:0")
-            .context("Failed to bind UDP socket")?;
-        socket.set_nonblocking(true)
-            .context("Failed to set socket non-blocking")?;
-        
-        let runtime = Arc::new(quinn::TokioRuntime);
-        let mut endpoint = quinn::Endpoint::new(Default::default(), None, socket, runtime)
-            .context("Failed to create QUIC endpoint")?;
-        
-        endpoint.set_default_client_config(client_config);
+        tracing::info!("{} QUIC link connected (id={:?})", label, connection.connection_id);
 
-        // Connect to orchestrator
-        let connection = endpoint
-            .connect(orchestrator_addr, "orchestrator")
-            .context("Failed to connect to orchestrator")?
-            .await
-            .context("Connection to orchestrator failed")?;
-
-        tracing::info!("Quadtree QUIC client connected to orchestrator");
-
-        Ok(QuicClient {
-            _endpoint: endpoint,
-            connection: Arc::new(Mutex::new(Some(connection))),
+        Ok(Self {
+            peer,
+            connection,
+            control_stream,
+            label: label.to_string(),
         })
     }
 
-    /// Send shard data to the orchestrator as JSON.
+    pub async fn connect_orchestrator(host: &str, port: u16) -> Result<Self> {
+        Self::connect("orchestrator", host, port).await
+    }
+
+    pub async fn connect_broker(host: &str, port: u16) -> Result<Self> {
+        Self::connect("broker", host, port).await
+    }
+
+    pub fn poll(&mut self) -> Result<Option<GameNetworkEvent>> {
+        GamePeer::poll(&mut self.peer).map_err(|e| anyhow!("{} link poll failed: {}", self.label, e))
+    }
+
+    async fn send_bytes(&self, bytes: Vec<u8>, context: &str) -> Result<()> {
+        self.peer
+            .send(&self.connection, &self.control_stream, Bytes::from(bytes))
+            .with_context(|| format!("Failed to send {} on {} link", context, self.label))?;
+
+        Ok(())
+    }
+
+    pub async fn subscribe(&self, client_id: Uuid, topic: Topic) -> Result<()> {
+        self.send_bytes(
+            BrokerMessage::serialize_subscribe(client_id, topic.to_bytes()),
+            "subscribe",
+        )
+        .await
+    }
+
+    pub async fn unsubscribe(&self, client_id: Uuid, topic: Topic) -> Result<()> {
+        self.send_bytes(
+            BrokerMessage::serialize_unsubscribe(client_id, topic.to_bytes()),
+            "unsubscribe",
+        )
+        .await
+    }
+
+    pub async fn announce_connect(&self, client_id: Uuid) -> Result<()> {
+        self.send_bytes(BrokerMessage::serialize_connect(client_id), "connect").await
+    }
+
+    pub async fn publish(&self, topic: Topic, payload: &[u8]) -> Result<()> {
+        self.send_bytes(
+            BrokerMessage::serialize_publish(topic.to_bytes(), payload),
+            "publish",
+        )
+        .await
+    }
+
+    /// Send shard data to the orchestrator using the shared binary schema.
     pub async fn send_shard_data(&self, shard_data: &[ShardData]) -> Result<()> {
-        let json_payload = serde_json::to_string(shard_data)
-            .context("Failed to serialize shard data to JSON")?;
-
-        let mut conn_lock = self.connection.lock().await;
-
-        // Check if connection is alive; reconnect if needed
-        if let Some(conn) = conn_lock.as_ref() {
-            if conn.close_reason().is_some() {
-                tracing::warn!("Connection to orchestrator was closed, reconnecting...");
-                *conn_lock = None;
-            }
-        }
-
-        let conn = conn_lock
-            .as_ref()
-            .ok_or_else(|| anyhow!("Connection is unavailable"))?;
-
-        // Open a unidirectional stream and send data
-        let mut send = conn
-            .open_uni()
-            .await
-            .context("Failed to open unidirectional stream")?;
-
-        send.write_all(json_payload.as_bytes())
-            .await
-            .context("Failed to write to QUIC stream")?;
-
-        send.finish()
-            .await
-            .context("Failed to finish QUIC stream")?;
+        let payload = ShardData::encode_batch(shard_data)
+            .context("Failed to encode shard data payload")?;
+        self.send_bytes(payload, "shard data").await?;
 
         tracing::debug!("Sent shard data to orchestrator: {} shards", shard_data.len());
 

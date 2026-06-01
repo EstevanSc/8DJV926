@@ -105,7 +105,8 @@ struct ServerInfo {
 #[derive(Deserialize)]
 struct LoginResponse {
     player_id: String,
-    server: ServerInfo,
+    broker_ip: String,
+    broker_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -502,13 +503,17 @@ fn poll_join_task(
                         commands.insert_resource(GameSession {
                             player_id: resp.player_id.clone(),
                             username,
+                            broker_ip: resp.broker_ip.clone(),
+                            broker_port: resp.broker_port,
+                            /*  legacy
                             server_ip: resp.server.ip.clone(),
                             server_port: resp.server.port,
                             server_zone: resp.server.zone.clone(),
+                            */
                         });
                         text.0 = format!(
-                            "Login successful!\nPlayer ID: {}\nServer: {}:{} ({})\nConnecting in 2s...",
-                            resp.player_id, resp.server.ip, resp.server.port, resp.server.zone,
+                            "Login successful!\nPlayer ID: {}\nBroker: {}:{}\nConnecting in 2s...",
+                            resp.player_id, resp.broker_ip, resp.broker_port,
                         );
                         color.0 = Color::srgb(0.2, 0.9, 0.2);
                         commands.insert_resource(TransitionTimer(Timer::from_seconds(

@@ -3,14 +3,13 @@ use avian2d::{math::*, prelude::*};
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use bytes::Bytes;
 
 use crate::authority::components::AuthorityState;
-use common::packets::PositionBatch;
+use crate::authority::GhostReplica;
+use common::packets::{PositionBatch, PositionSnapshot, SnapshotAuthority};
 
-use super::interest::interest_query;
-use super::net::{ConnectedPlayers, SimCommand, SimCommandReceiver, entity_id_from_uuid};
-use super::server::NetworkPeer;
+use super::net::{SimCommand, SimCommandReceiver};
+use super::server::{publish_shard_snapshot, BrokerPeer};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
@@ -42,7 +41,12 @@ impl Plugin for SimulationPlugin {
             .add_systems(FixedUpdate, spawn_players.after(process_net_commands))
             .add_systems(FixedUpdate, despawn_players.after(spawn_players))
             .add_systems(FixedUpdate, apply_player_inputs.after(despawn_players))
-            .add_systems(FixedUpdate, broadcast_position_snapshots.after(apply_player_inputs));
+            .add_systems(
+                FixedUpdate,
+                publish_shard_snapshots
+                    .after(apply_player_inputs)
+                    .after(crate::authority::systems::apply_ghost_updates),
+            );
     }
 }
 
@@ -62,6 +66,13 @@ pub struct TickCounter(pub u32);
 pub struct PlayerInputBuffer(pub HashMap<u32, Vec2>);
 
 type SnapshotQuery<'w, 's> = Query<'w, 's, (&'static Player, &'static AuthorityState, &'static Transform)>;
+type GhostUpdateQuery<'w, 's> = Query<'w, 's, (
+    &'static Player,
+    &'static AuthorityState,
+    &'static Transform,
+    Option<&'static LinearVelocity>,
+    &'static GhostReplica,
+)>;
 type InputQuery<'w, 's> = Query<'w, 's, (
     &'static Player,
     &'static AuthorityState,
@@ -160,57 +171,65 @@ fn despawn_players(
 
 /// Every tick: collect positions of all players and broadcast interest-filtered
 /// snapshots to each connected client individually.
-fn broadcast_position_snapshots(
+fn build_position_batch(
     mut tick: ResMut<TickCounter>,
     query: SnapshotQuery<'_, '_>,
-    conn_list: Res<ConnectedPlayers>,
-    server: Res<NetworkPeer>,
-) {
+) -> Option<PositionBatch> {
     tick.0 = tick.0.wrapping_add(1);
 
-    // Build the full list of (entity_id, display_name, world_pos) for this tick.
-    let all_players: Vec<(u32, String, Vec2)> = query
+    let snapshots: Vec<PositionSnapshot> = query
         .iter()
-        .filter(|(_, authority_state, _)| authority_state.is_snapshot_visible())
-        .map(|(player, _, transform)| {
-            (player.entity_id, player.display_name.clone(), transform.translation.truncate())
+        .map(|(player, authority_state, transform)| {
+            let position = transform.translation.truncate();
+            PositionSnapshot {
+                entity_id: player.entity_id,
+                display_name: player.display_name.clone(),
+                authority: if authority_state.is_ghost() {
+                    SnapshotAuthority::Ghost
+                } else if matches!(authority_state, AuthorityState::PendingHandoff) {
+                    SnapshotAuthority::PendingHandOff
+                } else {
+                    SnapshotAuthority::Owned
+                },
+                x: position.x as f32,
+                y: position.y as f32,
+                vx: 0.0,
+                vy: 0.0,
+            }
         })
         .collect();
 
-    if all_players.is_empty() {
-        return;
+    if snapshots.is_empty() {
+        return None;
     }
 
-    let stream = game_sockets::GameStream::from(0);
-    let conns = conn_list.0.lock().unwrap();
-    for (conn_uuid, conn) in conns.iter() {
-        // Derive this connection's entity_id and find their world position.
-        let observer_id = entity_id_from_uuid(*conn_uuid);
-        let observer_pos = all_players
-            .iter()
-            .find(|(id, _, _)| *id == observer_id)
-            .map(|(_, _, pos)| *pos)
-            .unwrap_or(Vec2::ZERO);
+    Some(PositionBatch { tick: tick.0, snapshots })
+}
 
-        let snapshots = interest_query(observer_pos, &all_players);
-        let batch = PositionBatch { tick: tick.0, snapshots };
-        match wincode::serialize(&batch) {
-            Ok(bytes) => {
-                if let Err(e) = server.peer.send(conn, &stream, Bytes::from(bytes)) {
-                    tracing::warn!("send error: {e}");
-                }
-            }
-            Err(e) => tracing::warn!("Failed to serialize PositionBatch: {e}"),
-        }
+fn publish_shard_snapshots(
+    tick: ResMut<TickCounter>,
+    query: SnapshotQuery<'_, '_>,
+    ghost_query: GhostUpdateQuery<'_, '_>,
+    mut broker: ResMut<BrokerPeer>,
+) {
+    if let Some(batch) = build_position_batch(tick, query) {
+        /*println!("Publishing shard snapshot for tick {}, containing {} player(s)", batch.tick, batch.snapshots.len());
+        for snap in &batch.snapshots {
+            println!("  entity_id={}, name={}, pos=({:.1}, {:.1})", snap.entity_id, snap.display_name, snap.x, snap.y);
+        }*/
+        publish_shard_snapshot(&mut broker, &batch);
     }
 }
 
 /// Poll the net→sim command channel and translate commands into Bevy messages.
 fn process_net_commands(
     cmd_rx: Res<SimCommandReceiver>,
+    mut commands: Commands,
     mut spawn_writer: MessageWriter<SpawnPlayer>,
     mut despawn_writer: MessageWriter<DespawnPlayer>,
     mut input_buf: ResMut<PlayerInputBuffer>,
+    tick: Res<TickCounter>,
+    mut query: Query<(Entity, &Player, &mut AuthorityState, &mut Transform, Option<&LinearVelocity>)>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -218,12 +237,27 @@ fn process_net_commands(
     let rx = cmd_rx.0.lock().unwrap();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            SimCommand::Joined { entity_id, display_name } => {
-                spawn_writer.write(SpawnPlayer {
-                    entity_id,
-                    display_name,
-                    position: Vec2::ZERO,
-                });
+            SimCommand::Joined { entity_id, display_name, position } => {
+                let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
+                
+                let mut exists = false;
+                for (_, player, mut auth, mut transform, _) in &mut query {
+                    if player.entity_id == entity_id {
+                        *auth = AuthorityState::Owned;
+                        transform.translation = new_position.extend(transform.translation.z);
+                        exists = true;
+                        tracing::info!("Promoted ghost to Owned entity for {}", entity_id);
+                        break;
+                    }
+                }
+                
+                if !exists {
+                    spawn_writer.write(SpawnPlayer {
+                        entity_id,
+                        display_name,
+                        position: new_position,
+                    });
+                }
             }
             SimCommand::Left { entity_id } => {
                 despawn_writer.write(DespawnPlayer { entity_id });
@@ -231,6 +265,26 @@ fn process_net_commands(
             }
             SimCommand::Input { entity_id, dx, dy } => {
                 input_buf.0.insert(entity_id, Vec2::new(dx, dy));
+            }
+            
+            SimCommand::CrossingAlert { entity_id, target_shard_uuid } => {
+                for (entity, player, authority_state, transform, velocity) in &mut query {
+                    if player.entity_id == entity_id {
+                        // FIX : On ignore l'alerte si l'entité est déjà en cours de transfert (PendingHandoff) !
+                        if *authority_state == AuthorityState::Owned {
+                            let vel = velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
+                            // ask authority to hand off this player to the target shard, including current position, velocity, and state
+                            let request = crate::authority::build_handoff_request(
+                                entity_id, 
+                                transform.translation.truncate(), 
+                                vel, 
+                                [0u8; 64]
+                            );
+                            crate::authority::begin_handoff(&mut commands, entity, target_shard_uuid, request, tick.0);
+                        }
+                        break;
+                    }
+                }
             }
         }
     }

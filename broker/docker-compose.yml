@@ -8,8 +8,8 @@ services:
     image: mmo-broker:latest
     container_name: mmo_broker
     ports:
-      - "7777:7777/udp"
+      - "7776:7776/udp"
     environment:
-      - BROKER_PORT=7777
+      - BROKER_PORT=7776
       - BROKER_PUBLIC_IP=localhost
     restart: unless-stopped

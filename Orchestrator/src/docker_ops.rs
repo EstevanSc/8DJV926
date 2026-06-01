@@ -26,6 +26,10 @@ fn game_network() -> String {
     std::env::var("GAME_NETWORK").unwrap_or_else(|_| "game-net".to_string())
 }
 
+fn broker_host() -> String {
+    std::env::var("BROKER_HOST").unwrap_or_else(|_| "broker".to_string())
+}
+
 // ── public API ───────────────────────────────────────────────────────────────
 
 /// Connect to the Docker daemon via the platform-default socket.
@@ -67,6 +71,7 @@ pub async fn spawn_server(
     let zone = std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string());
     let max_players = std::env::var("MAX_PLAYERS").unwrap_or_else(|_| "2".to_string());
     let orch_host = std::env::var("ORCH_HOST").unwrap_or_else(|_| "orchestrator:7000".to_string());
+    let broker_host = broker_host();
     let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
 
     let env = vec![
@@ -75,6 +80,7 @@ pub async fn spawn_server(
         format!("DS_ZONE={zone}"),
         format!("DS_PUBLIC_IP={public_addr}"),
         format!("MAX_PLAYERS={max_players}"),
+        format!("BROKER_HOST={broker_host}"),
         format!("ORCH_HOST={orch_host}"),
         format!("RUST_LOG={rust_log}"),
     ];
@@ -177,6 +183,7 @@ pub async fn spawn_server_for_shard(
     let zone = std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string());
     let max_players = std::env::var("MAX_PLAYERS").unwrap_or_else(|_| "2".to_string());
     let orch_host = std::env::var("ORCH_HOST").unwrap_or_else(|_| "orchestrator:7000".to_string());
+    let broker_host = broker_host();
     let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
 
     let env = vec![
@@ -186,6 +193,7 @@ pub async fn spawn_server_for_shard(
         format!("DS_ZONE={zone}"),
         format!("DS_PUBLIC_IP={public_addr}"),
         format!("MAX_PLAYERS={max_players}"),
+        format!("BROKER_HOST={broker_host}"),
         format!("ORCH_HOST={orch_host}"),
         format!("RUST_LOG={rust_log}"),
     ];

@@ -5,15 +5,18 @@ use bevy::prelude::*;
 use uuid::Uuid;
 
 use game_sockets::GameConnection;
+use common::shard_data::Vec2;
 
 // ---------------------------------------------------------------------------
 // Commands sent from the network layer into the simulation
 // ---------------------------------------------------------------------------
 
 pub enum SimCommand {
-    Joined { entity_id: u32, display_name: String },
+    Joined { entity_id: u32, display_name: String, position: Vec2 },
     Left { entity_id: u32 },
     Input { entity_id: u32, dx: f32, dy: f32 },
+    
+    CrossingAlert { entity_id: u32, target_shard_uuid: Uuid },
 }
 
 // ---------------------------------------------------------------------------
