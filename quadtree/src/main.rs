@@ -517,20 +517,21 @@ async fn synchronize_non_ghost_entities(
             .collect();
 
         let owning_shard_id = entity_shard_ids.get(entity_id).unwrap().clone();
-        let owning_shard_uuid = shard_uuid_by_id.get(&owning_shard_id).unwrap().clone();
-        for shard_id in added_nearby_shards {
-            let crossing_alert_topic = Topic::CrossingAlert(owning_shard_uuid);
-            let crossing_alert_payload = CrossingAlertPayload{
-                source_shard_uuid: owning_shard_uuid,
-                target_shard_uuid: shard_id,
-                entity_uuid: *entity_id
-            };
-            if let Some(client) = broker_client {
-                let _ =
-                    client.publish(
-                        crossing_alert_topic,
-                        &serialize_crossing_alert_payload(&crossing_alert_payload))
-                        .await;
+        if let Some(owning_shard_uuid) = shard_uuid_by_id.get(&owning_shard_id) {
+            for shard_id in added_nearby_shards {
+                let crossing_alert_topic = Topic::CrossingAlert(owning_shard_uuid.clone());
+                let crossing_alert_payload = CrossingAlertPayload{
+                    source_shard_uuid: owning_shard_uuid.clone(),
+                    target_shard_uuid: shard_id,
+                    entity_uuid: *entity_id
+                };
+                if let Some(client) = broker_client {
+                    let _ =
+                        client.publish(
+                            crossing_alert_topic,
+                            &serialize_crossing_alert_payload(&crossing_alert_payload))
+                            .await;
+                }
             }
         }
 
