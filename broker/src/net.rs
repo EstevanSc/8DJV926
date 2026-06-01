@@ -139,6 +139,14 @@ impl BrokerState {
             let broadcast_bytes = BrokerMessage::serialize_broadcast(topic, &payload);
             let bytes_payload = Bytes::from(broadcast_bytes);
 
+            let topic_desc = Topic::from_bytes(topic);
+            match topic_desc {
+                Topic::Input(a) | Topic::ShardSnapshot(a) => {}
+                _ => {
+                    println!("Broker: publishing message {:?} to {} subscribers", topic_desc, subscribers.len());
+                }
+            }
+
             for subscriber_uuid in subscribers {
                 let target_conn = self.uuid_map.get_mut(&subscriber_uuid);
                 match target_conn 

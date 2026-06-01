@@ -340,6 +340,7 @@ async fn handle_shard_snapshot_payload(
         entity_shard_ids,
         shard_uuid_by_id,
         ghost_entity_ids,
+        config.nearby_margin,
     )
     .await?;
 
@@ -468,6 +469,7 @@ async fn synchronize_non_ghost_entities(
     entity_shard_ids: &mut HashMap<Uuid, u32>,
     shard_uuid_by_id: &HashMap<u32, Uuid>,
     ghost_entity_ids: &HashMap<Uuid, HashSet<Uuid>>,
+    nearby_margin: f64,
 ) -> anyhow::Result<()> {
     let previous_shard_ids = entity_shard_ids.clone();
 
@@ -493,6 +495,38 @@ async fn synchronize_non_ghost_entities(
             && (position.y - old_position.y).abs() <= f64::EPSILON
         {
             continue;
+        }
+
+        if let Some(old_nearby_shards) = ghost_entity_ids.get(entity_id) {
+            let current_nearby_shards: HashSet<Uuid> = quadtree
+                .shards_near(*position, nearby_margin)
+                .iter()
+                .filter_map(|id| shard_uuid_by_id.get(id))
+                .copied()
+                .collect();
+
+            let added_nearby_shards: Vec<Uuid> = current_nearby_shards
+                .difference(&old_nearby_shards)
+                .copied()
+                .collect();
+
+            let owning_shard_id = entity_shard_ids.get(entity_id).unwrap().clone();
+            let owning_shard_uuid = shard_uuid_by_id.get(&owning_shard_id).unwrap().clone();
+            for shard_id in added_nearby_shards {
+                let crossing_alert_topic = Topic::CrossingAlert(owning_shard_uuid);
+                let crossing_alert_payload = CrossingAlertPayload{
+                    source_shard_uuid: owning_shard_uuid,
+                    target_shard_uuid: shard_id,
+                    entity_uuid: *entity_id
+                };
+                if let Some(client) = broker_client {
+                    let _ =
+                        client.publish(
+                            crossing_alert_topic,
+                            &serialize_crossing_alert_payload(&crossing_alert_payload))
+                            .await;
+                }
+            }
         }
 
         let Some(previous_shard_id) = previous_shard_ids.get(entity_id) else {
