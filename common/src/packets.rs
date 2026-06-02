@@ -20,7 +20,6 @@ pub enum SnapshotAuthority {
 pub struct PositionSnapshot {
     pub entity_id: u32,
     pub display_name: String,
-    pub authority: SnapshotAuthority,
     pub x: f32,
     pub y: f32,
     pub vx: f32,

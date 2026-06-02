@@ -1,8 +1,5 @@
-mod authority;
 mod char_controller;
 mod heartbeat;
-mod interest;
-mod messages;
 mod net;
 mod server;
 mod simulation;
@@ -12,7 +9,6 @@ use std::sync::Mutex;
 use bevy::prelude::*;
 use tracing_subscriber::EnvFilter;
 
-use crate::authority::AuthorityPlugin;
 use crate::net::{ConnectedPlayers, SimCommandReceiver, SimCommandSender};
 use crate::server::ServerPlugin;
 use crate::simulation::SimulationPlugin;
@@ -33,7 +29,6 @@ fn main() {
         .insert_resource(SimCommandReceiver(Mutex::new(cmd_rx)))
         .insert_resource(ConnectedPlayers::default())
         .add_plugins(ServerPlugin)
-        .add_plugins(AuthorityPlugin)
         .add_plugins(SimulationPlugin)
         .run();
 }
