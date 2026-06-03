@@ -1,6 +1,6 @@
 use crate::heartbeat::Heartbeat;
 use crate::net::{ConnectedPlayers, SimCommandSender};
-use common::broker_messages::BrokerMessage;
+use common::broker_messages::{BrokerMessage, SendingSystem};
 use common::topics::{
    ClaimOwnershipPayload, PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_player_starting_position_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload
 };
@@ -211,9 +211,10 @@ fn poll_broker_events(
                         broker.control_stream = Some(stream);
 
                         subscribe_claim_ownership(&mut broker);
+                        
+                        try_announce_shard_creation(&mut broker, &server_config);
                     }
 
-                    try_announce_shard_creation(&mut broker, &server_config);
                 }
             }
             GameNetworkEvent::Disconnected(connection) => {
@@ -291,7 +292,7 @@ fn receive_packets(
                 }
                 if let Some(info) = client_registry.registry.remove(&conn.connection_id) {
                     let _ = sim_tx.0.send(crate::net::SimCommand::Left {
-                        entity_id: info.entity_id,
+                        connection_id: info.client_id,
                     });
                 }
                 println!("Disconnected! Client id: {:?}", conn.connection_id);
@@ -309,7 +310,7 @@ fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>, server_config: &
         return;
     };
 
-    let connect_message = BrokerMessage::serialize_connect(connection.connection_id);
+    let connect_message = BrokerMessage::serialize_connect(connection.connection_id, SendingSystem::Server);
     if let Err(e) = broker.peer.send(&connection, &control_stream, connect_message.into()) {
         eprintln!("Failed to send broker Connect message: {:?}", e);
         return;
@@ -396,7 +397,7 @@ fn handle_broker_message(
                     if let Some(position_payload) = deserialize_position_payload(&payload) {
                         handle_ghost_joined(
                             connection.connection_id,
-                            entity_id,
+                            connection.connection_id,
                             position_payload.position[0] as f32,
                             position_payload.position[1] as f32,
                             client_registry,
@@ -451,7 +452,7 @@ fn handle_player_input(
 ) {
     if let Some(info) = client_registry.registry.get(&client_id) {
         let _ = sim_tx.0.send(crate::net::SimCommand::Input {
-            entity_id: info.entity_id,
+            connection_id: info.client_id,
             dx,
             dy,
         });
@@ -467,16 +468,15 @@ fn handle_receive_new_player(
     sim_tx: &Res<SimCommandSender>,
 ) {
     if !client_registry.registry.contains_key(&client_id) {
-        let entity_id = crate::net::entity_id_from_uuid(client_id);
-        let username = format!("Player_{}", entity_id);
+        let username = format!("Player_{}", client_id);
 
         client_registry.registry.insert(
             client_id,
-            ClientInfo { client_id, entity_id, username: username.clone(), is_ghost: false },
+            ClientInfo { client_id, entity_id: client_id, username: username.clone(), is_ghost: false },
         );
 
         let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
-            entity_id,
+            connection_id: client_id,
             display_name: username,
             position: Vec2 { x, y },
         });
@@ -494,7 +494,7 @@ fn handle_receive_new_player(
 
             let subscribe_position = BrokerMessage::serialize_subscribe(
                 client_id,
-                Topic::EntityPositionUpdate(entity_id).to_bytes(),
+                Topic::EntityPositionUpdate(client_id).to_bytes(),
             );
             if let Err(e) = broker
                 .peer
@@ -502,7 +502,7 @@ fn handle_receive_new_player(
             {
                 eprintln!(
                     "Failed to subscribe client_id={} to EntityPositionUpdate({}): {:?}",
-                    client_id, entity_id, e
+                    client_id, client_id, e
                 );
             }
 
@@ -525,7 +525,7 @@ fn handle_receive_new_player(
 
 fn handle_ghost_joined(
     client_id: Uuid,
-    entity_id: u32,
+    connection_id: Uuid,
     x: f32,
     y: f32,
     client_registry: &mut ResMut<PlayerRegistry>,
@@ -533,24 +533,24 @@ fn handle_ghost_joined(
 ) {
     client_registry.registry.insert(
         client_id,
-        ClientInfo { client_id, entity_id, username: format!("Player_{}", entity_id), is_ghost: true },
+        ClientInfo { client_id, entity_id: connection_id, username: format!("Player_{}", connection_id), is_ghost: true },
     );
 
     let _ = sim_tx.0.send(crate::net::SimCommand::GhostJoined {
         client_id,
-        entity_id,
+        connection_id,
         position: Vec2 { x, y },
     });
 }
 
 fn handle_ghost_position_update(
-    entity_id: u32,
+    connection_id: Uuid,
     x: f32,
     y: f32,
     sim_tx: &Res<SimCommandSender>,
 ) {
     let _ = sim_tx.0.send(crate::net::SimCommand::GhostPositionUpdate {
-        entity_id,
+        connection_id,
         position: Vec2 { x, y },
     });
 }

@@ -60,7 +60,7 @@ impl QuicClient {
         let connection = Self::wait_for_connection(&mut peer, label).await?;
         peer.create_stream(connection, GameStreamReliability::Reliable)
             .with_context(|| format!("Failed to create {} control stream", label))?;
-        let control_stream = GameStream::new(1, GameStreamReliability::Reliable);
+        let control_stream = Self::wait_for_reliable_stream(&mut peer, label, connection).await?;
 
         tracing::info!("{} QUIC link connected (id={:?})", label, connection.connection_id);
 
@@ -70,6 +70,52 @@ impl QuicClient {
             control_stream,
             label: label.to_string(),
         })
+    }
+
+    async fn wait_for_reliable_stream(
+        peer: &mut GamePeer,
+        label: &str,
+        connection: GameConnection,
+    ) -> Result<GameStream> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            while let Ok(Some(event)) = GamePeer::poll(peer) {
+                match event {
+                    GameNetworkEvent::StreamCreated(stream_connection, stream)
+                        if stream_connection == connection && stream.is_reliable() =>
+                    {
+                        return Ok(stream);
+                    }
+                    GameNetworkEvent::Disconnected(stream_connection)
+                        if stream_connection == connection =>
+                    {
+                        return Err(anyhow!(
+                            "{} control stream closed before it became ready ({:?})",
+                            label,
+                            stream_connection.connection_id
+                        ));
+                    }
+                    GameNetworkEvent::Error {
+                        connection: stream_connection,
+                        inner,
+                    } if stream_connection == connection => {
+                        return Err(anyhow!(
+                            "{} control stream setup error: {}",
+                            label,
+                            inner
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("{} control stream setup timed out", label));
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     pub async fn connect_orchestrator(host: &str, port: u16) -> Result<Self> {

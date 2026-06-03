@@ -27,7 +27,7 @@ pub enum Topic {
     ClaimOwnership(Uuid), // For claiming ownership of an entity, uuid the shard
 
     //client topics
-    EntityPositionUpdate(u32), 
+    EntityPositionUpdate(Uuid), 
 
     Raw([u8; 32]),     // Fallback
 }
@@ -51,9 +51,9 @@ impl Topic {
                 bytes[0] = TopicDomain::Input as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
-            Topic::EntityPositionUpdate(entity_id) => {
+            Topic::EntityPositionUpdate(connection_id) => {
                 bytes[0] = TopicDomain::EntityPositionUpdate as u8;
-                bytes[1..5].copy_from_slice(&entity_id.to_be_bytes());
+                bytes[1..17].copy_from_slice(connection_id.as_bytes());
             }
             Topic::Disconnect(uuid) => {
                 bytes[0] = TopicDomain::Disconnect as u8;
@@ -84,8 +84,8 @@ impl Topic {
                 Topic::Input(uuid)
             }
             0x05 => {
-                let entity_id = u32::from_be_bytes(bytes[1..5].try_into().unwrap_or_default());
-                Topic::EntityPositionUpdate(entity_id)
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::EntityPositionUpdate(uuid)
             }
             0xFF => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
@@ -114,24 +114,24 @@ pub struct PlayerStartingPositionPayload {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct PositionPayload {
-    pub entity_id: u32,
+    pub connection_id: Uuid,
     pub position: [f64; 2],
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct InputPayload {
-    pub player_id: Uuid,
+    pub connection_id: Uuid,
     pub dxdy: [f64; 2],
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct DisconnectPayload {
-    pub player_id: Uuid,
+    pub connection_id: Uuid,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct ClaimOwnershipPayload {
-    pub entity_id: u32,
+    pub connection_id: Uuid,
 }
 
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {

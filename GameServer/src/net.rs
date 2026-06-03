@@ -11,11 +11,11 @@ use game_sockets::GameConnection;
 // ---------------------------------------------------------------------------
 
 pub enum SimCommand {
-    Joined { entity_id: u32, display_name: String, position: Vec2 },
-    Left { entity_id: u32 },
-    Input { entity_id: u32, dx: f32, dy: f32 },
-    GhostJoined { client_id: Uuid, entity_id: u32, position: Vec2 },
-    GhostPositionUpdate { entity_id: u32, position: Vec2 },
+    Joined { connection_id: Uuid, display_name: String, position: Vec2 },
+    Left { connection_id: Uuid },
+    Input { connection_id: Uuid, dx: f32, dy: f32 },
+    GhostJoined { client_id: Uuid, connection_id: Uuid, position: Vec2 },
+    GhostPositionUpdate { connection_id: Uuid, position: Vec2 },
 }
 
 // ---------------------------------------------------------------------------
@@ -34,15 +34,3 @@ pub struct SimCommandReceiver(pub Mutex<mpsc::Receiver<SimCommand>>);
 /// Used by the simulation to broadcast position snapshots each tick.
 #[derive(Resource, Default)]
 pub struct ConnectedPlayers(pub Mutex<HashMap<Uuid, GameConnection>>);
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Derive a stable `u32` entity ID from a connection UUID.
-/// Must match the derivation performed on the client side.
-pub fn entity_id_from_uuid(id: Uuid) -> u32 {
-    id.as_bytes()
-        .iter()
-        .fold(0u32, |acc, &b| acc.wrapping_add(b as u32))
-}

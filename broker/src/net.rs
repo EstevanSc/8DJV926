@@ -3,9 +3,10 @@ use bytes::Bytes;
 use game_sockets;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
 use game_sockets::protocols::QuicBackend;
-use common::broker_messages::BrokerMessage;
+use common::broker_messages::{BrokerMessage, SendingSystem};
 use common::topics::Topic;
 use common::topics::{DisconnectPayload, serialize_disconnect_payload};
+use uuid::Uuid;
 
 pub struct BrokerConfig {
     pub ip: String,
@@ -34,6 +35,7 @@ pub struct BrokerState {
     subscriptions: HashMap<[u8; 32], HashSet<GameConnection>>,
     connections: HashSet<GameConnection>,
     broker_stream: GameStream,
+    quadtree_uuid: Option<Uuid>,
 }
 
 pub fn bind_socket(config: &BrokerConfig) -> Result<GamePeer, GameSocketError> {
@@ -59,6 +61,7 @@ impl BrokerState {
             subscriptions: HashMap::new(),
             connections: HashSet::new(),
             broker_stream: GameStream::new(1, GameStreamReliability::Reliable),
+            quadtree_uuid: None,
         }
     }
     pub fn receive_packets(&mut self) {
@@ -116,8 +119,11 @@ impl BrokerState {
             BrokerMessage::Publish { topic, payload } => {
                 self.publish(topic, payload, stream);
             }
-            BrokerMessage::Connect { client_id: _ } => {
-                println!("Broker: Connect from conn_id={:?}", connection.connection_id);
+            BrokerMessage::Connect { client_id: _, sending_system } => {
+                println!("Broker: Connect from conn_id={:?}, sending_system={:?}", connection.connection_id, sending_system);
+                if let SendingSystem::Quadtree = sending_system {
+                    self.quadtree_uuid = Some(connection.connection_id);
+                }
             }
             _ => {}
         }

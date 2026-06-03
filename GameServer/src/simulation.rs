@@ -30,13 +30,13 @@ impl Plugin for SimulationPlugin {
             CharacterControllerPlugin,
             ))
             .init_resource::<InputBuffer>()
-            .add_message::<SpawnGameplayEntity>()
-            .add_message::<DespawnGameplayEntity>()
+            .add_message::<SpawnNetEntity>()
+            .add_message::<DespawnNetEntity>()
             .add_systems(Startup, spawn_floor)
             .add_systems(FixedUpdate, process_net_commands)
-            .add_systems(FixedUpdate, (spawn_gameplay_entities).after(process_net_commands))
-            .add_systems(FixedUpdate, despawn_gameplay_entities.after(spawn_gameplay_entities))
-            .add_systems(FixedUpdate, apply_inputs.after(despawn_gameplay_entities))
+            .add_systems(FixedUpdate, (spawn_net_entities).after(process_net_commands))
+            .add_systems(FixedUpdate, despawn_net_entities.after(spawn_net_entities))
+            .add_systems(FixedUpdate, apply_inputs.after(despawn_net_entities))
             .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs)
             );
     }
@@ -48,7 +48,7 @@ impl Plugin for SimulationPlugin {
 
 /// Latest directional input received from each player this tick.
 #[derive(Resource, Default)]
-pub struct InputBuffer(pub HashMap<u32, Vec2>);
+pub struct InputBuffer(pub HashMap<uuid::Uuid, Vec2>);
 
 #[derive(Component)]
 pub struct Ghost;
@@ -59,9 +59,8 @@ pub struct Ghost;
 
 /// Identifies a player entity on the server.
 #[derive(Component, Clone)]
-pub struct GameplayEntity {
-    pub entity_id: u32,
-    pub display_name: String,
+pub struct NetEntity {
+    pub connection_id: uuid::Uuid,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,15 +68,15 @@ pub struct GameplayEntity {
 // ---------------------------------------------------------------------------
 
 #[derive(Message)]
-pub struct SpawnGameplayEntity {
-    pub gameplay_entity: GameplayEntity,
+pub struct SpawnNetEntity {
+    pub net_entity: NetEntity,
     pub position: Vec2,
     pub is_ghost: bool,
 }
 
 #[derive(Message)]
-pub struct DespawnGameplayEntity {
-    pub entity_id: u32,
+pub struct DespawnNetEntity {
+    pub connection_id: uuid::Uuid,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,15 +94,15 @@ fn spawn_floor(mut commands: Commands) {
     ));
 }
 
-fn spawn_gameplay_entities(
+fn spawn_net_entities(
     mut commands: Commands,
-    mut events: MessageReader<SpawnGameplayEntity>,
+    mut events: MessageReader<SpawnNetEntity>,
 ) {
     for ev in events.read() {
         if ev.is_ghost {
             commands.spawn((
                 Ghost,
-                ev.gameplay_entity.clone(),
+                ev.net_entity.clone(),
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
@@ -116,7 +115,7 @@ fn spawn_gameplay_entities(
         }
         else {
             commands.spawn((
-                ev.gameplay_entity.clone(),
+                ev.net_entity.clone(),
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
@@ -128,24 +127,23 @@ fn spawn_gameplay_entities(
             ));
         }
         tracing::info!(
-            entity_id = ev.gameplay_entity.entity_id,
-            name = %ev.gameplay_entity.display_name,
+            connection_id = %ev.net_entity.connection_id,
             is_ghost = ev.is_ghost,
-            "Spawned Gameplay Entity"
+            "Spawned Net Entity"
         );
     }
 }
 
-fn despawn_gameplay_entities(
+fn despawn_net_entities(
     mut commands: Commands,
-    mut events: MessageReader<DespawnGameplayEntity>,
-    query: Query<(Entity, &GameplayEntity)>,
+    mut events: MessageReader<DespawnNetEntity>,
+    query: Query<(Entity, &NetEntity)>,
 ) {
     for ev in events.read() {
-        for (entity, gameplay_entity) in &query {
-            if gameplay_entity.entity_id == ev.entity_id {
+        for (entity, net_entity) in &query {
+            if net_entity.connection_id == ev.connection_id {
                 commands.entity(entity).despawn();
-                tracing::info!(entity_id = ev.entity_id, "Despawned Gameplay Entity");
+                tracing::info!(connection_id = %ev.connection_id, "Despawned Net Entity");
                 break;
             }
         }
@@ -153,11 +151,11 @@ fn despawn_gameplay_entities(
 }
 
 fn publish_entity_positions(
-    query: Query<&Transform, Without<Ghost>>,
+    query: Query<(&Transform, &NetEntity), Without<Ghost>>,
 ) {
-    let position_payloads = query.iter().enumerate().map(|(i, transform)| {
+    let position_payloads = query.iter().enumerate().map(|(_i, (transform, net_entity))| {
     PositionPayload {
-        entity_id: i as u32,
+        connection_id: net_entity.connection_id,
         position: [transform.translation.x as f64, transform.translation.y as f64],
 
         }
@@ -171,10 +169,10 @@ fn publish_entity_positions(
 /// Poll the net→sim command channel and translate commands into Bevy messages.
 fn process_net_commands(
     cmd_rx: Res<SimCommandReceiver>,
-    mut spawn_owned_writer: MessageWriter<SpawnGameplayEntity>,
-    mut despawn_writer: MessageWriter<DespawnGameplayEntity>,
+    mut spawn_owned_writer: MessageWriter<SpawnNetEntity>,
+    mut despawn_writer: MessageWriter<DespawnNetEntity>,
     mut input_buf: ResMut<InputBuffer>,
-    mut query: Query<(Entity, &GameplayEntity, &mut Transform, Option<&LinearVelocity>)>,
+    mut query: Query<(Entity, &NetEntity, &mut Transform, Option<&LinearVelocity>)>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -182,38 +180,37 @@ fn process_net_commands(
     let rx = cmd_rx.0.lock().unwrap();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            SimCommand::Joined { entity_id, display_name, position } => {
+            SimCommand::Joined { connection_id, display_name, position } => {
                 let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
-                
-                spawn_owned_writer.write(SpawnGameplayEntity {
-                    gameplay_entity: GameplayEntity { entity_id, display_name },
+                spawn_owned_writer.write(SpawnNetEntity {
+                    net_entity: NetEntity { connection_id },
                     position: new_position,
                     is_ghost: false,
                 });
             }
-            SimCommand::GhostJoined { client_id, entity_id, position } => {
+            SimCommand::GhostJoined { client_id, connection_id, position } => {
                 let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
-                spawn_owned_writer.write(SpawnGameplayEntity {
-                    gameplay_entity: GameplayEntity { entity_id, display_name: client_id.to_string() },
+                spawn_owned_writer.write(SpawnNetEntity {
+                    net_entity: NetEntity { connection_id},
                     position: new_position,
                     is_ghost: true,
                 });
             }
-            SimCommand::GhostPositionUpdate { entity_id, position } => {
+            SimCommand::GhostPositionUpdate { connection_id, position } => {
                 let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
-                for (_, gameplay_entity, mut transform, _) in &mut query {
-                    if gameplay_entity.entity_id == entity_id {
+                for (_, net_entity, mut transform, _) in &mut query {
+                    if net_entity.connection_id == connection_id {
                         transform.translation = new_position.extend(transform.translation.z);
                         break;
                     }
                 }
             }
-            SimCommand::Left { entity_id } => {
-                despawn_writer.write(DespawnGameplayEntity { entity_id });
-                input_buf.0.remove(&entity_id);
+            SimCommand::Left { connection_id } => {
+                despawn_writer.write(DespawnNetEntity { connection_id });
+                input_buf.0.remove(&connection_id);
             }
-            SimCommand::Input { entity_id, dx, dy } => {
-                input_buf.0.insert(entity_id, Vec2::new(dx, dy));
+            SimCommand::Input { connection_id, dx, dy } => {
+                input_buf.0.insert(connection_id, Vec2::new(dx, dy));
             }
         }
     }
@@ -222,13 +219,13 @@ fn process_net_commands(
 /// Apply buffered player inputs via the character-controller physics.
 fn apply_inputs(
     time: Res<Time>,
-    mut query: Query<(&GameplayEntity, &MovementAcceleration, &mut LinearVelocity), Without<Ghost>>,
+    mut query: Query<(&NetEntity, &MovementAcceleration, &mut LinearVelocity), Without<Ghost>>,
     input_buf: Res<InputBuffer>,
 ) {
     let delta_time = time.delta_secs_f64().adjust_precision();
     
-    for (gameplay_entity, movement_acceleration, mut linear_velocity) in &mut query {
-        if let Some(&dir) = input_buf.0.get(&gameplay_entity.entity_id) {
+    for (net_entity, movement_acceleration, mut linear_velocity) in &mut query {
+        if let Some(&dir) = input_buf.0.get(&net_entity.connection_id) {
             if dir.x != 0.0 {
                 linear_velocity.x += dir.x as Scalar * movement_acceleration.0 * delta_time;
             }

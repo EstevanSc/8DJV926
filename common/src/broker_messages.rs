@@ -6,8 +6,17 @@ pub enum BrokerMessage {
     Unsubscribe { client_id: Uuid, topic: [u8; 32] },       // 0x02
     Publish { topic: [u8; 32], payload: Vec<u8> },          // 0x03
     Broadcast { topic: [u8; 32], payload: Vec<u8> },        // 0x04
-    Connect { client_id: Uuid },                            // 0x05
+    Connect { client_id: Uuid , sending_system: SendingSystem },                            // 0x05
 }   
+
+#[derive(Debug, Clone)]
+pub enum SendingSystem {
+    Quadtree,
+    Server,
+    Orchestrator,
+    Client,
+    Gatekeeper,
+}
 
 impl BrokerMessage {
     pub fn deserialize(data: &[u8]) -> Option<Self> {
@@ -60,7 +69,12 @@ impl BrokerMessage {
                     return None;
                 }
                 let client_id = Uuid::from_slice(&body[0..16]).ok()?;
-                Some(BrokerMessage::Connect { client_id })
+                let sending_system = match body[16] {
+                    0x01 => SendingSystem::Quadtree,
+                    0x02 => SendingSystem::Server,
+                    _ => return None,
+                };
+                Some(BrokerMessage::Connect { client_id, sending_system })
             }
             0x04 => { // Broadcast: topic (32B) + payload_len (2B) + payload // Note: This message type is only sent by the broker, the other parts use this deserialization.
                 if body.len() < 34 {
@@ -107,10 +121,18 @@ impl BrokerMessage {
         buffer
     }
 
-    pub fn serialize_connect(client_id: Uuid) -> Vec<u8> {
-        let mut buffer = Vec::with_capacity(1 + 16);
+    pub fn serialize_connect(client_id: Uuid, sending_system: SendingSystem) -> Vec<u8> {
+        let mut buffer = Vec::with_capacity(1 + 16 + 1);
         buffer.push(0x05);
         buffer.extend_from_slice(client_id.as_bytes());
+        let system_byte = match sending_system {
+            SendingSystem::Quadtree => 0x01,
+            SendingSystem::Server => 0x02,
+            SendingSystem::Orchestrator => 0x03,
+            SendingSystem::Client => 0x04,
+            SendingSystem::Gatekeeper => 0x05,
+        };
+        buffer.push(system_byte);
         buffer
     }
 
