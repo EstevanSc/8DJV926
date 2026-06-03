@@ -200,6 +200,7 @@ fn poll_broker_events(
                     &data,
                     connection,
                     stream,
+                    Some(&mut *broker),
                     &mut client_registry,
                     &sim_tx,
                 );
@@ -279,6 +280,7 @@ fn receive_packets(
                     &data,
                     connection,
                     stream,
+                    None,
                     &mut client_registry,
                     &sim_tx,
                 );
@@ -335,6 +337,7 @@ fn handle_message(
     data: &[u8],
     connection: game_sockets::GameConnection,
     stream: GameStream,
+    mut broker: Option<&mut BrokerPeer>,
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
 ) {
@@ -343,6 +346,7 @@ fn handle_message(
             message,
             connection,
             stream,
+            broker.as_deref_mut(),
             client_registry,
             sim_tx,   
         );
@@ -354,6 +358,7 @@ fn handle_broker_message(
     message: BrokerMessage,
     connection: game_sockets::GameConnection,
     _stream: GameStream,
+    broker: Option<&mut BrokerPeer>,
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
 ) {
@@ -365,6 +370,7 @@ fn handle_broker_message(
                         client_id,
                         position_payload.position[0] as f32,
                         position_payload.position[1] as f32,
+                        broker,
                         client_registry,
                         sim_tx,
                     );
@@ -456,12 +462,11 @@ fn handle_receive_new_player(
     client_id: Uuid,
     x: f32,
     y: f32,
+    broker: Option<&mut BrokerPeer>,
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
 ) {
-        // Auto-Join if unknown
     if !client_registry.registry.contains_key(&client_id) {
-        
         let entity_id = crate::net::entity_id_from_uuid(client_id);
         let username = format!("Player_{}", entity_id);
 
@@ -476,7 +481,45 @@ fn handle_receive_new_player(
             position: Vec2 { x, y },
         });
 
-        //TODO :: unsubscribe from starting position topic to avoid processing duplicate messages if player reconnects
+        if let Some(broker) = broker {
+            let (Some(connection), Some(control_stream)) =
+                (broker.connection, broker.control_stream.clone())
+            else {
+                eprintln!(
+                    "Cannot update broker subscriptions for client_id={}: missing broker control stream",
+                    client_id
+                );
+                return;
+            };
+
+            let subscribe_position = BrokerMessage::serialize_subscribe(
+                client_id,
+                Topic::EntityPositionUpdate(entity_id).to_bytes(),
+            );
+            if let Err(e) = broker
+                .peer
+                .send(&connection, &control_stream, subscribe_position.into())
+            {
+                eprintln!(
+                    "Failed to subscribe client_id={} to EntityPositionUpdate({}): {:?}",
+                    client_id, entity_id, e
+                );
+            }
+
+            let unsubscribe_spawn = BrokerMessage::serialize_unsubscribe(
+                client_id,
+                Topic::PlayerStartingPositionInShard(client_id).to_bytes(),
+            );
+            if let Err(e) = broker
+                .peer
+                .send(&connection, &control_stream, unsubscribe_spawn.into())
+            {
+                eprintln!(
+                    "Failed to unsubscribe client_id={} from PlayerStartingPositionInShard: {:?}",
+                    client_id, e
+                );
+            }
+        }
     }
 }
 

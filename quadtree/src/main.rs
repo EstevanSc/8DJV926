@@ -380,13 +380,6 @@ fn handle_player_starting_position_payload(
     }
 }
 
-/// Derive a stable `u32` entity ID from a UUID — mirrors GameServer's `entity_id_from_uuid`.
-fn entity_id_from_uuid(id: uuid::Uuid) -> u32 {
-    id.as_bytes()
-        .iter()
-        .fold(0u32, |acc, &b| acc.wrapping_add(b as u32))
-}
-
 /// Find the leaf shard boundary that spatially contains the given point.
 fn find_shard_for_position(shard_map: &SharedShardMap, x: f64, y: f64) -> Option<(Boundary, Option<uuid::Uuid>)> {
     let map = shard_map.read().unwrap();
@@ -395,22 +388,17 @@ fn find_shard_for_position(shard_map: &SharedShardMap, x: f64, y: f64) -> Option
         .map(|(b, uuid)| (*b, *uuid))
 }
 
-/// Subscribe the shard server and client to the correct topics, then publish the starting position.
+/// Subscribe the shard server to the correct topics, then publish the starting position.
 async fn spawn_player_on_shard(
     broker: &QuicClient,
     shard_uuid: uuid::Uuid,
     player_id: uuid::Uuid,
     position: [f64; 2],
 ) -> anyhow::Result<()> {
-    let entity_id = entity_id_from_uuid(player_id);
-
     // Subscribe the shard server to player-specific inbound topics.
     broker.subscribe(shard_uuid, Topic::PlayerStartingPositionInShard(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
-
-    // Subscribe the client to its own position updates.
-    broker.subscribe(player_id, Topic::EntityPositionUpdate(entity_id)).await?;
 
     // Publish the starting position so the shard server spawns the player.
     let payload_bytes = serialize_player_starting_position_payload(
@@ -419,8 +407,8 @@ async fn spawn_player_on_shard(
     broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
 
     tracing::info!(
-        "Spawned player player_id={} entity_id={} on shard shard_uuid={}",
-        player_id, entity_id, shard_uuid
+        "Spawned player player_id={}  on shard shard_uuid={}",
+        player_id, shard_uuid
     );
     Ok(())
 }
