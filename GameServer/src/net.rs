@@ -11,10 +11,10 @@ use game_sockets::GameConnection;
 // ---------------------------------------------------------------------------
 
 pub enum SimCommand {
-    Joined { connection_id: Uuid, display_name: String, position: Vec2 },
+    Joined { connection_id: Uuid, position: Vec2 },
     Left { connection_id: Uuid },
     Input { connection_id: Uuid, dx: f32, dy: f32 },
-    GhostJoined { client_id: Uuid, connection_id: Uuid, position: Vec2 },
+    GhostJoined { connection_id: Uuid, position: Vec2 },
     GhostPositionUpdate { connection_id: Uuid, position: Vec2 },
 }
 

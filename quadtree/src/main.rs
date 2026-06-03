@@ -1,9 +1,10 @@
 mod quic_client;
 use common::{Boundary, Quadrant};
 use common::topics::{
-    deserialize_player_starting_position_payload, deserialize_shard_created_payload,
-    serialize_player_starting_position_payload, PlayerStartingPositionPayload, Topic,
+    deserialize_shard_created_payload, Topic,
+    deserialize_position_payload, serialize_position_payload, PositionPayload
 };
+use common::BrokerMessage;
 use game_sockets::GameNetworkEvent;
 use quic_client::QuicClient;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -13,7 +14,8 @@ use std::time::{Duration, Instant};
 
 type SharedShardSet = Arc<RwLock<HashSet<Boundary>>>;
 type SharedShardMap = Arc<RwLock<HashMap<Boundary, Option<uuid::Uuid>>>>;
-type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, PlayerStartingPositionPayload)>>>;
+type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, PositionPayload)>>>;
+type SharedEntityMap = Arc<RwLock<HashMap<uuid::Uuid, [f64; 2]>>>;
 
 const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 1;
 
@@ -106,8 +108,9 @@ async fn main() -> anyhow::Result<()> {
     let shard_set: SharedShardSet = Arc::new(RwLock::new(HashSet::new()));
     let shard_map: SharedShardMap = Arc::new(RwLock::new(HashMap::new()));
     let pending_players: SharedPendingPlayers = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
+    let entity_map: SharedEntityMap = Arc::new(RwLock::new(HashMap::new()));
 
-    run_main_loop(config, orchestrator_client, broker_client, shard_set, shard_map, pending_players).await
+    run_main_loop(config, orchestrator_client, broker_client, shard_set, shard_map, pending_players, entity_map).await
 }
 
 
@@ -118,6 +121,7 @@ async fn run_main_loop(
     shard_set: SharedShardSet,
     shard_map: SharedShardMap,
     pending_players: SharedPendingPlayers,
+    entity_map: SharedEntityMap,
 ) -> anyhow::Result<()> {
     let boundary = Boundary {
         x: 0.0,
@@ -125,25 +129,15 @@ async fn run_main_loop(
         half_size: config.world_size / 2.0,
     };
 
-    let mut quadtree = Quadtree::new(
+    let mut quadtree = Quadtree::new_root(
         boundary,
-        0,
         config.max_depth,
         config.max_capacity,
         shard_set.clone(),
         shard_map.clone(),
     );
 
-    {
-        let mut set = quadtree.shard_set.write().unwrap();
-        set.insert(boundary); // Start with root shard
-    }
-    {
-        let mut map = quadtree.shard_map.write().unwrap();
-        map.insert(boundary, None);
-    }
-
-    let mut orchestrator_client = orchestrator_client;
+    let orchestrator_client = orchestrator_client;
     let mut broker_client = broker_client;
 
     if let Some(client) = broker_client.as_ref() {
@@ -165,23 +159,42 @@ async fn run_main_loop(
     } else {
         tracing::warn!("No connection to orchestrator, skipping initial shard configuration update");
     }
-
-    let mut entities: HashMap<uuid::Uuid, [f64; 2]> = std::collections::HashMap::new();
     let mut tick = tokio::time::interval(Duration::from_millis(config.entity_add_interval_ms));
 
     loop {
         tick.tick().await;
 
-        // Keep placeholders alive until entity simulation integration is finished.
-        let _ = quadtree.depth;
-        let _ = entities.len();
+        let mut flagged_for_rebuild = false;
 
         if let Some(client) = broker_client.as_mut() {
-            poll_quic_events(client, "broker", &shard_map, &pending_players)?;
+              poll_quic_events(client, "broker", &shard_map, &pending_players, &entity_map, &mut flagged_for_rebuild)?;
         }
 
         if let Some(client) = broker_client.as_ref() {
-            process_pending_players(&pending_players, client, &shard_map).await;
+              process_pending_players(&pending_players, client, &shard_map, &entity_map, &mut flagged_for_rebuild).await;
+        }
+
+        if flagged_for_rebuild {
+            tracing::info!("Rebuilding quadtree due to shard changes...");
+
+            let old_shard_set = shard_set.read().unwrap().clone();
+
+            let points: Vec<[f64; 2]> = {
+                let entity_map = entity_map.read().unwrap();
+                entity_map.values().copied().collect()
+            };
+
+            quadtree.rebuild(boundary, points);
+
+            let new_shard_set = shard_set.read().unwrap().clone();
+            if new_shard_set != old_shard_set {
+                tracing::info!("Shard set changed after rebuild, sending updated configuration to orchestrator...");
+                if let Some(client) = orchestrator_client.as_ref() {
+                    send_server_configuration_update(client, new_shard_set.into_iter().collect()).await?;
+                } else {
+                    tracing::warn!("No connection to orchestrator, skipping shard configuration update");
+                }
+            }
         }
     }
 }
@@ -191,6 +204,8 @@ fn poll_quic_events(
     label: &str,
     shard_map: &SharedShardMap,
     pending_players: &SharedPendingPlayers,
+    entity_map: &SharedEntityMap,
+    flagged_for_rebuild: &mut bool,
 ) -> anyhow::Result<()> {
     while let Some(event) = client.poll()? {
         match event {
@@ -203,7 +218,7 @@ fn poll_quic_events(
                     stream.stream_id
                 );
 
-                handle_quic_message(&data, shard_map, pending_players);
+                handle_quic_message(&data, shard_map, pending_players, entity_map, flagged_for_rebuild);
             }
             _ => {}
         }
@@ -242,6 +257,28 @@ impl Quadtree {
             shard_set: shard_set.clone(),
             shard_map: shard_map.clone(),
         }
+    }
+
+    fn new_root(
+        boundary: Boundary,
+        max_depth: u8,
+        max_capacity: usize,
+        shard_set: SharedShardSet,
+        shard_map: SharedShardMap,
+    ) -> Self {
+        {
+            let mut set = shard_set.write().unwrap();
+            set.clear();
+            set.insert(boundary);
+        }
+
+        {
+            let mut map = shard_map.write().unwrap();
+            map.clear();
+            map.insert(boundary, None);
+        }
+
+        Self::new(boundary, 0, max_depth, max_capacity, shard_set, shard_map)
     }
 
     fn insert(&mut self, point: [f64; 2]) {
@@ -316,6 +353,27 @@ impl Quadtree {
 
         self.children.as_mut().unwrap()[idx].insert(point);
     }
+
+    fn rebuild(&mut self, boundary: Boundary, points: Vec<[f64; 2]>) {
+
+        self.points.clear();
+        self.points.extend(points);
+        self.children = None;
+
+        {
+            let mut set = self.shard_set.write().unwrap();
+            set.clear();
+            set.insert(boundary);
+        }
+
+        {
+            let mut map = self.shard_map.write().unwrap();
+            map.clear();
+            map.insert(boundary, None);
+        }
+
+        self.split();
+    }
 }
 
 async fn send_server_configuration_update(client: &QuicClient, boundaries: Vec<Boundary>) -> anyhow::Result<()> {
@@ -323,7 +381,7 @@ async fn send_server_configuration_update(client: &QuicClient, boundaries: Vec<B
     Ok(())
 }
 
-fn handle_quic_message(data: &[u8], shard_map: &SharedShardMap, pending_players: &SharedPendingPlayers) {
+fn handle_quic_message(data: &[u8], shard_map: &SharedShardMap, pending_players: &SharedPendingPlayers, entity_map: &SharedEntityMap, flagged_for_rebuild: &mut bool) {
     let Some(message) = common::BrokerMessage::deserialize(data) else {
         return;
     };
@@ -336,6 +394,7 @@ fn handle_quic_message(data: &[u8], shard_map: &SharedShardMap, pending_players:
                     handle_player_starting_position_topic(&payload, pending_players);
                 }
                 Topic::ShardCreated => handle_shard_created_topic(&payload, shard_map),
+                Topic::EntityPositionUpdate(_) => handle_entity_position_update_topic(&payload, shard_map, entity_map, flagged_for_rebuild),
                 _ => {}
             }
         }
@@ -357,25 +416,25 @@ fn handle_shard_created_topic(payload: &[u8], shard_map: &SharedShardMap) {
 }
 
 fn handle_player_starting_position_topic(payload: &[u8], pending_players: &SharedPendingPlayers) {
-    if let Some(parsed) = deserialize_player_starting_position_payload(payload) {
+    if let Some(parsed) = deserialize_position_payload(payload) {
         handle_player_starting_position_payload(parsed, pending_players);
     }
 }
 
 fn handle_player_starting_position_payload(
-    payload: PlayerStartingPositionPayload,
+    payload: PositionPayload,
     pending_players: &SharedPendingPlayers,
 ) {
     match pending_players.try_lock() {
         Ok(mut pending) => {
             tracing::debug!(
                 "Queuing player spawn for player_id={} at ({}, {})",
-                payload.player_id, payload.position[0], payload.position[1]
+                payload.connection_id, payload.position[0], payload.position[1]
             );
             pending.push_back((Instant::now(), payload));
         }
         Err(_) => {
-            tracing::warn!("Pending players queue contended, dropping spawn request for player_id={}", payload.player_id);
+            tracing::warn!("Pending players queue contended, dropping spawn request for player_id={}", payload.connection_id);
         }
     }
 }
@@ -394,16 +453,43 @@ async fn spawn_player_on_shard(
     shard_uuid: uuid::Uuid,
     player_id: uuid::Uuid,
     position: [f64; 2],
+    entity_map: &SharedEntityMap,
+    flagged_for_rebuild: &mut bool
 ) -> anyhow::Result<()> {
+    //print the ids for debugging
+    tracing::info!("Spawning player player_id={} on shard shard_uuid={}", player_id, shard_uuid);
+    tracing::info!("Quadtree connection_id={}", broker.connection_id());
+
+
     // Subscribe the shard server to player-specific inbound topics.
     broker.subscribe(shard_uuid, Topic::PlayerStartingPositionInShard(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
+    
+    //subscribe the client to the player's position updates so it can track its own position for interpolation
+    broker.subscribe(player_id, Topic::EntityPositionUpdate(player_id)).await?;
+
+    //send the initial position update so the client and quadtree have a baseline position for the player
+     let payload = serialize_position_payload(&PositionPayload {
+        connection_id: player_id,
+        position,
+    });
+
+    broker.publish(Topic::EntityPositionUpdate(player_id), &payload).await?;   
+
+    //subscribe the quadtree to the player's position updates so it can track which shard they are in
+    broker.subscribe(broker.connection_id(), Topic::EntityPositionUpdate(player_id)).await?; 
+
+    entity_map.write().unwrap().insert(player_id, position);
+
+    let config = Config::from_env();
+
+    if entity_map.read().unwrap().len() == config.max_capacity {
+        *flagged_for_rebuild = true;
+    }
 
     // Publish the starting position so the shard server spawns the player.
-    let payload_bytes = serialize_player_starting_position_payload(
-        &PlayerStartingPositionPayload { player_id, position },
-    );
+    let payload_bytes = serialize_position_payload(&PositionPayload { connection_id: player_id, position });
     broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
 
     tracing::info!(
@@ -418,10 +504,12 @@ async fn process_pending_players(
     pending_players: &SharedPendingPlayers,
     broker: &QuicClient,
     shard_map: &SharedShardMap,
+    entity_map: &SharedEntityMap,
+    flagged_for_rebuild: &mut bool,
 ) {
     let timeout = Duration::from_secs(PLAYER_SPAWN_RETRY_TIMEOUT_SECS);
     let mut ready: Vec<(uuid::Uuid, uuid::Uuid, [f64; 2])> = Vec::new();
-    let mut still_pending: VecDeque<(Instant, PlayerStartingPositionPayload)> = VecDeque::new();
+    let mut still_pending: VecDeque<(Instant, PositionPayload)> = VecDeque::new();
 
     {
         let mut pending = pending_players.lock().await;
@@ -429,14 +517,14 @@ async fn process_pending_players(
             if queued_at.elapsed() > timeout {
                 tracing::warn!(
                     "Player spawn timed out — dropping player_id={}",
-                    payload.player_id
+                    payload.connection_id
                 );
                 continue;
             }
 
             match find_shard_for_position(shard_map, payload.position[0], payload.position[1]) {
                 Some((_, Some(shard_uuid))) => {
-                    ready.push((shard_uuid, payload.player_id, payload.position));
+                    ready.push((shard_uuid, payload.connection_id, payload.position));
                 }
                 _ => {
                     still_pending.push_back((queued_at, payload));
@@ -447,8 +535,38 @@ async fn process_pending_players(
     }
 
     for (shard_uuid, player_id, position) in ready {
-        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position).await {
+        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, flagged_for_rebuild).await {
             tracing::error!("Failed to spawn player player_id={} on shard shard_uuid={}: {}", player_id, shard_uuid, e);
+        } else {
+            tracing::info!("Successfully processed pending spawn for player_id={}", player_id);
         }
+    }
+}
+
+fn handle_entity_position_update_topic(payload: &[u8], shard_map: &SharedShardMap, entity_map: &SharedEntityMap, flagged_for_rebuild: &mut bool) {
+    let Some(parsed) = deserialize_position_payload(payload) else {
+        return;
+    };
+
+    tracing::debug!(
+        "Received position update for entity_id={} at ({}, {})",
+        parsed.connection_id, parsed.position[0], parsed.position[1]
+    );
+
+    //check if the entity has moved into a different shard
+    let entity_map = entity_map.write().unwrap();
+    let old_position = entity_map.get(&parsed.connection_id).cloned();
+    
+    let old_shard = old_position.and_then(|pos| find_shard_for_position(shard_map, pos[0], pos[1]));
+    let new_shard = find_shard_for_position(shard_map, parsed.position[0], parsed.position[1]);
+
+    if old_shard.map(|(b, _)| b) != new_shard.map(|(b, _)| b) {
+        tracing::info!(
+            "Entity entity_id={} moved from shard {:?} to shard {:?}",
+            parsed.connection_id,
+            old_shard.and_then(|(_, uuid)| uuid),
+            new_shard.and_then(|(_, uuid)| uuid)
+        );
+        *flagged_for_rebuild = true;
     }
 }

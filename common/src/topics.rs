@@ -107,12 +107,6 @@ pub struct ShardCreatedPayload {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
-pub struct PlayerStartingPositionPayload {
-    pub player_id: Uuid,
-    pub position: [f64; 2],
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct PositionPayload {
     pub connection_id: Uuid,
     pub position: [f64; 2],
@@ -139,14 +133,6 @@ pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8>
 }
 
 pub fn deserialize_shard_created_payload(bytes: &[u8]) -> Option<ShardCreatedPayload> {
-    wincode::deserialize(bytes).ok()
-}
-
-pub fn serialize_player_starting_position_payload(payload: &PlayerStartingPositionPayload) -> Vec<u8> {
-    wincode::serialize(payload).expect("failed to serialize player starting position payload")
-}
-
-pub fn deserialize_player_starting_position_payload(bytes: &[u8]) -> Option<PlayerStartingPositionPayload> {
     wincode::deserialize(bytes).ok()
 }
 

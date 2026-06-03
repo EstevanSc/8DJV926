@@ -3,10 +3,9 @@ use bytes::Bytes;
 use game_sockets;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
 use game_sockets::protocols::QuicBackend;
-use common::broker_messages::{BrokerMessage, SendingSystem};
+use common::broker_messages::{BrokerMessage};
 use common::topics::Topic;
 use common::topics::{DisconnectPayload, serialize_disconnect_payload};
-use uuid::Uuid;
 
 pub struct BrokerConfig {
     pub ip: String,
@@ -35,7 +34,6 @@ pub struct BrokerState {
     subscriptions: HashMap<[u8; 32], HashSet<GameConnection>>,
     connections: HashSet<GameConnection>,
     broker_stream: GameStream,
-    quadtree_uuid: Option<Uuid>,
 }
 
 pub fn bind_socket(config: &BrokerConfig) -> Result<GamePeer, GameSocketError> {
@@ -61,7 +59,6 @@ impl BrokerState {
             subscriptions: HashMap::new(),
             connections: HashSet::new(),
             broker_stream: GameStream::new(1, GameStreamReliability::Reliable),
-            quadtree_uuid: None,
         }
     }
     pub fn receive_packets(&mut self) {
@@ -74,9 +71,9 @@ impl BrokerState {
                 GameNetworkEvent::Disconnected(conn) => {
                     println!("Disconnected! Connection id: {:?}", conn.connection_id);
                     if self.connections.remove(&conn) {
-                        let player_id = conn.connection_id;
-                        let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { player_id });
-                        let topic = Topic::Disconnect(player_id).to_bytes();
+                        let connection_id = conn.connection_id;
+                        let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { connection_id });
+                        let topic = Topic::Disconnect(connection_id).to_bytes();
                         self.publish(topic, disconnected_payload, self.broker_stream.clone());
 
                         for subscribers in self.subscriptions.values_mut() {
@@ -106,24 +103,21 @@ impl BrokerState {
         };
 
         match message {
-            BrokerMessage::Subscribe { client_id: _, topic } => {
-                let topic_desc = Topic::from_bytes(topic);
-                println!("Broker: Subscribe - conn_id={:?}, topic={:?}", connection.connection_id, topic_desc);
+            BrokerMessage::Subscribe { client_id, topic } => {
+                let topic_desc = Topic::from_bytes(topic); 
+                println!("Broker: Subscribe - conn_id={:?}, topic={:?}", client_id, topic_desc);
                 self.subscriptions.entry(topic).or_default().insert(connection);
             }
-            BrokerMessage::Unsubscribe { client_id: _, topic } => {
+            BrokerMessage::Unsubscribe { client_id, topic } => {
                 let topic_desc = Topic::from_bytes(topic);
-                println!("Broker: Unsubscribe - conn_id={:?}, topic={:?}", connection.connection_id, topic_desc);
+                println!("Broker: Unsubscribe - conn_id={:?}, topic={:?}", client_id, topic_desc);
                 self.subscriptions.entry(topic).or_default().remove(&connection);
             }
             BrokerMessage::Publish { topic, payload } => {
                 self.publish(topic, payload, stream);
             }
-            BrokerMessage::Connect { client_id: _, sending_system } => {
-                println!("Broker: Connect from conn_id={:?}, sending_system={:?}", connection.connection_id, sending_system);
-                if let SendingSystem::Quadtree = sending_system {
-                    self.quadtree_uuid = Some(connection.connection_id);
-                }
+            BrokerMessage::Connect { client_id, sending_system } => {
+                println!("Broker: Connect from conn_id={:?}, sending_system={:?}", client_id, sending_system);
             }
             _ => {}
         }

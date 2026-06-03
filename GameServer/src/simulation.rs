@@ -6,12 +6,11 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use super::net::{SimCommand, SimCommandReceiver};
-use super::server::{publish_player_position};
+use super::server::{publish_player_position, BrokerPeer};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
 
-const PLAYER_JUMP_IMPULSE: f32 = 120.0;
 const PLAYER_GRAVITY_SCALE: f32 = 0.0;
 const PLAYER_MOVEMENT_ACCELERATION: f32 = 1250.0;
 const PLAYER_MOVEMENT_DAMPING: f32 = 5.0;
@@ -106,7 +105,7 @@ fn spawn_net_entities(
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
-                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING, PLAYER_JUMP_IMPULSE, (PLAYER_SLOPE_ANGLE_DEGREES as Scalar).to_radians()),
+                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING, (PLAYER_SLOPE_ANGLE_DEGREES as Scalar).to_radians()),
                 Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
                 Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
                 ColliderDensity(PLAYER_COLLIDER_DENSITY),
@@ -119,7 +118,7 @@ fn spawn_net_entities(
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
-                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING, PLAYER_JUMP_IMPULSE, (PLAYER_SLOPE_ANGLE_DEGREES as Scalar).to_radians()),
+                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING, (PLAYER_SLOPE_ANGLE_DEGREES as Scalar).to_radians()),
                 Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
                 Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
                 ColliderDensity(PLAYER_COLLIDER_DENSITY),
@@ -152,7 +151,12 @@ fn despawn_net_entities(
 
 fn publish_entity_positions(
     query: Query<(&Transform, &NetEntity), Without<Ghost>>,
+    broker: Option<Res<BrokerPeer>>,
 ) {
+    let Some(broker) = broker else {
+        return;
+    };
+
     let position_payloads = query.iter().enumerate().map(|(_i, (transform, net_entity))| {
     PositionPayload {
         connection_id: net_entity.connection_id,
@@ -162,7 +166,7 @@ fn publish_entity_positions(
     }).collect::<Vec<_>>();
 
     for snapshot in position_payloads {
-        publish_player_position(snapshot);
+        publish_player_position(&broker, snapshot);
     }
 }
 
@@ -180,7 +184,7 @@ fn process_net_commands(
     let rx = cmd_rx.0.lock().unwrap();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            SimCommand::Joined { connection_id, display_name, position } => {
+            SimCommand::Joined { connection_id, position } => {
                 let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
                 spawn_owned_writer.write(SpawnNetEntity {
                     net_entity: NetEntity { connection_id },
@@ -188,7 +192,7 @@ fn process_net_commands(
                     is_ghost: false,
                 });
             }
-            SimCommand::GhostJoined { client_id, connection_id, position } => {
+            SimCommand::GhostJoined { connection_id, position } => {
                 let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
                 spawn_owned_writer.write(SpawnNetEntity {
                     net_entity: NetEntity { connection_id},

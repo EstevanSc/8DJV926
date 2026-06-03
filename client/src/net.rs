@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, Topic, PlayerStartingPositionPayload, serialize_player_starting_position_payload, deserialize_position_payload};
+use common::topics::{PositionPayload, Topic, serialize_position_payload, deserialize_position_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -35,15 +35,14 @@ pub struct ActivePeer(pub Mutex<GamePeer>);
 #[derive(Resource)]
 struct ConnectTimeout(Timer);
 
-/// The UUID assigned by the server in the `Welcome` message.
-/// Also stored as a hash-derived `u32` for the position-interpolation system.
-#[derive(Resource, Clone, Copy)]
-pub struct MyEntityId(pub u32);
-
 /// The active broker connection handle. Inserted once the QUIC handshake
 /// completes. Used by other systems (e.g. input) to send datagrams.
 #[derive(Resource, Clone, Copy)]
 pub struct BrokerConn(pub GameConnection);
+
+/// Reliable control stream used for broker messages (connect/subscribe/publish).
+#[derive(Resource, Clone, Copy)]
+pub struct BrokerControlStream(pub game_sockets::GameStream);
 
 // ---------------------------------------------------------------------------
 // Systems
@@ -108,17 +107,25 @@ fn poll_net_events(
                 let player_id = conn.connection_id;
                 if stream.is_reliable() { 
                     tracing::info!("Reliable stream is ready! Registering client_id={player_id} with broker...");
+                    commands.insert_resource(BrokerControlStream(stream.clone()));
                     
-                    let connect_message = BrokerMessage::serialize_connect(player_id);
+                    let connect_message = BrokerMessage::serialize_connect(player_id, common::broker_messages::SendingSystem::Client);
                     if let Err(e) = peer.send(&conn, &stream, connect_message.into()) {
                         tracing::error!("Failed to send broker Connect: {e:?}");
                     }
 
-                    next_state.set(GameState::InGame);
-                } 
-                else {
-                    let payload = serialize_player_starting_position_payload(&PlayerStartingPositionPayload {
+                    let subscribe_updates = BrokerMessage::serialize_subscribe(
                         player_id,
+                        Topic::EntityPositionUpdate(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_updates.into()) {
+                        tracing::error!("Failed to subscribe to EntityPositionUpdate: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to EntityPositionUpdate for player_id={player_id}");
+                    }
+
+                    let payload = serialize_position_payload(&PositionPayload {
+                        connection_id: player_id,
                         position: [0.0, 0.0],
                     });
 
@@ -129,16 +136,23 @@ fn poll_net_events(
                     } else {
                         tracing::info!("Sent initial baseline StartingPosition Publish for player_id={player_id}");
                     }
+
+                    next_state.set(GameState::InGame);
+                } 
+                else {
+
                 }
             }
 
             GameNetworkEvent::Disconnected(conn) => {
                 tracing::warn!("Disconnected from server ({:?})", conn.connection_id);
+                commands.remove_resource::<BrokerControlStream>();
                 next_state.set(GameState::Login);
             }
 
             GameNetworkEvent::Error { inner, .. } => {
                 tracing::error!("Network error: {inner}");
+                commands.remove_resource::<BrokerControlStream>();
                 next_state.set(GameState::Login);
             }
 
@@ -184,8 +198,10 @@ fn receive_packets(
             if let Some(message) = BrokerMessage::deserialize(&data) {
                 match message {
                     BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
-                        Topic::EntityPositionUpdate(_) => {
+                        Topic::EntityPositionUpdate( entity_uuid) => {
+                            tracing::debug!("Received position update for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_position_payload(&payload) {
+                                tracing::trace!("Deserialized position update: {:?}", update);
                                 update_writer.write(PositionUpdateReceived(update));
                             }
                         }

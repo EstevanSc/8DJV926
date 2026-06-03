@@ -96,13 +96,6 @@ struct LoginRequest {
 }
 
 #[derive(Deserialize)]
-struct ServerInfo {
-    ip: String,
-    port: u16,
-    zone: String,
-}
-
-#[derive(Deserialize)]
 struct LoginResponse {
     player_id: String,
     broker_ip: String,

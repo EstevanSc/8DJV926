@@ -2,7 +2,7 @@ use crate::heartbeat::Heartbeat;
 use crate::net::{ConnectedPlayers, SimCommandSender};
 use common::broker_messages::{BrokerMessage, SendingSystem};
 use common::topics::{
-   ClaimOwnershipPayload, PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_player_starting_position_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload
+   ClaimOwnershipPayload, PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload
 };
 use common::{Boundary};
 use bevy::prelude::*;
@@ -35,9 +35,6 @@ pub struct PlayerRegistry {
 
 #[allow(dead_code)]
 pub struct ClientInfo {
-    pub client_id: Uuid,
-    pub entity_id: u32,
-    pub username: String,
     pub is_ghost: bool,
 }
 
@@ -290,11 +287,13 @@ fn receive_packets(
                 if let Ok(mut map) = conn_players.0.lock() {
                     map.remove(&conn.connection_id);
                 }
-                if let Some(info) = client_registry.registry.remove(&conn.connection_id) {
-                    let _ = sim_tx.0.send(crate::net::SimCommand::Left {
-                        connection_id: info.client_id,
-                    });
-                }
+
+                client_registry.registry.remove(&conn.connection_id);
+
+                let _ = sim_tx.0.send(crate::net::SimCommand::Left {
+                    connection_id: conn.connection_id,
+                });
+                
                 println!("Disconnected! Client id: {:?}", conn.connection_id);
             }
             _ => {}
@@ -366,7 +365,7 @@ fn handle_broker_message(
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
             Topic::PlayerStartingPositionInShard(client_id) => {
-                if let Some(position_payload) = deserialize_player_starting_position_payload(&payload) {
+                if let Some(position_payload) = deserialize_position_payload(&payload) {
                     handle_receive_new_player(
                         client_id,
                         position_payload.position[0] as f32,
@@ -380,7 +379,7 @@ fn handle_broker_message(
                 }
             }
             Topic::EntityPositionUpdate(entity_id) => {
-                if client_registry.registry.values().any(|info| info.is_ghost && info.entity_id == entity_id) {
+                if client_registry.registry.values().any(|info| info.is_ghost) {
                     if let Some(position_payload) = deserialize_position_payload(&payload) {
                         handle_ghost_position_update(
                             entity_id,
@@ -392,7 +391,7 @@ fn handle_broker_message(
                 } else {
                     client_registry.registry.insert(
                         connection.connection_id,
-                        ClientInfo { client_id: connection.connection_id, entity_id, username: format!("Player_{}", entity_id), is_ghost: true },
+                        ClientInfo { is_ghost: true },
                     );
                     if let Some(position_payload) = deserialize_position_payload(&payload) {
                         handle_ghost_joined(
@@ -422,11 +421,10 @@ fn handle_broker_message(
 
             Topic::Disconnect(client_id) => {
                 trace!("Received disconnect broadcast for client_id={}", client_id);
-                if let Some(info) = client_registry.registry.remove(&client_id) {
-                    let _ = sim_tx.0.send(crate::net::SimCommand::Left {
-                        entity_id: info.entity_id,
-                    });
-                }
+                client_registry.registry.remove(&client_id);
+                let _ = sim_tx.0.send(crate::net::SimCommand::Left {
+                    connection_id: client_id,
+                });
             }
             _ => {}
         },
@@ -434,13 +432,25 @@ fn handle_broker_message(
     }
 }
 
-pub(crate) fn publish_player_position(position_payload: PositionPayload) {
+pub(crate) fn publish_player_position(broker: &BrokerPeer, position_payload: PositionPayload) {
+    let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
+        return;
+    };
+
     let payload_bytes = serialize_position_payload(&position_payload); 
 
-    BrokerMessage::serialize_publish(
-        Topic::EntityPositionUpdate(position_payload.entity_id).to_bytes(),
+    let publish_message = BrokerMessage::serialize_publish(
+        Topic::EntityPositionUpdate(position_payload.connection_id).to_bytes(),
         &payload_bytes,
     );
+
+    if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
+        eprintln!(
+            "Failed to publish EntityPositionUpdate for client_id={}: {:?}",
+            position_payload.connection_id,
+            e
+        );
+    }
 }
 
 fn handle_player_input(
@@ -450,9 +460,9 @@ fn handle_player_input(
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
 ) {
-    if let Some(info) = client_registry.registry.get(&client_id) {
+    if client_registry.registry.contains_key(&client_id) {
         let _ = sim_tx.0.send(crate::net::SimCommand::Input {
-            connection_id: info.client_id,
+            connection_id: client_id,
             dx,
             dy,
         });
@@ -468,46 +478,30 @@ fn handle_receive_new_player(
     sim_tx: &Res<SimCommandSender>,
 ) {
     if !client_registry.registry.contains_key(&client_id) {
-        let username = format!("Player_{}", client_id);
-
         client_registry.registry.insert(
             client_id,
-            ClientInfo { client_id, entity_id: client_id, username: username.clone(), is_ghost: false },
+            ClientInfo { is_ghost: false },
         );
 
         let _ = sim_tx.0.send(crate::net::SimCommand::Joined {
             connection_id: client_id,
-            display_name: username,
             position: Vec2 { x, y },
         });
 
+        trace!("Registered new player with client_id={} at position=({}, {})", client_id, x, y);
+
         if let Some(broker) = broker {
-            let (Some(connection), Some(control_stream)) =
-                (broker.connection, broker.control_stream.clone())
+            let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone())
             else {
                 eprintln!(
-                    "Cannot update broker subscriptions for client_id={}: missing broker control stream",
+                    "Failed to send initial PlayerStartingPosition publish for client_id={} because broker connection or control stream is missing",
                     client_id
                 );
                 return;
             };
 
-            let subscribe_position = BrokerMessage::serialize_subscribe(
-                client_id,
-                Topic::EntityPositionUpdate(client_id).to_bytes(),
-            );
-            if let Err(e) = broker
-                .peer
-                .send(&connection, &control_stream, subscribe_position.into())
-            {
-                eprintln!(
-                    "Failed to subscribe client_id={} to EntityPositionUpdate({}): {:?}",
-                    client_id, client_id, e
-                );
-            }
-
             let unsubscribe_spawn = BrokerMessage::serialize_unsubscribe(
-                client_id,
+                connection.connection_id,
                 Topic::PlayerStartingPositionInShard(client_id).to_bytes(),
             );
             if let Err(e) = broker
@@ -533,11 +527,10 @@ fn handle_ghost_joined(
 ) {
     client_registry.registry.insert(
         client_id,
-        ClientInfo { client_id, entity_id: connection_id, username: format!("Player_{}", connection_id), is_ghost: true },
+        ClientInfo { is_ghost: true },
     );
 
     let _ = sim_tx.0.send(crate::net::SimCommand::GhostJoined {
-        client_id,
         connection_id,
         position: Vec2 { x, y },
     });

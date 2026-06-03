@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use common::constants::POSITION_DELTA_THRESHOLD;
 
-use super::net::{MyEntityId, PositionUpdateReceived};
+use super::net::{BrokerConn, PositionUpdateReceived};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
@@ -25,7 +25,7 @@ impl Plugin for InterpolationPlugin {
 /// Tracks a remote (server-side) entity on the client.
 #[derive(Component)]
 pub struct RemotePlayer {
-    pub entity_id: u32,
+    pub connection_id: uuid::Uuid,
     pub target: Vec2,
     pub prev: Vec2,
 }
@@ -33,7 +33,7 @@ pub struct RemotePlayer {
 /// Marks the text label attached to a remote player.
 #[derive(Component)]
 pub struct RemotePlayerLabel {
-    pub entity_id: u32,
+    pub connection_id: uuid::Uuid,
     pub display_name: String,
 }
 
@@ -69,24 +69,24 @@ fn spawn_remote_players(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     existing: Query<&RemotePlayer>,
-    my_id: Option<Res<MyEntityId>>,
+    broker_conn: Option<Res<BrokerConn>>,
 ) {
-    let my_entity_id = my_id.map(|r| r.0);
+    let my_connection_id = broker_conn.map(|r| r.0.connection_id);
     for update in events.read() {
-        let entity_id = update.0.entity_id;
-        let already_exists = existing.iter().any(|r| r.entity_id == entity_id);
+        let connection_id = update.0.connection_id;
+        let already_exists = existing.iter().any(|r| r.connection_id == connection_id);
         if !already_exists {
             let pos = Vec2::new(update.0.position[0] as f32, update.0.position[1] as f32);
-            let is_me = my_entity_id == Some(entity_id);
+            let is_me = my_connection_id == Some(connection_id);
             let color = if is_me {
                 Color::srgb(0.2, 1.0, 0.2) // green = local player
             } else {
                 Color::srgb(0.2, 0.6, 1.0) // blue = other players
             };
-            let name = format!("Entity {}", entity_id);
+            let name = format!("Entity {}", connection_id);
             commands.spawn((
                 RemotePlayer {
-                    entity_id,
+                    connection_id: update.0.connection_id,
                     target: pos,
                     prev: pos,
                 },
@@ -101,7 +101,7 @@ fn spawn_remote_players(
                     TextColor(Color::WHITE),
                     Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
                     RemotePlayerLabel {
-                        entity_id,
+                        connection_id: update.0.connection_id,
                         display_name: name,
                     },
                 ));
@@ -119,7 +119,7 @@ fn interpolate_remote_players(
     // Apply latest update target for each incoming entity position.
     for update in events.read() {
         for (mut remote, _) in &mut query {
-            if remote.entity_id == update.0.entity_id {
+            if remote.connection_id == update.0.connection_id {
                 let new_pos = Vec2::new(update.0.position[0] as f32, update.0.position[1] as f32);
                 if (new_pos - remote.target).length() > POSITION_DELTA_THRESHOLD {
                     remote.prev = remote.target;
@@ -147,7 +147,7 @@ fn update_remote_player_labels(
         let position = transform.translation.truncate();
         for child in children.iter() {
             if let Ok((tag, mut text)) = labels.get_mut(child) {
-                if tag.entity_id == remote.entity_id {
+                if tag.connection_id == remote.connection_id {
                     text.0 = format_remote_player_label(&tag.display_name, position);
                 }
             }
@@ -164,17 +164,17 @@ fn format_remote_player_label(name: &str, position: Vec2) -> String {
 fn spawn_debug_hud(
     mut commands: Commands,
     session: Res<GameSession>,
-    my_id: Option<Res<MyEntityId>>,
+    broker_conn: Option<Res<BrokerConn>>,
 ) {
-    let entity_id = my_id
-        .map(|r| r.0.to_string())
+    let connection_id = broker_conn
+        .map(|r| r.0.connection_id.to_string())
         .unwrap_or_else(|| "—".to_string());
 
     let info = format!(
-        "Player    : {}\nPlayer ID : {}\nEntity ID : {}",
+        "Player    : {}\nPlayer ID : {}\nConnection ID : {}",
         session.username,
         session.player_id,
-        entity_id,
+        connection_id,
         /*session.server_ip,
         session.server_port,
         session.server_zone,*/

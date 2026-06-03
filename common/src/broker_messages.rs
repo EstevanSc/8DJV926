@@ -64,18 +64,6 @@ impl BrokerMessage {
                 let payload = body[34..34 + payload_len].to_vec();
                 Some(BrokerMessage::Publish { topic, payload })
             }
-            0x05 => { // Connect: client_id (16B)
-                if body.len() < 16 {
-                    return None;
-                }
-                let client_id = Uuid::from_slice(&body[0..16]).ok()?;
-                let sending_system = match body[16] {
-                    0x01 => SendingSystem::Quadtree,
-                    0x02 => SendingSystem::Server,
-                    _ => return None,
-                };
-                Some(BrokerMessage::Connect { client_id, sending_system })
-            }
             0x04 => { // Broadcast: topic (32B) + payload_len (2B) + payload // Note: This message type is only sent by the broker, the other parts use this deserialization.
                 if body.len() < 34 {
                     return None;
@@ -91,6 +79,21 @@ impl BrokerMessage {
 
                 let payload = body[34..34 + payload_len].to_vec();
                 Some(BrokerMessage::Broadcast { topic, payload })
+            }
+                        0x05 => { // Connect: client_id (16B)
+                if body.len() < 16 {
+                    return None;
+                }
+                let client_id = Uuid::from_slice(&body[0..16]).ok()?;
+                let sending_system = match body[16] {
+                    0x01 => SendingSystem::Quadtree,
+                    0x02 => SendingSystem::Server,
+                    0x03 => SendingSystem::Orchestrator,
+                    0x04 => SendingSystem::Client,
+                    0x05 => SendingSystem::Gatekeeper,
+                    _ => return None,
+                };
+                Some(BrokerMessage::Connect { client_id, sending_system })
             }
             _ => None,
         }

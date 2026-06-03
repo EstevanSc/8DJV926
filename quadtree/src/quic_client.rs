@@ -3,7 +3,8 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use common::topics::Topic;
-use common::{Boundary, BrokerMessage};
+use common::{Boundary};
+use common::broker_messages::{BrokerMessage, SendingSystem};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use std::time::Duration;
@@ -159,7 +160,7 @@ impl QuicClient {
     }
 
     pub async fn announce_connect(&self, client_id: Uuid) -> Result<()> {
-        self.send_bytes(BrokerMessage::serialize_connect(client_id), "connect").await
+        self.send_bytes(BrokerMessage::serialize_connect(client_id, SendingSystem::Quadtree), "connect").await
     }
 
     pub async fn publish(&self, topic: Topic, payload: &[u8]) -> Result<()> {
