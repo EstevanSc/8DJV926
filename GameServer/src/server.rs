@@ -406,7 +406,9 @@ fn handle_broker_message(
                 }
             }
             Topic::Input(client_id) => {
+                trace!("Received Input publish from client_id={}", client_id);
                 if let Some(input) = deserialize_input_payload(&payload) {
+                    trace!("Received input from client_id={}: dx={}, dy={}", client_id, input.dxdy[0], input.dxdy[1]);
                     handle_player_input(
                         client_id,
                         input.dxdy[0] as f32,
@@ -460,6 +462,7 @@ fn handle_player_input(
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
 ) {
+    trace!("Received input from client_id={}: dx={}, dy={}", client_id, dx, dy);
     if client_registry.registry.contains_key(&client_id) {
         let _ = sim_tx.0.send(crate::net::SimCommand::Input {
             connection_id: client_id,
@@ -499,6 +502,20 @@ fn handle_receive_new_player(
                 );
                 return;
             };
+
+            //subscribe to inputs from this client
+            let topic = Topic::Input(client_id);
+            let subscribe_message =
+                BrokerMessage::serialize_subscribe(connection.connection_id, topic.to_bytes());
+            if let Err(e) = broker
+                .peer
+                .send(&connection, &control_stream, subscribe_message.into())
+            {
+                eprintln!(
+                    "Failed to subscribe client_id={} to Input topic: {:?}",
+                    client_id, e
+                );
+            }
 
             let unsubscribe_spawn = BrokerMessage::serialize_unsubscribe(
                 connection.connection_id,

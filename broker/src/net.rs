@@ -61,12 +61,13 @@ impl BrokerState {
             broker_stream: GameStream::new(1, GameStreamReliability::Reliable),
         }
     }
-    pub fn receive_packets(&mut self) {
+    pub fn receive_packets(&mut self, connection_map: &mut HashMap<uuid::Uuid, GameConnection>) {
         while let Ok(Some(event)) = self.peer.poll() {
             match event {
                 GameNetworkEvent::Connected(conn) => {
                     println!("Connected! Connection id: {:?}", conn.connection_id);
                     self.connections.insert(conn);
+                    connection_map.insert(conn.connection_id, conn);
                 }
                 GameNetworkEvent::Disconnected(conn) => {
                     println!("Disconnected! Connection id: {:?}", conn.connection_id);
@@ -79,6 +80,7 @@ impl BrokerState {
                         for subscribers in self.subscriptions.values_mut() {
                             subscribers.remove(&conn);
                         }
+                        connection_map.remove(&connection_id);
                     }
                 }
                 GameNetworkEvent::Message {
@@ -86,14 +88,14 @@ impl BrokerState {
                     connection,
                     stream: _,
                 } => {
-                    self.handle_message(data, connection);
+                    self.handle_message(data, connection, connection_map);
                 }
                 _ => {}
             }
         }
     }
 
-    fn handle_message(&mut self, data: Bytes, connection: GameConnection) {
+    fn handle_message(&mut self, data: Bytes, connection: GameConnection, connection_map: &mut HashMap<uuid::Uuid, GameConnection>) {
         let message = match BrokerMessage::deserialize(&data) {
             Some(msg) => msg,
             None => {
@@ -106,26 +108,23 @@ impl BrokerState {
             BrokerMessage::Subscribe { client_id, topic } => {
                 let topic_desc = Topic::from_bytes(topic); 
                 println!("Broker: Subscribe - conn_id={:?}, topic={:?}", client_id, topic_desc);
-                self.subscriptions.entry(topic).or_default().insert(connection);
+                if let Some(existing_connection) = connection_map.get(&client_id) {
+                    self.subscriptions.entry(topic).or_default().insert(*existing_connection);
+                }
             }
             BrokerMessage::Unsubscribe { client_id, topic } => {
                 let topic_desc = Topic::from_bytes(topic);
                 println!("Broker: Unsubscribe - conn_id={:?}, topic={:?}", client_id, topic_desc);
-                self.subscriptions.entry(topic).or_default().remove(&connection);
+                if let Some(existing_connection) = connection_map.get(&client_id) {
+                    self.subscriptions.entry(topic).or_default().remove(existing_connection);  
+                }
             }
             BrokerMessage::Publish { topic, payload } => {
-                let topic_desc = Topic::from_bytes(topic);
-                if matches!(topic_desc, Topic::Input(_)) {
-                    println!(
-                        "Broker: received Input publish from conn_id={:?} (payload={}B)",
-                        connection.connection_id,
-                        payload.len()
-                    );
-                }
                 self.publish(topic, payload);
             }
             BrokerMessage::Connect { client_id, sending_system } => {
                 println!("Broker: Connect from conn_id={:?}, sending_system={:?}", client_id, sending_system);
+                connection_map.insert(client_id, connection);
             }
             _ => {}
         }
@@ -138,8 +137,8 @@ impl BrokerState {
 
             let topic_desc = Topic::from_bytes(topic);
             match topic_desc {
-                Topic::Input(_) => {}
-                _ => println!("Broker: publishing {:?} to {} subscribers", topic_desc, subscribers.len()),
+                //Topic::Input(_) => {}
+                _ => println!("Broker: publishing {:?} to {} subscribers. The ids of the subscribers are {:?}", topic_desc, subscribers.len(), subscribers.iter().map(|c| c.connection_id).collect::<Vec<_>>()),
             }
 
             for conn in subscribers {
