@@ -74,7 +74,7 @@ impl BrokerState {
                         let connection_id = conn.connection_id;
                         let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { connection_id });
                         let topic = Topic::Disconnect(connection_id).to_bytes();
-                        self.publish(topic, disconnected_payload, self.broker_stream.clone());
+                        self.publish(topic, disconnected_payload);
 
                         for subscribers in self.subscriptions.values_mut() {
                             subscribers.remove(&conn);
@@ -84,16 +84,16 @@ impl BrokerState {
                 GameNetworkEvent::Message {
                     data,
                     connection,
-                    stream,
+                    stream: _,
                 } => {
-                    self.handle_message(data, connection, stream);
+                    self.handle_message(data, connection);
                 }
                 _ => {}
             }
         }
     }
 
-    fn handle_message(&mut self, data: Bytes, connection: GameConnection, stream: GameStream) {
+    fn handle_message(&mut self, data: Bytes, connection: GameConnection) {
         let message = match BrokerMessage::deserialize(&data) {
             Some(msg) => msg,
             None => {
@@ -114,7 +114,15 @@ impl BrokerState {
                 self.subscriptions.entry(topic).or_default().remove(&connection);
             }
             BrokerMessage::Publish { topic, payload } => {
-                self.publish(topic, payload, stream);
+                let topic_desc = Topic::from_bytes(topic);
+                if matches!(topic_desc, Topic::Input(_)) {
+                    println!(
+                        "Broker: received Input publish from conn_id={:?} (payload={}B)",
+                        connection.connection_id,
+                        payload.len()
+                    );
+                }
+                self.publish(topic, payload);
             }
             BrokerMessage::Connect { client_id, sending_system } => {
                 println!("Broker: Connect from conn_id={:?}, sending_system={:?}", client_id, sending_system);
@@ -123,7 +131,7 @@ impl BrokerState {
         }
     }
 
-    fn publish(&self, topic: [u8; 32], payload: Vec<u8>, stream: GameStream) {
+    fn publish(&self, topic: [u8; 32], payload: Vec<u8>) {
         if let Some(subscribers) = self.subscriptions.get(&topic) {
             let broadcast_bytes = BrokerMessage::serialize_broadcast(topic, &payload);
             let bytes_payload = Bytes::from(broadcast_bytes);
@@ -135,7 +143,7 @@ impl BrokerState {
             }
 
             for conn in subscribers {
-                if let Err(e) = self.peer.send(conn, &stream, bytes_payload.clone()) {
+                if let Err(e) = self.peer.send(conn, &self.broker_stream, bytes_payload.clone()) {
                     eprintln!("Failed to forward publish to {:?}: {:?}", conn.connection_id, e);
                 }
             }

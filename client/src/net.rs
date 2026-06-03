@@ -37,11 +37,11 @@ struct ConnectTimeout(Timer);
 
 /// The active broker connection handle. Inserted once the QUIC handshake
 /// completes. Used by other systems (e.g. input) to send datagrams.
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone)]
 pub struct BrokerConn(pub GameConnection);
 
 /// Reliable control stream used for broker messages (connect/subscribe/publish).
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone)]
 pub struct BrokerControlStream(pub game_sockets::GameStream);
 
 // ---------------------------------------------------------------------------
