@@ -1,8 +1,21 @@
 mod quic_client;
-
-use common::{ShardData, Boundary, Vec2, Quadrant};
+use common::{Boundary, Quadrant};
+use common::topics::{
+    deserialize_player_starting_position_payload, deserialize_shard_created_payload,
+    serialize_player_starting_position_payload, PlayerStartingPositionPayload, Topic,
+};
+use game_sockets::GameNetworkEvent;
 use quic_client::QuicClient;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+
+type SharedShardSet = Arc<RwLock<HashSet<Boundary>>>;
+type SharedShardMap = Arc<RwLock<HashMap<Boundary, Option<uuid::Uuid>>>>;
+type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, PlayerStartingPositionPayload)>>>;
+
+const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 1;
 
 /// Load configuration from environment variables with defaults.
 struct Config {
@@ -89,13 +102,22 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    run_main_loop(config, orchestrator_client, broker_client).await
+
+    let shard_set: SharedShardSet = Arc::new(RwLock::new(HashSet::new()));
+    let shard_map: SharedShardMap = Arc::new(RwLock::new(HashMap::new()));
+    let pending_players: SharedPendingPlayers = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
+
+    run_main_loop(config, orchestrator_client, broker_client, shard_set, shard_map, pending_players).await
 }
+
 
 async fn run_main_loop(
     config: Config,
     orchestrator_client: Option<QuicClient>,
-    _broker_client: Option<QuicClient>,
+    broker_client: Option<QuicClient>,
+    shard_set: SharedShardSet,
+    shard_map: SharedShardMap,
+    pending_players: SharedPendingPlayers,
 ) -> anyhow::Result<()> {
     let boundary = Boundary {
         x: 0.0,
@@ -103,115 +125,113 @@ async fn run_main_loop(
         half_size: config.world_size / 2.0,
     };
 
-    let mut quadtree = Quadtree::new(boundary, 0, config.max_depth, config.max_capacity);
+    let mut quadtree = Quadtree::new(
+        boundary,
+        0,
+        config.max_depth,
+        config.max_capacity,
+        shard_set.clone(),
+        shard_map.clone(),
+    );
 
-    let mut entities = std::collections::HashMap::new();
+    {
+        let mut set = quadtree.shard_set.write().unwrap();
+        set.insert(boundary); // Start with root shard
+    }
+    {
+        let mut map = quadtree.shard_map.write().unwrap();
+        map.insert(boundary, None);
+    }
 
-    let mut shards = std::collections::HashSet::new();
+    let mut orchestrator_client = orchestrator_client;
+    let mut broker_client = broker_client;
 
-    let mut counter = 0;
+    if let Some(client) = broker_client.as_ref() {
+        let client_id = client.connection_id();
+        client.announce_connect(client_id).await?;
+        client.subscribe(client_id, Topic::ShardCreated).await?;
+        client.subscribe(client_id, Topic::PlayerStartingPosition).await?;
+        tracing::info!(
+            "Subscribed quadtree to broker topics {:?} and {:?} with client_id={}",
+            Topic::ShardCreated,
+            Topic::PlayerStartingPosition,
+            client_id
+        );
+    }
 
-    //simulate a publish-subscribe system where entities are added to the quadtree and we query for nearby shards
+    //Send the initial shard configuration to the orchestrator
+    if let Some(client) = orchestrator_client.as_ref() {
+        send_server_configuration_update(&client, vec![boundary]).await?;
+    } else {
+        tracing::warn!("No connection to orchestrator, skipping initial shard configuration update");
+    }
+
+    let mut entities: HashMap<uuid::Uuid, [f64; 2]> = std::collections::HashMap::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(config.entity_add_interval_ms));
+
     loop {
-        // Simulate entity creation
+        tick.tick().await;
 
-        let id: u32;        
-        let pos: Vec2;
-        //on even `counter`, create a new entity with a random position and insert it into the quadtree else move an existing entity to a new random position
-        if counter % 2 == 0 {
-            id = rand::random::<u32>();
-            pos = Vec2 {
-                x: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
-                y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
-            };
+        // Keep placeholders alive until entity simulation integration is finished.
+        let _ = quadtree.depth;
+        let _ = entities.len();
+
+        if let Some(client) = broker_client.as_mut() {
+            poll_quic_events(client, "broker", &shard_map, &pending_players)?;
         }
-        else {
-            if entities.is_empty() {
-                counter += 1;
-                tokio::time::sleep(tokio::time::Duration::from_millis(config.entity_add_interval_ms)).await;
-                continue;
+
+        if let Some(client) = broker_client.as_ref() {
+            process_pending_players(&pending_players, client, &shard_map).await;
+        }
+    }
+}
+
+fn poll_quic_events(
+    client: &mut QuicClient,
+    label: &str,
+    shard_map: &SharedShardMap,
+    pending_players: &SharedPendingPlayers,
+) -> anyhow::Result<()> {
+    while let Some(event) = client.poll()? {
+        match event {
+            GameNetworkEvent::Message { data, connection, stream } => {
+                tracing::debug!(
+                    "{} link message: {} bytes from {:?} on stream {}",
+                    label,
+                    data.len(),
+                    connection.connection_id,
+                    stream.stream_id
+                );
+
+                handle_quic_message(&data, shard_map, pending_players);
             }
-
-            id = *entities.keys().next().unwrap();
-            pos = Vec2 {
-                x: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
-                y: rand::random::<f64>() * config.world_size - config.world_size / 2.0,
-            };
+            _ => {}
         }
+    }
 
-
-        //if the entity already exists, verify if it has moved to a different shard
-        if let Some(old_pos) = entities.get(&id) {
-            let old_shard = quadtree.shard_for(*old_pos);
-            let new_shard = quadtree.shard_for(pos);
-            if old_shard != new_shard {
-                // Handle entity moving to a different shard
-                // envoyer `Unsubscribe(ancien topic)` puis `Subscribe(nouveau topic)` au broker
-                println!("Entity {} moved from shard {:?} to shard {:?}", id, old_shard, new_shard);
-
-                entities.insert(id, pos);
-            }
-
-            let nearby_shards = quadtree.shards_near(pos, config.nearby_margin);
-            if nearby_shards.len() > 1 {
-                //émettre un `CrossingAlert`
-                println!("Entity {} is near shard boundaries: nearby shards = {:?}", id, nearby_shards);
-            }
-        }
-
-        // If it's a new entity, just insert it into the quadtree and track its position
-        else {
-            entities.insert(id, pos);
-            println!("Entity {} created at position ({:.2}, {:.2}) in shard {:?}", id, pos.x, pos.y, quadtree.shard_for(pos));
-        }
-
-        //recreate the quadtree from scratch to simulate dynamic entity movement and shard changes
-        let mut new_quadtree = Quadtree::new(boundary, 0, config.max_depth, config.max_capacity);
-        for (_id, pos) in &entities {
-            new_quadtree.insert(*pos);
-        }
-        quadtree = new_quadtree;
-
-        // Query Shard Data that will be sent to the orchestrator to update server layout
-        let shard_data = quadtree.collect_shards();
-        // Check if the shard layout has changed and if so, update the `shards` set and print the new layout
-        let new_shard_ids: std::collections::HashSet<u32> = shard_data.iter().filter_map(|s| s.shard_id).collect();
-        if new_shard_ids != shards {
-            println!("Shard layout changed: new shard IDs = {:?}", new_shard_ids);
-            shards = new_shard_ids;
-            
-            // Send shard layout to orchestrator via QUIC
-            if let Some(ref client) = orchestrator_client {
-                if let Err(e) = client.send_shard_data(&shard_data).await {
-                    tracing::error!("Failed to send shard data to orchestrator: {}", e);
-                }
-            }
-        }
-        //print shard IDs and boundaries for debugging
-        println!("Current Shard Layout:");
-        for shard in &shard_data {
-            println!("Shard ID: {:?}, Boundary: center=({:.2}, {:.2}), half_size={:.2}", shard.shard_id, shard.boundary.x, shard.boundary.y, shard.boundary.half_size);
-        }
-
-        counter += 1;
-
-        // Sleep to simulate time passing
-        tokio::time::sleep(tokio::time::Duration::from_millis(config.entity_add_interval_ms)).await;
-    }  
+    Ok(())
 }
 
 struct Quadtree {
     boundary: Boundary,
-    points: Vec<Vec2>,
+    points: Vec<[f64; 2]>,
     depth: u8,
     max_depth: u8,
     max_capacity: usize,
     children: Option<[Box<Quadtree>; 4]>,
-    shard_id: Option<u32>,  // défini uniquement sur les feuilles
+    shard_set: SharedShardSet,
+    shard_map: SharedShardMap,
 }
 
 impl Quadtree {
-    fn new(boundary: Boundary, depth: u8, max_depth: u8, max_capacity: usize) -> Self {
+    fn new(
+        boundary: Boundary,
+        depth: u8,
+        max_depth: u8,
+        max_capacity: usize,
+        shard_set: SharedShardSet,
+        shard_map: SharedShardMap,
+    ) -> Self {
         Self {
             boundary,
             points: Vec::new(),
@@ -219,12 +239,13 @@ impl Quadtree {
             max_depth,
             max_capacity,
             children: None,
-            shard_id: Some(0),
+            shard_set: shard_set.clone(),
+            shard_map: shard_map.clone(),
         }
     }
 
-    fn insert(&mut self, point: Vec2) {
-        if !self.boundary.contains(&point) {
+    fn insert(&mut self, point: [f64; 2]) {
+        if !self.boundary.contains(&point[0], &point[1]) {
             return;
         }
 
@@ -249,43 +270,44 @@ impl Quadtree {
     fn split(&mut self) {
         let boundaries = self.boundary.subdivide();
 
-        let mut children = [
-            Box::new(Quadtree::new(boundaries[0], self.depth + 1, self.max_depth, self.max_capacity)),
-            Box::new(Quadtree::new(boundaries[1], self.depth + 1, self.max_depth, self.max_capacity)),
-            Box::new(Quadtree::new(boundaries[2], self.depth + 1, self.max_depth, self.max_capacity)),
-            Box::new(Quadtree::new(boundaries[3], self.depth + 1, self.max_depth, self.max_capacity)),
-        ];
-
-        if self.depth == 0 {
-            // Assign shard IDs to top-level quadrants
-            for (i, child) in children.iter_mut().enumerate() {
-                child.shard_id = Some((i + 1) as u32); // Simple shard ID assignment
+        {
+            let mut set = self.shard_set.write().unwrap();
+            set.remove(&self.boundary);
+            for b in boundaries {
+                set.insert(b);
             }
-        }else {
-            // Shard ID = parent shard ID + quadrant index
-            for (i, child) in children.iter_mut().enumerate() {
-                child.shard_id = self.shard_id.map(|id| id * 10 + (i + 1) as u32); // Simple hierarchical shard ID
+        }
+        {
+            let mut map = self.shard_map.write().unwrap();
+            map.remove(&self.boundary);
+            for b in boundaries {
+                map.entry(b).or_insert(None);
             }
-
-            self.shard_id = None; // Clear parent shard ID since it's no longer a leaf
         }
 
+        let mut children = [
+            Box::new(Quadtree::new(boundaries[0], self.depth + 1, self.max_depth, self.max_capacity, self.shard_set.clone(), self.shard_map.clone())),
+            Box::new(Quadtree::new(boundaries[1], self.depth + 1, self.max_depth, self.max_capacity, self.shard_set.clone(), self.shard_map.clone())),
+            Box::new(Quadtree::new(boundaries[2], self.depth + 1, self.max_depth, self.max_capacity, self.shard_set.clone(), self.shard_map.clone())),
+            Box::new(Quadtree::new(boundaries[3], self.depth + 1, self.max_depth, self.max_capacity, self.shard_set.clone(), self.shard_map.clone())),
+        ];
+
         let old = mem::take(&mut self.points);
-        for e in old {
-            let idx = match self.boundary.quadrant(&e) {
+        for point in old {
+            let idx = match self.boundary.quadrant(&point[0], &point[1]) {
                 Quadrant::NorthEast => 0,
                 Quadrant::NorthWest => 1,
                 Quadrant::SouthEast => 2,
                 Quadrant::SouthWest => 3,
             };
-            children[idx].insert(e);
+            children[idx].insert(point);
         }
 
         self.children = Some(children);
     }
 
-    fn insert_into_child(&mut self, point: Vec2) {
-        let idx = match self.boundary.quadrant(&point) {
+    fn insert_into_child(&mut self, point: [f64; 2]) {
+        let idx = match self.boundary.quadrant(&point[0], &point[1]) {
             Quadrant::NorthEast => 0,
             Quadrant::NorthWest => 1,
             Quadrant::SouthEast => 2,
@@ -294,77 +316,151 @@ impl Quadtree {
 
         self.children.as_mut().unwrap()[idx].insert(point);
     }
+}
 
-    fn collect_shards(&self) -> Vec<ShardData> {
-        let mut out = Vec::new();
-        self.collect_into(&mut out);
-        out
-    }
+async fn send_server_configuration_update(client: &QuicClient, boundaries: Vec<Boundary>) -> anyhow::Result<()> {
+    client.send_shard_data(&boundaries).await?;
+    Ok(())
+}
 
-    fn collect_into(&self, out: &mut Vec<ShardData>) {
-        match &self.children {
-            None => {
-                // If it's a leaf, it IS a shard, even if empty.
-                out.push(ShardData {
-                    boundary: self.boundary,
-                    shard_id: self.shard_id,
-                });
+fn handle_quic_message(data: &[u8], shard_map: &SharedShardMap, pending_players: &SharedPendingPlayers) {
+    let Some(message) = common::BrokerMessage::deserialize(data) else {
+        return;
+    };
+
+    match message {
+        common::BrokerMessage::Broadcast { topic, payload }
+        | common::BrokerMessage::Publish { topic, payload } => {
+            match Topic::from_bytes(topic) {
+                Topic::PlayerStartingPosition => {
+                    handle_player_starting_position_topic(&payload, pending_players);
+                }
+                Topic::ShardCreated => handle_shard_created_topic(&payload, shard_map),
+                _ => {}
             }
-            Some(children) => {
-                for c in children {
-                    c.collect_into(out);
+        }
+        _ => {}
+    }
+}
+
+fn handle_shard_created_topic(payload: &[u8], shard_map: &SharedShardMap) {
+    let Some(parsed) = deserialize_shard_created_payload(payload) else {
+        return;
+    };
+
+    let mut map = shard_map.write().unwrap();
+    map.insert(parsed.boundary, Some(parsed.shard_connection_id));
+    tracing::info!(
+        "Shard registered: shard_uuid={} boundary=({}, {}, {})",
+        parsed.shard_connection_id, parsed.boundary.x, parsed.boundary.y, parsed.boundary.half_size
+    );
+}
+
+fn handle_player_starting_position_topic(payload: &[u8], pending_players: &SharedPendingPlayers) {
+    if let Some(parsed) = deserialize_player_starting_position_payload(payload) {
+        handle_player_starting_position_payload(parsed, pending_players);
+    }
+}
+
+fn handle_player_starting_position_payload(
+    payload: PlayerStartingPositionPayload,
+    pending_players: &SharedPendingPlayers,
+) {
+    match pending_players.try_lock() {
+        Ok(mut pending) => {
+            tracing::debug!(
+                "Queuing player spawn for player_id={} at ({}, {})",
+                payload.player_id, payload.position[0], payload.position[1]
+            );
+            pending.push_back((Instant::now(), payload));
+        }
+        Err(_) => {
+            tracing::warn!("Pending players queue contended, dropping spawn request for player_id={}", payload.player_id);
+        }
+    }
+}
+
+/// Derive a stable `u32` entity ID from a UUID — mirrors GameServer's `entity_id_from_uuid`.
+fn entity_id_from_uuid(id: uuid::Uuid) -> u32 {
+    id.as_bytes()
+        .iter()
+        .fold(0u32, |acc, &b| acc.wrapping_add(b as u32))
+}
+
+/// Find the leaf shard boundary that spatially contains the given point.
+fn find_shard_for_position(shard_map: &SharedShardMap, x: f64, y: f64) -> Option<(Boundary, Option<uuid::Uuid>)> {
+    let map = shard_map.read().unwrap();
+    map.iter()
+        .find(|(boundary, _)| boundary.contains(&x, &y))
+        .map(|(b, uuid)| (*b, *uuid))
+}
+
+/// Subscribe the shard server and client to the correct topics, then publish the starting position.
+async fn spawn_player_on_shard(
+    broker: &QuicClient,
+    shard_uuid: uuid::Uuid,
+    player_id: uuid::Uuid,
+    position: [f64; 2],
+) -> anyhow::Result<()> {
+    let entity_id = entity_id_from_uuid(player_id);
+
+    // Subscribe the shard server to player-specific inbound topics.
+    broker.subscribe(shard_uuid, Topic::PlayerStartingPositionInShard(player_id)).await?;
+    broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
+    broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
+
+    // Subscribe the client to its own position updates.
+    broker.subscribe(player_id, Topic::EntityPositionUpdate(entity_id)).await?;
+
+    // Publish the starting position so the shard server spawns the player.
+    let payload_bytes = serialize_player_starting_position_payload(
+        &PlayerStartingPositionPayload { player_id, position },
+    );
+    broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
+
+    tracing::info!(
+        "Spawned player player_id={} entity_id={} on shard shard_uuid={}",
+        player_id, entity_id, shard_uuid
+    );
+    Ok(())
+}
+
+/// Drain the pending queue each tick: resolve players whose shard UUID is now known.
+async fn process_pending_players(
+    pending_players: &SharedPendingPlayers,
+    broker: &QuicClient,
+    shard_map: &SharedShardMap,
+) {
+    let timeout = Duration::from_secs(PLAYER_SPAWN_RETRY_TIMEOUT_SECS);
+    let mut ready: Vec<(uuid::Uuid, uuid::Uuid, [f64; 2])> = Vec::new();
+    let mut still_pending: VecDeque<(Instant, PlayerStartingPositionPayload)> = VecDeque::new();
+
+    {
+        let mut pending = pending_players.lock().await;
+        while let Some((queued_at, payload)) = pending.pop_front() {
+            if queued_at.elapsed() > timeout {
+                tracing::warn!(
+                    "Player spawn timed out — dropping player_id={}",
+                    payload.player_id
+                );
+                continue;
+            }
+
+            match find_shard_for_position(shard_map, payload.position[0], payload.position[1]) {
+                Some((_, Some(shard_uuid))) => {
+                    ready.push((shard_uuid, payload.player_id, payload.position));
+                }
+                _ => {
+                    still_pending.push_back((queued_at, payload));
                 }
             }
         }
+        *pending = still_pending;
     }
 
-    /// Retourne le shard_id de la feuille contenant `pos`.
-    pub fn shard_for(&self, pos: Vec2) -> Option<u32> {
-        if !self.boundary.contains(&pos) {
-            return None;
-        }
-
-        match &self.children {
-            None => self.shard_id,
-            Some(children) => {
-                // Instantly pinpoint the correct quadrant index
-                let idx = match self.boundary.quadrant(&pos) {
-                    Quadrant::NorthEast => 0,
-                    Quadrant::NorthWest => 1,
-                    Quadrant::SouthEast => 2,
-                    Quadrant::SouthWest => 3,
-                };
-                children[idx].shard_for(pos)
-            }
-        }
-    }
-
-    /// Retourne les shard_ids distincts dans un rayon `margin` autour de `pos`.
-    /// Utilisé pour détecter l'approche d'une frontière inter-shard.
-    pub fn shards_near(&self, pos: Vec2, margin: f64) -> Vec<u32> { 
-        let mut shards = Vec::new();
-        self.collect_shards_near(pos, margin, &mut shards);
-        shards.sort_unstable();
-        shards.dedup();
-        shards
-    }
-
-    fn collect_shards_near(&self, pos: Vec2, margin: f64, shards: &mut Vec<u32>) {
-        if !self.boundary.intersects_range(pos, margin) {
-            return;
-        }
-
-        match &self.children {
-            None => {
-                if let Some(shard_id) = self.shard_id {
-                    shards.push(shard_id);
-                }
-            }
-            Some(children) => {
-                for c in children {
-                    c.collect_shards_near(pos, margin, shards);
-                }
-            }
+    for (shard_uuid, player_id, position) in ready {
+        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position).await {
+            tracing::error!("Failed to spawn player player_id={} on shard shard_uuid={}: {}", player_id, shard_uuid, e);
         }
     }
 }

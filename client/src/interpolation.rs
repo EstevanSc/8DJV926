@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use common::constants::POSITION_DELTA_THRESHOLD;
 
-use super::net::{MyEntityId, PositionBatchReceived};
+use super::net::{MyEntityId, PositionUpdateReceived};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
@@ -65,68 +65,65 @@ fn spawn_floor(
 /// A name tag is spawned as a child entity above each circle.
 fn spawn_remote_players(
     mut commands: Commands,
-    mut events: MessageReader<PositionBatchReceived>,
+    mut events: MessageReader<PositionUpdateReceived>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     existing: Query<&RemotePlayer>,
     my_id: Option<Res<MyEntityId>>,
 ) {
     let my_entity_id = my_id.map(|r| r.0);
-    for batch in events.read() {
-        for snap in &batch.0.snapshots {
-            let already_exists = existing.iter().any(|r| r.entity_id == snap.entity_id);
-            if !already_exists {
-                let pos = Vec2::new(snap.x, snap.y);
-                let is_me = my_entity_id == Some(snap.entity_id);
-                let color = if is_me {
-                    Color::srgb(0.2, 1.0, 0.2) // green = local player
-                } else {
-                    Color::srgb(0.2, 0.6, 1.0) // blue = other players
-                };
-                let name = snap.display_name.clone();
-                commands.spawn((
-                    RemotePlayer {
-                        entity_id: snap.entity_id,
-                        target: pos,
-                        prev: pos,
+    for update in events.read() {
+        let entity_id = update.0.entity_id;
+        let already_exists = existing.iter().any(|r| r.entity_id == entity_id);
+        if !already_exists {
+            let pos = Vec2::new(update.0.position[0] as f32, update.0.position[1] as f32);
+            let is_me = my_entity_id == Some(entity_id);
+            let color = if is_me {
+                Color::srgb(0.2, 1.0, 0.2) // green = local player
+            } else {
+                Color::srgb(0.2, 0.6, 1.0) // blue = other players
+            };
+            let name = format!("Entity {}", entity_id);
+            commands.spawn((
+                RemotePlayer {
+                    entity_id,
+                    target: pos,
+                    prev: pos,
+                },
+                Mesh2d(meshes.add(Circle::new(16.0))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+                Transform::from_translation(pos.extend(0.0)),
+            )).with_children(|parent| {
+                let label_text = format_remote_player_label(&name, pos);
+                parent.spawn((
+                    Text2d::new(label_text),
+                    TextFont { font_size: 12.0, ..default() },
+                    TextColor(Color::WHITE),
+                    Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
+                    RemotePlayerLabel {
+                        entity_id,
+                        display_name: name,
                     },
-                    Mesh2d(meshes.add(Circle::new(16.0))),
-                    MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-                    Transform::from_translation(pos.extend(0.0)),
-                )).with_children(|parent| {
-                    let label_text = format_remote_player_label(&name, pos);
-                    parent.spawn((
-                        Text2d::new(label_text),
-                        TextFont { font_size: 12.0, ..default() },
-                        TextColor(Color::WHITE),
-                        Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
-                        RemotePlayerLabel {
-                            entity_id: snap.entity_id,
-                            display_name: name,
-                        },
-                    ));
-                });
-            }
+                ));
+            });
         }
     }
 }
 
 /// Smooth-step each remote player toward its latest received position.
 fn interpolate_remote_players(
-    mut events: MessageReader<PositionBatchReceived>,
+    mut events: MessageReader<PositionUpdateReceived>,
     mut query: Query<(&mut RemotePlayer, &mut Transform)>,
     time: Res<Time>,
 ) {
-    // Apply latest snapshot targets.
-    for batch in events.read() {
-        for snap in &batch.0.snapshots {
-            for (mut remote, _) in &mut query {
-                if remote.entity_id == snap.entity_id {
-                    let new_pos = Vec2::new(snap.x, snap.y);
-                    if (new_pos - remote.target).length() > POSITION_DELTA_THRESHOLD {
-                        remote.prev = remote.target;
-                        remote.target = new_pos;
-                    }
+    // Apply latest update target for each incoming entity position.
+    for update in events.read() {
+        for (mut remote, _) in &mut query {
+            if remote.entity_id == update.0.entity_id {
+                let new_pos = Vec2::new(update.0.position[0] as f32, update.0.position[1] as f32);
+                if (new_pos - remote.target).length() > POSITION_DELTA_THRESHOLD {
+                    remote.prev = remote.target;
+                    remote.target = new_pos;
                 }
             }
         }

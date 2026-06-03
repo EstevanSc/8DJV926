@@ -165,19 +165,20 @@ pub async fn spawn_server(
     Ok(server_id)
 }
 
-/// Spawn a new game-server container for a specific shard.
+/// Spawn a new game-server container for a specific shard boundary center.
 ///
 /// Similar to `spawn_server` but also:
-/// - Passes `DS_SHARD_ID=<shard_id>` to the container
-/// - Stores `shard_id` in Redis entry
+/// - Passes `DS_SHARD_CENTER_X/Y=<center>` to the container
+/// - Stores the shard center in Redis entry
 /// - Returns the Redis key for the server
-pub async fn spawn_server_for_shard(
+pub async fn spawn_server_for_boundary(
     docker: &Docker,
     redis: &RedisClient,
     port: u16,
-    shard_id: u32,
+    boundary: common::Boundary,
 ) -> anyhow::Result<String> {
     let server_id = Uuid::new_v4().to_string();
+    let shard_center = format!("{},{}", boundary.x, boundary.y);
 
     let public_addr = std::env::var("PUBLIC_ADDR").unwrap_or_else(|_| "localhost".to_string());
     let zone = std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string());
@@ -189,7 +190,10 @@ pub async fn spawn_server_for_shard(
     let env = vec![
         format!("DS_ID={server_id}"),
         format!("DS_PORT={port}"),
-        format!("DS_SHARD_ID={shard_id}"),
+        format!("DS_SHARD_CENTER_X={}", boundary.x),
+        format!("DS_SHARD_CENTER_Y={}", boundary.y),
+        format!("DS_SHARD_HALF_SIZE={}", boundary.half_size),
+        format!("DS_SHARD_CENTER={shard_center}"),
         format!("DS_ZONE={zone}"),
         format!("DS_PUBLIC_IP={public_addr}"),
         format!("MAX_PLAYERS={max_players}"),
@@ -234,7 +238,7 @@ pub async fn spawn_server_for_shard(
         labels: Some(HashMap::from([
             ("mmo.role".to_string(), "game-server".to_string()),
             ("mmo.server-id".to_string(), server_id.clone()),
-            ("mmo.shard-id".to_string(), shard_id.to_string()),
+            ("mmo.shard-center".to_string(), shard_center.clone()),
         ])),
         ..Default::default()
     };
@@ -256,7 +260,7 @@ pub async fn spawn_server_for_shard(
     fields.insert("container_id", container_id.clone());
     fields.insert("ip", public_addr);
     fields.insert("port", port.to_string());
-    fields.insert("shard_id", shard_id.to_string());
+    fields.insert("shard_center", shard_center.clone());
     fields.insert("zone", zone);
     fields.insert("status", "starting".to_string());
     fields.insert("player_count", "0".to_string());
@@ -270,8 +274,8 @@ pub async fn spawn_server_for_shard(
         server_id = %server_id,
         container_id = %container_id,
         port,
-        shard_id,
-        "Game server container started for shard",
+        shard_center = %shard_center,
+        "Game server container started for shard center",
     );
 
     Ok(redis_key)

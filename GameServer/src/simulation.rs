@@ -95,10 +95,6 @@ fn spawn_floor(mut commands: Commands) {
     ));
 }
 
-fn subscribe_to_topics(mut bus: ResMut<AuthorityBus>) {
-    bus.subscribe(Topic::Input(Uuid::nil()));
-}
-
 fn spawn_gameplay_entities(
     mut commands: Commands,
     mut events: MessageReader<SpawnGameplayEntity>,

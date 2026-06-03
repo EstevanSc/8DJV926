@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use common::ShardData;
+use common::Boundary;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use game_sockets::protocols::QuicBackend;
@@ -15,7 +15,7 @@ use tracing::info;
 /// Message containing shard updates from quadtree.
 #[derive(Debug, Clone)]
 pub struct ShardUpdateMessage {
-    pub shard_data: Vec<ShardData>,
+    pub boundaries: Vec<Boundary>,
 }
 
 /// Start the QUIC server on the given port and return a channel for shard updates.
@@ -72,13 +72,13 @@ async fn handle_quic_message(
     data: Bytes,
     tx: mpsc::Sender<ShardUpdateMessage>,
 ) -> Result<()> {
-    let shard_data = ShardData::decode_batch(&data)
-        .context("Failed to decode shard data payload")?;
+    let boundaries = Boundary::decode_batch(&data)
+        .context("Failed to decode boundaries payload")?;
 
-    tracing::debug!("Received shard update from quadtree: {} shards", shard_data.len());
+    tracing::debug!("Received shard update from quadtree: {} boundaries", boundaries.len());
 
     // Send to handler
-    tx.send(ShardUpdateMessage { shard_data })
+    tx.send(ShardUpdateMessage { boundaries })
         .await
         .context("Failed to send shard update message")?;
 

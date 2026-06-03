@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use common::topics::Topic;
-use common::{BrokerMessage, ShardData};
+use common::{Boundary, BrokerMessage};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use std::time::Duration;
@@ -84,6 +84,10 @@ impl QuicClient {
         GamePeer::poll(&mut self.peer).map_err(|e| anyhow!("{} link poll failed: {}", self.label, e))
     }
 
+    pub fn connection_id(&self) -> Uuid {
+        self.connection.connection_id
+    }
+
     async fn send_bytes(&self, bytes: Vec<u8>, context: &str) -> Result<()> {
         self.peer
             .send(&self.connection, &self.control_stream, Bytes::from(bytes))
@@ -120,13 +124,13 @@ impl QuicClient {
         .await
     }
 
-    /// Send shard data to the orchestrator using the shared binary schema.
-    pub async fn send_shard_data(&self, shard_data: &[ShardData]) -> Result<()> {
-        let payload = ShardData::encode_batch(shard_data)
-            .context("Failed to encode shard data payload")?;
+    /// Send boundaries to the orchestrator using the shared binary schema.
+    pub async fn send_shard_data(&self, boundaries: &Vec<Boundary>) -> Result<()> {
+        let payload: Vec<u8> = Boundary::encode_batch(boundaries)
+            .context("Failed to encode boundaries payload")?;
         self.send_bytes(payload, "shard data").await?;
 
-        tracing::debug!("Sent shard data to orchestrator: {} shards", shard_data.len());
+        tracing::debug!("Sent boundaries to orchestrator: {} boundaries", boundaries.len());
 
         Ok(())
     }

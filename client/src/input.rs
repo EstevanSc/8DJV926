@@ -2,7 +2,6 @@ use bevy::prelude::*;
 
 use common::broker_messages::BrokerMessage;
 use common::topics::{serialize_input_payload, InputPayload, Topic};
-use common::Vec2;
 use uuid::Uuid;
 
 use super::{GameSession, GameState};
@@ -27,8 +26,8 @@ fn send_input(
     };
     let Ok(peer) = peer_res.0.lock() else { return };
 
-    let mut dx = 0.0_f32;
-    let mut dy = 0.0_f32;
+    let mut dx = 0.0_f64;
+    let mut dy = 0.0_f64;
     if keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA) {
         dx -= 1.0;
     }
@@ -54,7 +53,7 @@ fn send_input(
 
     let payload = serialize_input_payload(&InputPayload {
         player_id,
-        dxdy: Vec2 { x: dx as f64, y: dy as f64 },
+        dxdy: [dx, dy],
     });
 
     let topic = Topic::Input(player_id).to_bytes();

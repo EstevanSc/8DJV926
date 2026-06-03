@@ -2,12 +2,32 @@
 
 use serde::{Deserialize, Serialize};
 use wincode::{SchemaRead, SchemaWrite};
+use std::hash::{Hash, Hasher};
+
 /// Boundary of a shard in 2D space (axis-aligned bounding box).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct Boundary {
     pub x: f64,
     pub y: f64,
     pub half_size: f64,
+}
+
+impl PartialEq for Boundary {
+    fn eq(&self, other: &Self) -> bool {
+        self.x.to_bits() == other.x.to_bits()
+            && self.y.to_bits() == other.y.to_bits()
+            && self.half_size.to_bits() == other.half_size.to_bits()
+    }
+}
+
+impl Eq for Boundary {}
+
+impl Hash for Boundary {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.x.to_bits().hash(state);
+        self.y.to_bits().hash(state);
+        self.half_size.to_bits().hash(state);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,21 +94,12 @@ impl Boundary {
         self_left < range_right && self_right > range_left &&
         self_top < range_bottom && self_bottom > range_top
     }
-}
 
-/// Data for a single shard, communicated from quadtree to orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
-pub struct ShardData {
-    pub shard_id: Option<u32>,
-    pub boundary: Boundary,
-}
-
-impl ShardData {
-    pub fn encode_batch(shard_data: &[ShardData]) -> serde_json::Result<Vec<u8>> {
-        serde_json::to_vec(shard_data)
+    pub fn encode_batch(boundaries: &Vec<Boundary>) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(boundaries)
     }
 
-    pub fn decode_batch(data: &[u8]) -> serde_json::Result<Vec<ShardData>> {
+    pub fn decode_batch(data: &[u8]) -> serde_json::Result<Vec<Boundary>> {
         serde_json::from_slice(data)
     }
 }

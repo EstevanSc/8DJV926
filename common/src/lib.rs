@@ -11,4 +11,4 @@ pub use broker_messages::BrokerMessage;
 pub use heartbeat::Heartbeat;
 pub use redis_client::RedisClient;
 pub use server_info::ServerInfo;
-pub use shard_data::{ShardData, Boundary, Quadrant};
+pub use shard_data::{Boundary, Quadrant};

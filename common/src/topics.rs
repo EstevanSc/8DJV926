@@ -7,8 +7,9 @@ use wincode::{SchemaRead, SchemaWrite};
 pub enum TopicDomain {
     ShardCreated = 0x01,
     PlayerStartingPosition = 0x02,
-    Input = 0x03,
-    EntityPositionUpdate = 0x04,
+    PlayerStartingPositionInShard = 0x03,
+    Input = 0x04,
+    EntityPositionUpdate = 0x05,
     Disconnect = 0xFF,
     ClaimOwnership = 0xFE,
 }
@@ -16,14 +17,17 @@ pub enum TopicDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Topic {
     //Quadtree topics
-    ShardCreated,        // For shard creation events
+    ShardCreated,       
+    PlayerStartingPosition, 
 
     //server topics
-    PlayerStartingPosition(Uuid),   // For specific positions updates
+    PlayerStartingPositionInShard(Uuid), 
     Input(Uuid), // For client inputs updates, uuid identifies the client
-    EntityPositionUpdate(u32), 
     Disconnect(Uuid), // For disconnect events
     ClaimOwnership(Uuid), // For claiming ownership of an entity, uuid the shard
+
+    //client topics
+    EntityPositionUpdate(u32), 
 
     Raw([u8; 32]),     // Fallback
 }
@@ -36,8 +40,11 @@ impl Topic {
             Topic::ShardCreated => {
                 bytes[0] = TopicDomain::ShardCreated as u8;
             }
-            Topic::PlayerStartingPosition(uuid) => {
+            Topic::PlayerStartingPosition => {
                 bytes[0] = TopicDomain::PlayerStartingPosition as u8;
+            }
+            Topic::PlayerStartingPositionInShard(uuid) => {
+                bytes[0] = TopicDomain::PlayerStartingPositionInShard as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
             Topic::Input(uuid) => {
@@ -66,14 +73,17 @@ impl Topic {
         match bytes[0] {
             0x01 => Topic::ShardCreated,
             0x02 => {
-                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
-                Topic::PlayerStartingPosition(uuid)
+                Topic::PlayerStartingPosition
             }
             0x03 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
-                Topic::Input(uuid)
+                Topic::PlayerStartingPositionInShard(uuid)
             }
             0x04 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::Input(uuid)
+            }
+            0x05 => {
                 let entity_id = u32::from_be_bytes(bytes[1..5].try_into().unwrap_or_default());
                 Topic::EntityPositionUpdate(entity_id)
             }

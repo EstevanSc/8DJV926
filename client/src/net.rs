@@ -2,17 +2,9 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::packets::{PositionBatch, PositionSnapshot, SnapshotAuthority};
-use common::topics::{
-    deserialize_shard_snapshot_payload, serialize_starting_position_payload, PositionPayload,
-    ShardSnapshotPayload, Topic,
-};
-use common::Vec2;
+use common::topics::{PositionPayload, Topic, PlayerStartingPositionPayload, serialize_player_starting_position_payload, deserialize_position_payload};
 use game_sockets::protocols::QuicBackend;
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use wincode::{SchemaRead, SchemaWrite};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
 use super::{GameSession, GameState};
 
@@ -20,7 +12,7 @@ pub struct ClientNetPlugin;
 
 impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<PositionBatchReceived>()
+        app.add_message::<PositionUpdateReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -28,19 +20,6 @@ impl Plugin for ClientNetPlugin {
             )
             .add_systems(Update, receive_packets.run_if(in_state(GameState::InGame)));
     }
-}
-
-// ---------------------------------------------------------------------------
-#[derive(Debug, Serialize, Deserialize, Clone, SchemaWrite, SchemaRead)]
-struct ShardSnapshotPlayer {
-    id: Uuid,
-    entity_id: u32,
-    username: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, SchemaWrite, SchemaRead)]
-struct ShardSnapshotState {
-    players: Vec<ShardSnapshotPlayer>,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +66,7 @@ fn start_connect(mut commands: Commands, session: Res<GameSession>) {
 }
 fn poll_net_events(
     mut commands: Commands,
-    session: Res<GameSession>,
+    _session: Res<GameSession>,
     peer_res: Option<ResMut<ActivePeer>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
@@ -120,13 +99,15 @@ fn poll_net_events(
             }
 
             GameNetworkEvent::StreamCreated(conn, stream) => {
+                /* 
                 let Ok(player_id) = Uuid::parse_str(&session.player_id) else {
                     tracing::error!("Invalid player_id in session: '{}'", session.player_id);
                     continue;
                 };
-
-                if stream.is_reliable() {
-                    tracing::info!("Reliable stream is ready! Registering client_id={player_id}");
+                */
+                let player_id = conn.connection_id;
+                if stream.is_reliable() { 
+                    tracing::info!("Reliable stream is ready! Registering client_id={player_id} with broker...");
                     
                     let connect_message = BrokerMessage::serialize_connect(player_id);
                     if let Err(e) = peer.send(&conn, &stream, connect_message.into()) {
@@ -136,12 +117,12 @@ fn poll_net_events(
                     next_state.set(GameState::InGame);
                 } 
                 else {
-                    let payload = serialize_starting_position_payload(&PositionPayload {
-                        entity_id: player_id,
-                        position: Vec2 { x: 0.0, y: 0.0 },
+                    let payload = serialize_player_starting_position_payload(&PlayerStartingPositionPayload {
+                        player_id,
+                        position: [0.0, 0.0],
                     });
 
-                    let topic = Topic::StartingPosition.to_bytes();
+                    let topic = Topic::PlayerStartingPosition.to_bytes();
                     let publish = BrokerMessage::serialize_publish(topic, &payload);
                     if let Err(e) = peer.send(&conn, &stream, publish.into()) {
                         tracing::error!("Failed to send initial Publish: {e:?}");
@@ -187,13 +168,13 @@ fn tick_connect_timeout(
 // InGame packet receive (position batches from the server)
 // ---------------------------------------------------------------------------
 
-/// Message emitted when a fresh `PositionBatch` arrives from the server.
+/// Message emitted when an entity position update arrives from the server.
 #[derive(Message)]
-pub struct PositionBatchReceived(pub PositionBatch);
+pub struct PositionUpdateReceived(pub PositionPayload);
 
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
-    mut batch_writer: MessageWriter<PositionBatchReceived>,
+    mut update_writer: MessageWriter<PositionUpdateReceived>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -203,9 +184,9 @@ fn receive_packets(
             if let Some(message) = BrokerMessage::deserialize(&data) {
                 match message {
                     BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
-                        Topic::ShardSnapshot(_) => {
-                            if let Some(snapshot) = deserialize_shard_snapshot_payload(&payload) {
-                                emit_snapshot_batch(snapshot, &mut batch_writer);
+                        Topic::EntityPositionUpdate(_) => {
+                            if let Some(update) = deserialize_position_payload(&payload) {
+                                update_writer.write(PositionUpdateReceived(update));
                             }
                         }
                         _ => {}
@@ -214,42 +195,6 @@ fn receive_packets(
                 }
                 continue;
             }
-
-            if let Ok(batch) = wincode::deserialize::<PositionBatch>(&data) {
-                batch_writer.write(PositionBatchReceived(batch));
-                continue;
-            }
-
         }
-    }
-}
-
-fn emit_snapshot_batch(
-    snapshot: ShardSnapshotPayload,
-    batch_writer: &mut MessageWriter<PositionBatchReceived>,
-) {
-    if let Ok(batch) = wincode::deserialize::<PositionBatch>(&snapshot.replication) {
-        batch_writer.write(PositionBatchReceived(batch));
-        return;
-    }
-
-    if let Ok(state) = wincode::deserialize::<ShardSnapshotState>(&snapshot.replication) {
-        let batch = PositionBatch {
-            tick: 0,
-            snapshots: state
-                .players
-                .into_iter()
-                .map(|player| PositionSnapshot {
-                    entity_id: player.entity_id,
-                    display_name: player.username,
-                    authority: SnapshotAuthority::Owned,
-                    x: 0.0,
-                    y: 0.0,
-                    vx: 0.0,
-                    vy: 0.0,
-                })
-                .collect(),
-        };
-        batch_writer.write(PositionBatchReceived(batch));
     }
 }

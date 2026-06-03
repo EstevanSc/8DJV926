@@ -54,6 +54,7 @@ pub struct ServerConfig {
     pub zone: String,
     pub max_players: usize,
     pub orchestrator_address: SocketAddr,
+    pub shard_boundary: Boundary,
 }
 impl ServerConfig {
     pub fn from_env() -> Self {
@@ -74,6 +75,19 @@ impl ServerConfig {
             .next()
             .expect("No addresses resolved for ORCH_HOST");
 
+        let shard_x = std::env::var("DS_SHARD_CENTER_X")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let shard_y = std::env::var("DS_SHARD_CENTER_Y")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let shard_half_size = std::env::var("DS_SHARD_HALF_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(100.0);
+
         Self {
             // When spawned by the orchestrator DS_ID is injected so the heartbeat
             // key matches the Redis entry created during container spawn.
@@ -91,6 +105,11 @@ impl ServerConfig {
                 .parse::<usize>()
                 .unwrap(),
             orchestrator_address,
+            shard_boundary: Boundary {
+                x: shard_x,
+                y: shard_y,
+                half_size: shard_half_size,
+            },
         }
     }
 }
@@ -105,8 +124,6 @@ pub struct BrokerPeer {
     pub peer: GamePeer,
     pub connection: Option<GameConnection>,
     pub control_stream: Option<GameStream>,
-    pub snapshot_stream: Option<GameStream>,
-    pub shard_uuid: Option<Uuid>,
 }
 
 #[derive(Resource)]
@@ -142,8 +159,6 @@ fn connect_broker(mut commands: Commands, server_config: Res<ServerConfig>) {
                 peer,
                 connection: None,
                 control_stream: None,
-                snapshot_stream: None,
-                shard_uuid: None,
             });
         }
         Err(e) => {
@@ -157,6 +172,7 @@ fn connect_broker(mut commands: Commands, server_config: Res<ServerConfig>) {
 
 fn poll_broker_events(
     mut broker: ResMut<BrokerPeer>,
+    server_config: Res<ServerConfig>,
     mut client_registry: ResMut<PlayerRegistry>,
     sim_tx: Res<SimCommandSender>,
 ) {
@@ -174,9 +190,6 @@ fn poll_broker_events(
                 if let Err(e) = broker.peer.create_stream(connection, GameStreamReliability::Unreliable) {
                     eprintln!("Failed to create broker snapshot stream: {:?}", e);
                 }
-
-                BrokerMessage
-                
             }
             GameNetworkEvent::Message {
                 data,
@@ -195,11 +208,11 @@ fn poll_broker_events(
                 if broker.connection == Some(connection) {
                     if stream.is_reliable() && broker.control_stream.is_none() {
                         broker.control_stream = Some(stream);
-                    } else if !stream.is_reliable() && broker.snapshot_stream.is_none() {
-                        broker.snapshot_stream = Some(stream);
+
+                        subscribe_claim_ownership(&mut broker);
                     }
 
-                    try_announce_shard_creation(&mut broker);
+                    try_announce_shard_creation(&mut broker, &server_config);
                 }
             }
             GameNetworkEvent::Disconnected(connection) => {
@@ -209,13 +222,37 @@ fn poll_broker_events(
                 );
                 broker.connection = None;
                 broker.control_stream = None;
-                broker.snapshot_stream = None;
             }
             GameNetworkEvent::Error { inner, .. } => {
                 eprintln!("Broker network error: {:?}", inner);
             }
             _ => {}
         }
+    }
+}
+
+fn subscribe_claim_ownership(broker: &mut ResMut<BrokerPeer>) {
+    let (Some(connection), Some(control_stream)) = (
+        broker.connection,
+        broker.control_stream.clone(),
+    ) else {
+        return;
+    };
+
+    let topic = Topic::ClaimOwnership(connection.connection_id);
+    let subscribe_message =
+        BrokerMessage::serialize_subscribe(connection.connection_id, topic.to_bytes());
+
+    if let Err(e) = broker
+        .peer
+        .send(&connection, &control_stream, subscribe_message.into())
+    {
+        eprintln!("Failed to subscribe to ClaimOwnership topic: {:?}", e);
+    } else {
+        println!(
+            "Subscribed to ClaimOwnership topic for client_id={}",
+            connection.connection_id
+        );
     }
 }
 
@@ -262,11 +299,7 @@ fn receive_packets(
     }
 }
 
-fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>) {
-    if broker.shard_uuid.is_some() {
-        return;
-    }
-
+fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>, server_config: &Res<ServerConfig>) {
     let (Some(connection), Some(control_stream)) = (
         broker.connection,
         broker.control_stream.clone(),
@@ -274,18 +307,15 @@ fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>) {
         return;
     };
 
-    let shard_uuid = Uuid::new_v4();
-    broker.shard_uuid = Some(shard_uuid);
-
-    let connect_message = BrokerMessage::serialize_connect(shard_uuid);
+    let connect_message = BrokerMessage::serialize_connect(connection.connection_id);
     if let Err(e) = broker.peer.send(&connection, &control_stream, connect_message.into()) {
         eprintln!("Failed to send broker Connect message: {:?}", e);
         return;
     }
 
     let shard_created_payload = ShardCreatedPayload {
-        shard_connection_id: shard_uuid,
-        boundary: Boundary { x: 0.0, y: 0.0, half_size: 100.0 },
+        shard_connection_id: connection.connection_id,
+        boundary: server_config.shard_boundary,
     };
     
     let publish_message = BrokerMessage::serialize_publish(
@@ -298,7 +328,7 @@ fn try_announce_shard_creation(broker: &mut ResMut<BrokerPeer>) {
         return;
     }
 
-    println!("Announced shard creation to broker with shard_uuid={}", shard_uuid);
+    println!("Announced shard creation to broker with shard_connection_id={}", connection.connection_id);
 }
 
 fn handle_message(
@@ -329,7 +359,7 @@ fn handle_broker_message(
 ) {
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
-            Topic::PlayerStartingPosition(client_id) => {
+            Topic::PlayerStartingPositionInShard(client_id) => {
                 if let Some(position_payload) = deserialize_player_starting_position_payload(&payload) {
                     handle_receive_new_player(
                         client_id,
@@ -339,7 +369,7 @@ fn handle_broker_message(
                         sim_tx,
                     );
                 } else {
-                    eprintln!("Failed to decode broker PlayerStartingPosition payload from {:?}", connection.connection_id);
+                    eprintln!("Failed to decode broker PlayerStartingPositionInShard payload from {:?}", connection.connection_id);
                 }
             }
             Topic::EntityPositionUpdate(entity_id) => {

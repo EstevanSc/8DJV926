@@ -79,38 +79,6 @@ pub async fn handler(
         }
     };
 
-    // ── Redis: pick an available game server ────────────────────────────────
-    /*
-    let server = redis_ops::find_available_server(&state.redis)
-        .await
-        .map_err(|e| {
-            tracing::error!("find_available_server failed: {e:#}");
-            err(StatusCode::SERVICE_UNAVAILABLE, "no server available")
-        })?;
-
-    let Some(server) = server else {
-        tracing::warn!("No available server for player '{username}'");
-        return Err(err(StatusCode::SERVICE_UNAVAILABLE, "no server available"));
-    };
-
-    redis_ops::increment_player_count(&state.redis, &server.id)
-        .await
-        .map_err(|e| {
-            tracing::error!("increment_player_count failed: {e:#}");
-            err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server assignment failed",
-            )
-        })?;
-
-    tracing::info!(
-        player_id = %player_id,
-        server_id = %server.id,
-        "Player '{username}' assigned → {}:{}",
-        broker.ip,
-        broker.port,
-    );
-    */
     let broker_ip = std::env::var("BROKER_PUBLIC_IP")
         .or_else(|_| std::env::var("BROKER_IP"))
         .unwrap_or_else(|_| "127.0.0.1".into());
