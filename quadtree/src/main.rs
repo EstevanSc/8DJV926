@@ -517,7 +517,10 @@ async fn replay_player_on_shard(
     broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
 
-    let payload_bytes = serialize_starting_position_payload(&payload);
+    let position_payload = PositionPayload {
+        position: payload.position,
+    };
+    let payload_bytes = serialize_position_payload(&position_payload);
     broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
 
     entity_owners.write().unwrap().insert(player_id, shard_uuid);
@@ -763,6 +766,16 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         *flagged_for_rebuild = true;
     }
 
+
+    // Update the entity's position, should be replaced by the code below when it works
+    if let Some((new_boundary, _)) = new_shard{
+         entity_map.write().unwrap().insert(connection_id, EntityData {
+            position: parsed.position,
+            entities_in_interest,
+            parent_boundary: new_boundary,
+        });
+    }
+/*
     // Phase 2: perform the async handoff check with NO locks held.
     let new_parent_boundary = if let Some((new_boundary, _)) = new_shard
         && let Some((old_boundary, _)) = old_shard
@@ -798,7 +811,7 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         connection_id,
         entity_map,
         shard_map,
-    ).await;
+    ).await;*/
 }
 
 async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMap) {
