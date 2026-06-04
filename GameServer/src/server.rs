@@ -215,7 +215,7 @@ fn poll_broker_events(
                     if stream.is_reliable() && broker.control_stream.is_none() {
                         broker.control_stream = Some(stream);
 
-                        subscribe_claim_ownership(&mut broker);
+                        subscribe_ownership_topics(&mut broker);
                         
                         try_announce_shard_creation(&mut broker, &server_config);
                     }
@@ -238,7 +238,7 @@ fn poll_broker_events(
     }
 }
 
-fn subscribe_claim_ownership(broker: &mut ResMut<BrokerPeer>) {
+fn subscribe_ownership_topics(broker: &mut ResMut<BrokerPeer>) {
     let (Some(connection), Some(control_stream)) = (
         broker.connection,
         broker.control_stream.clone(),
@@ -246,21 +246,25 @@ fn subscribe_claim_ownership(broker: &mut ResMut<BrokerPeer>) {
         return;
     };
 
-    let topic = Topic::ClaimOwnership(connection.connection_id);
-    let subscribe_message =
-        BrokerMessage::serialize_subscribe(connection.connection_id, topic.to_bytes());
+    for topic in [
+        Topic::ClaimOwnership(connection.connection_id),
+        Topic::ReleaseOwnership(connection.connection_id),
+    ] {
+        let subscribe_message =
+            BrokerMessage::serialize_subscribe(connection.connection_id, topic.to_bytes());
 
-    if let Err(e) = broker
-        .peer
-        .send(&connection, &control_stream, subscribe_message.into())
-    {
-        eprintln!("Failed to subscribe to ClaimOwnership topic: {:?}", e);
-    } else {
-        println!(
-            "Subscribed to ClaimOwnership topic for client_id={}",
-            connection.connection_id
-        );
+        if let Err(e) = broker
+            .peer
+            .send(&connection, &control_stream, subscribe_message.into())
+        {
+            eprintln!("Failed to subscribe to ownership topic: {:?}", e);
+        }
     }
+
+    println!(
+        "Subscribed to ownership topics for client_id={}",
+        connection.connection_id
+    );
 }
 
 fn receive_packets(
@@ -392,8 +396,13 @@ fn handle_broker_message(
                 }
             }
             Topic::EntityPositionUpdate(entity_id) => {
-                if client_registry.registry.values().any(|info| info.is_ghost) {
-                    if let Some(position_payload) = deserialize_position_payload(&payload) {
+                let Some(position_payload) = deserialize_position_payload(&payload) else {
+                    eprintln!("Failed to decode EntityPositionUpdate payload for entity_id={}", entity_id);
+                    return;
+                };
+
+                match client_registry.registry.get(&entity_id) {
+                    Some(info) if info.is_ghost => {
                         handle_ghost_position_update(
                             entity_id,
                             position_payload.position[0] as f32,
@@ -402,19 +411,17 @@ fn handle_broker_message(
                             server_config,
                         );
                     }
-                } else {
-                    client_registry.registry.insert(
-                        connection.connection_id,
-                        ClientInfo { is_ghost: true },
-                    );
-                    if let Some(position_payload) = deserialize_position_payload(&payload) {
+                    Some(_) => {
+                        trace!("Ignoring broker position update for locally owned entity_id={}", entity_id);
+                    }
+                    None => {
                         handle_ghost_joined(
-                            connection.connection_id,
-                            connection.connection_id,
+                            entity_id,
+                            entity_id,
                             position_payload.position[0] as f32,
                             position_payload.position[1] as f32,
                             client_registry,
-                            sim_tx
+                            sim_tx,
                         );
                     }
                 }
@@ -441,13 +448,32 @@ fn handle_broker_message(
                     connection_id: client_id,
                 });
             }
-            Topic::ClaimOwnership(client_id) => {
-                trace!("Received ClaimOwnership broadcast for client_id={}", client_id);
-                if let Some(info) = client_registry.registry.get_mut(&client_id) {
+            Topic::ClaimOwnership(shard_id) => {
+                let Ok(connection_id) = Uuid::from_slice(&payload) else {
+                    eprintln!("Received ClaimOwnership for shard_id={} with invalid payload", shard_id);
+                    return;
+                };
+
+                trace!("Received ClaimOwnership broadcast for shard_id={} connection_id={}", shard_id, connection_id);
+                if let Some(info) = client_registry.registry.get_mut(&connection_id) {
                     info.is_ghost = false;
                 }
                 let _ = sim_tx.0.send(crate::net::SimCommand::GhostIsNowLocal {
-                    connection_id: client_id,
+                    connection_id,
+                });
+            }
+            Topic::ReleaseOwnership(shard_id) => {
+                let Ok(connection_id) = Uuid::from_slice(&payload) else {
+                    eprintln!("Received ReleaseOwnership for shard_id={} with invalid payload", shard_id);
+                    return;
+                };
+
+                trace!("Received ReleaseOwnership broadcast for shard_id={} connection_id={}", shard_id, connection_id);
+                if let Some(info) = client_registry.registry.get_mut(&connection_id) {
+                    info.is_ghost = true;
+                }
+                let _ = sim_tx.0.send(crate::net::SimCommand::LocalIsNowGhost {
+                    connection_id,
                 });
             }
             _ => {}

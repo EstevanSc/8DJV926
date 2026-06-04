@@ -10,6 +10,7 @@ pub enum TopicDomain {
     PlayerStartingPositionInShard = 0x03,
     Input = 0x04,
     EntityPositionUpdate = 0x05,
+    ReleaseOwnership = 0xFD,
     Disconnect = 0xFF,
     ClaimOwnership = 0xFE,
 }
@@ -24,7 +25,8 @@ pub enum Topic {
     PlayerStartingPositionInShard(Uuid), 
     Input(Uuid), // For client inputs updates, uuid identifies the client
     Disconnect(Uuid), // For disconnect events
-    ClaimOwnership(Uuid), // For claiming ownership of an entity, uuid the shard
+    ClaimOwnership(Uuid), // Target shard UUID, payload contains entity UUID
+    ReleaseOwnership(Uuid), // Target shard UUID, payload contains entity UUID
 
     //client topics
     EntityPositionUpdate(Uuid), 
@@ -59,6 +61,10 @@ impl Topic {
                 bytes[0] = TopicDomain::Disconnect as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
+            Topic::ReleaseOwnership(uuid) => {
+                bytes[0] = TopicDomain::ReleaseOwnership as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::ClaimOwnership(uuid) => {
                 bytes[0] = TopicDomain::ClaimOwnership as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
@@ -90,6 +96,10 @@ impl Topic {
             0xFF => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::Disconnect(uuid)
+            }
+            0xFD => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::ReleaseOwnership(uuid)
             }
             0xFE => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
