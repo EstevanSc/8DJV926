@@ -2,7 +2,7 @@ use bevy::{ prelude::*};
 
 use common::constants::POSITION_DELTA_THRESHOLD;
 
-use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived};
+use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
@@ -12,7 +12,7 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree)
+                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -51,6 +51,9 @@ struct FollowCamera;
 
 #[derive(Component)]
 struct DebugQuadTree;
+
+#[derive(Component)]
+struct DebugUI;
 
 /// Spawn a camera and a visual floor mesh when entering InGame.
 fn spawn_floor(
@@ -268,20 +271,40 @@ fn spawn_debug_hud(
     mut commands: Commands,
     session: Res<GameSession>,
     broker_conn: Option<Res<BrokerConn>>,
+    mut events: MessageReader<AuthorityDebugPacketReceived>,
+    query: Query<Entity, With<DebugUI>>,
 ) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+
     let connection_id = broker_conn
         .map(|r| r.0.connection_id.to_string())
         .unwrap_or_else(|| "—".to_string());
 
+    // 1. Initialize as an owned, mutable String
+    let mut debug_info = String::new(); 
+
+    // Append all ids in authority debug packets to debug_info
+    for event in events.read() {
+        let sender_id = event.payload.sender_id;
+        
+        // 2. Use the write! macro to efficiently append to the String
+        use std::fmt::Write;
+        let _ = write!(debug_info, "Authority Debug Packets from connections {}\n", sender_id);
+    }
+    
     let info = format!(
-        "Player    : {}\nConnection ID : {}",
+        "Player    : {}\nConnection ID : {}\n{}",
         session.username,
         //session.player_id,
         connection_id,
+        debug_info,
         /*session.server_ip,
         session.server_port,
         session.server_zone,*/
     );
+
 
     commands
         .spawn((
@@ -294,6 +317,7 @@ fn spawn_debug_hud(
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             GameSceneRoot,
+            DebugUI,
         ))
         .with_children(|p| {
             p.spawn((

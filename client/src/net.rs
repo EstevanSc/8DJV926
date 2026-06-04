@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -14,6 +14,7 @@ impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PositionUpdateReceived>()
             .add_message::<QuadtreeBoundariesUpdateReceived>()
+            .add_message::<AuthorityDebugPacketReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -148,6 +149,16 @@ fn poll_net_events(
                         tracing::info!("Subscribed to QuadtreeBoundariesUpdate for player_id={player_id}");
                     }
 
+                    let subscribe_debug = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::AuthorityDebugPacket(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_debug.into()) {
+                        tracing::error!("Failed to subscribe to AuthorityDebugPacket: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to AuthorityDebugPacket for player_id={player_id}");
+                    }
+
                     next_state.set(GameState::InGame);
                 } 
                 else {
@@ -206,10 +217,16 @@ pub struct QuadtreeBoundariesUpdateReceived {
     pub payload: QuadtreeBoundariesUpdatePayload,
 }
 
+#[derive(Message)]
+pub struct AuthorityDebugPacketReceived {
+    pub payload: AuthorityDebugPacketPayload,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     mut update_writer: MessageWriter<PositionUpdateReceived>,
     mut quadtree_update_writer: MessageWriter<QuadtreeBoundariesUpdateReceived>,
+    mut authority_debug_writer: MessageWriter<AuthorityDebugPacketReceived>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -220,7 +237,7 @@ fn receive_packets(
                 match message {
                     BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
                         Topic::EntityPositionUpdate( entity_uuid) => {
-                            tracing::debug!("Received position update for entity {:?}", entity_uuid);
+                            //tracing::debug!("Received position update for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_position_payload(&payload) {
                                 tracing::trace!("Deserialized position update: {:?}", update);
                                 update_writer.write(PositionUpdateReceived {
@@ -234,6 +251,15 @@ fn receive_packets(
                             if let Some(update) = deserialize_quadtree_boundaries_update_payload(&payload) {
                                 tracing::trace!("Deserialized quadtree boundaries update: {:?}", update);
                                 quadtree_update_writer.write(QuadtreeBoundariesUpdateReceived {
+                                    payload: update,
+                                });
+                            }
+                        }
+                        Topic::AuthorityDebugPacket(entity_uuid) => {
+                            tracing::info!("Received authority debug packet from server for entity {:?}", entity_uuid);
+                            if let Some(update) = deserialize_authority_debug_packet_payload(&payload) {
+                                tracing::trace!("Deserialized authority debug packet: {:?}", update);
+                                authority_debug_writer.write(AuthorityDebugPacketReceived {
                                     payload: update,
                                 });
                             }

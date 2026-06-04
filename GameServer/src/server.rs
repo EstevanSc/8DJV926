@@ -2,7 +2,7 @@ use crate::heartbeat::Heartbeat;
 use crate::net::{ConnectedPlayers, SimCommandSender};
 use common::broker_messages::{BrokerMessage, SendingSystem};
 use common::topics::{
-   PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload
+   PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload, AuthorityDebugPacketPayload, serialize_authority_debug_packet_payload
 };
 use common::{Boundary};
 use bevy::prelude::*;
@@ -494,9 +494,26 @@ pub(crate) fn publish_player_position(broker: &BrokerPeer, connection_id: Uuid ,
         &payload_bytes,
     );
 
+    let debug_payload = serialize_authority_debug_packet_payload(&AuthorityDebugPacketPayload {
+        sender_id: connection.connection_id,
+    });
+
+    let debug_message = BrokerMessage::serialize_publish(
+        Topic::AuthorityDebugPacket(connection_id).to_bytes(),
+        &debug_payload,
+    );
+
     if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
         eprintln!(
             "Failed to publish EntityPositionUpdate for client_id={}: {:?}",
+            connection_id,
+            e
+        );
+    }
+
+    if let Err(e) = broker.peer.send(&connection, &control_stream, debug_message.into()) {
+        eprintln!(
+            "Failed to publish AuthorityDebugPacket for client_id={}: {:?}",
             connection_id,
             e
         );

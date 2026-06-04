@@ -14,6 +14,7 @@ pub enum TopicDomain {
     Disconnect = 0xFF,
     ClaimOwnership = 0xFE,
     QuadtreeBoundariesUpdate = 0x06,
+    AuthorityDebugPacket = 0x07,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,8 +31,9 @@ pub enum Topic {
     ReleaseOwnership(Uuid), // Target shard UUID, payload contains entity UUID
 
     //client topics
-    EntityPositionUpdate(Uuid), 
+    EntityPositionUpdate(Uuid),
     QuadtreeBoundariesUpdate,
+    AuthorityDebugPacket(Uuid),
 
     Raw([u8; 32]),     // Fallback
 }
@@ -74,6 +76,10 @@ impl Topic {
             Topic::QuadtreeBoundariesUpdate => {
                 bytes[0] = TopicDomain::QuadtreeBoundariesUpdate as u8;
             }
+            Topic::AuthorityDebugPacket(uuid) => {
+                bytes[0] = TopicDomain::AuthorityDebugPacket as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -111,7 +117,12 @@ impl Topic {
                 Topic::ClaimOwnership(uuid)
              }
             0x06 => Topic::QuadtreeBoundariesUpdate,
+            0x07 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::AuthorityDebugPacket(uuid)
+            }
             _ => Topic::Raw(bytes),
+            
         }
     }
 }
@@ -142,6 +153,11 @@ pub struct QuadtreeBoundariesUpdatePayload {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct InputPayload {
     pub dxdy: [f64; 2],
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct AuthorityDebugPacketPayload {
+    pub sender_id: Uuid,
 }
 
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
@@ -181,5 +197,13 @@ pub fn serialize_quadtree_boundaries_update_payload(payload: &QuadtreeBoundaries
 }
 
 pub fn deserialize_quadtree_boundaries_update_payload(bytes: &[u8]) -> Option<QuadtreeBoundariesUpdatePayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_authority_debug_packet_payload(payload: &AuthorityDebugPacketPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize authority debug packet payload")
+}
+
+pub fn deserialize_authority_debug_packet_payload(bytes: &[u8]) -> Option<AuthorityDebugPacketPayload> {
     wincode::deserialize(bytes).ok()
 }
