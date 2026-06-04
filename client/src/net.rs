@@ -126,7 +126,7 @@ fn poll_net_events(
 
                     let payload = serialize_position_payload(&PositionPayload {
                         connection_id: player_id,
-                        position: [0.0, 0.0],
+                        position: [-50.0, -50.0],
                     });
 
                     let topic = Topic::PlayerStartingPosition.to_bytes();

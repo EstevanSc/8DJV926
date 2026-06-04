@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 type SharedShardSet = Arc<RwLock<HashSet<Boundary>>>;
 type SharedShardMap = Arc<RwLock<HashMap<Boundary, Option<uuid::Uuid>>>>;
 type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, PositionPayload)>>>;
-type SharedEntityMap = Arc<RwLock<HashMap<uuid::Uuid, [f64; 2]>>>;
+type SharedEntityMap = Arc<RwLock<HashMap<uuid::Uuid, EntityData>>>;
 
 const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 1;
 
@@ -30,6 +30,12 @@ struct Config {
     broker_host: String,
     broker_port: u16,
     entity_add_interval_ms: u64,
+    area_of_interest_radius: f64,
+}
+
+struct EntityData {
+    position: [f64; 2],
+    entities_in_interest: HashSet<uuid::Uuid>,
 }
 
 impl Config {
@@ -69,6 +75,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1000),
+            area_of_interest_radius: std::env::var("QUADTREE_AREA_OF_INTEREST_RADIUS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10.0),
         }
     }
 }
@@ -78,8 +88,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let config = Config::from_env();
-    tracing::info!("Quadtree starting with config: world_size={}, max_capacity={}, max_depth={}, nearby_margin={}",
-        config.world_size, config.max_capacity, config.max_depth, config.nearby_margin);
+    tracing::info!("Quadtree starting with config: world_size={}, max_capacity={}, max_depth={}, nearby_margin={}, area_of_interest_radius={}",
+        config.world_size, config.max_capacity, config.max_depth, config.nearby_margin, config.area_of_interest_radius);
 
     // Connect to orchestrator and broker via separate QUIC links.
     let orchestrator_client = match QuicClient::connect_orchestrator(&config.orchestrator_host, config.orchestrator_port).await {
@@ -181,7 +191,7 @@ async fn run_main_loop(
 
             let points: Vec<[f64; 2]> = {
                 let entity_map = entity_map.read().unwrap();
-                entity_map.values().copied().collect()
+                entity_map.values().map(|data| data.position).collect()
             };
 
             quadtree.rebuild(boundary, points);
@@ -195,6 +205,10 @@ async fn run_main_loop(
                     tracing::warn!("No connection to orchestrator, skipping shard configuration update");
                 }
             }
+        }
+
+        if let Some(client) = broker_client.as_ref() {
+            apply_area_of_interest(client, &entity_map).await;
         }
     }
 }
@@ -480,11 +494,16 @@ async fn spawn_player_on_shard(
     //subscribe the quadtree to the player's position updates so it can track which shard they are in
     broker.subscribe(broker.connection_id(), Topic::EntityPositionUpdate(player_id)).await?; 
 
-    entity_map.write().unwrap().insert(player_id, position);
+    let entity_data = EntityData {
+        position,
+        entities_in_interest: HashSet::new(),
+    };
+
+    entity_map.write().unwrap().insert(player_id, entity_data);
 
     let config = Config::from_env();
 
-    if entity_map.read().unwrap().len() == config.max_capacity {
+    if entity_map.read().unwrap().len() >= config.max_capacity {
         *flagged_for_rebuild = true;
     }
 
@@ -545,7 +564,13 @@ async fn process_pending_players(
 
 fn handle_entity_position_update_topic(payload: &[u8], shard_map: &SharedShardMap, entity_map: &SharedEntityMap, flagged_for_rebuild: &mut bool) {
     let Some(parsed) = deserialize_position_payload(payload) else {
+        print!("Failed to deserialize EntityPositionUpdate payload") ;
         return;
+    };
+
+    let entities_in_interest = {
+        let map = entity_map.read().unwrap();
+        map.get(&parsed.connection_id).map(|data| data.entities_in_interest.clone()).unwrap_or_default()
     };
 
     tracing::debug!(
@@ -554,8 +579,8 @@ fn handle_entity_position_update_topic(payload: &[u8], shard_map: &SharedShardMa
     );
 
     //check if the entity has moved into a different shard
-    let entity_map = entity_map.write().unwrap();
-    let old_position = entity_map.get(&parsed.connection_id).cloned();
+    let mut entity_map = entity_map.write().unwrap();
+    let old_position = entity_map.get(&parsed.connection_id).map(|data| data.position);
     
     let old_shard = old_position.and_then(|pos| find_shard_for_position(shard_map, pos[0], pos[1]));
     let new_shard = find_shard_for_position(shard_map, parsed.position[0], parsed.position[1]);
@@ -568,5 +593,79 @@ fn handle_entity_position_update_topic(payload: &[u8], shard_map: &SharedShardMa
             new_shard.and_then(|(_, uuid)| uuid)
         );
         *flagged_for_rebuild = true;
+    }
+
+    entity_map.insert(parsed.connection_id, EntityData {
+        position: parsed.position,
+        entities_in_interest: entities_in_interest
+    });
+}
+
+async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMap) {
+// 1. Calculate all the changes while holding the READ lock
+    let mut pending_updates = Vec::new();
+    
+    {
+        let entity_map_reader = entity_map.read().unwrap();
+        for (entity_id, data) in entity_map_reader.iter() {
+            let mut nearby_entities = HashSet::new();
+            
+            for (other_id, other_data) in entity_map_reader.iter() {
+                if entity_id == other_id { continue; }
+                
+                let dx = data.position[0] - other_data.position[0];
+                let dy = data.position[1] - other_data.position[1];
+                let distance_squared = dx * dx + dy * dy;
+                let radius_squared = Config::from_env().area_of_interest_radius * Config::from_env().area_of_interest_radius;
+                
+                if distance_squared <= radius_squared {
+                    nearby_entities.insert(*other_id);
+                }
+            }
+
+            tracing::debug!(
+                "Entity {:?} has {} nearby entities within area of interest",
+                entity_id,
+                nearby_entities.len()
+            );
+            
+            let new_interests: HashSet<uuid::Uuid> = nearby_entities.difference(&data.entities_in_interest).cloned().collect();
+            let no_longer_in_interest: HashSet<uuid::Uuid> = data.entities_in_interest.difference(&nearby_entities).cloned().collect();
+            
+            if !new_interests.is_empty() || !no_longer_in_interest.is_empty() {
+                // Save the intended state changes to apply AFTER dropping the read lock
+                pending_updates.push((*entity_id, nearby_entities, new_interests, no_longer_in_interest));
+            }
+        }
+    } // READ LOCK DROPS HERE
+
+    // 2. Apply the state changes holding the WRITE lock
+    {
+        let mut entity_map_writer = entity_map.write().unwrap();
+        for (entity_id, nearby_entities, _, _) in &pending_updates {
+            if let Some(data) = entity_map_writer.get_mut(entity_id) {
+                data.entities_in_interest = nearby_entities.clone();
+            }
+        }
+    } // WRITE LOCK DROPS HERE
+
+    for (entity_id, _, new_interests, no_longer_in_interest) in pending_updates {
+        for new_id in new_interests {
+            // Send subscription message for new_id to the client
+            if let Err(e) = broker.subscribe(entity_id, Topic::EntityPositionUpdate(new_id)).await {
+                tracing::error!("Failed to subscribe to position updates for entity {:?}: {}", new_id, e);
+            } else {
+                tracing::info!("Subscribed to position updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
+            }
+        }
+
+        for old_id in no_longer_in_interest {
+            // Send unsubscription message for old_id to the client
+            if let Err(e) = broker.unsubscribe(entity_id, Topic::EntityPositionUpdate(old_id)).await {
+                tracing::error!("Failed to unsubscribe from position updates for entity {:?}: {}", old_id, e);
+            } else {
+                tracing::info!("Unsubscribed from position updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
+            }
+        }
     }
 }

@@ -137,7 +137,8 @@ impl BrokerState {
 
             let topic_desc = Topic::from_bytes(topic);
             match topic_desc {
-                //Topic::Input(_) => {}
+                Topic::Input(_) => {}
+                Topic::EntityPositionUpdate(_) => {}
                 _ => println!("Broker: publishing {:?} to {} subscribers. The ids of the subscribers are {:?}", topic_desc, subscribers.len(), subscribers.iter().map(|c| c.connection_id).collect::<Vec<_>>()),
             }
 
