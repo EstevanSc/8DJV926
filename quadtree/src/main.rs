@@ -1,7 +1,7 @@
 mod quic_client;
 use common::{Boundary, Quadrant};
 use common::topics::{
-    PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, deserialize_shard_created_payload, serialize_position_payload, deserialize_starting_position_payload
+    PositionPayload, StartingPositionPayload, QuadtreeBoundariesUpdatePayload, Topic, deserialize_position_payload, deserialize_shard_created_payload, serialize_position_payload, deserialize_starting_position_payload, serialize_quadtree_boundaries_update_payload
 };
 use common::BrokerMessage;
 use game_sockets::GameNetworkEvent;
@@ -206,6 +206,16 @@ async fn run_main_loop(
               process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild).await;
         }
 
+        let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
+                    //broadcast the new shard boundaries to all connected clients
+        let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
+            margin: config.nearby_margin as f32,
+            boundaries: new_boundaries.clone(),
+        });
+        if let Some(broker) = broker_client.as_ref() {
+            broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+        }
+
         if flagged_for_rebuild {
             tracing::info!("Rebuilding quadtree due to shard changes...");
 
@@ -219,12 +229,12 @@ async fn run_main_loop(
             quadtree.rebuild(boundary, points);
 
             let new_shard_set = shard_set.read().unwrap().clone();
+
             if new_shard_set != old_shard_set {
                 tracing::info!("Shard set changed after rebuild, sending updated configuration to orchestrator...");
-                if let Some(client) = orchestrator_client.as_ref() {
-                    let new_boundaries: Vec<Boundary> = new_shard_set.into_iter().collect();
+                if let Some(client) = orchestrator_client.as_ref() {       
                     send_server_configuration_update(client, new_boundaries.clone()).await?;
-                    stage_pending_shard_spawns(&pending_shard_spawns, &entity_map, new_boundaries).await;
+                    stage_pending_shard_spawns(&pending_shard_spawns, &entity_map, new_boundaries.clone()).await;
                 } else {
                     tracing::warn!("No connection to orchestrator, skipping shard configuration update");
                 }

@@ -13,13 +13,14 @@ pub enum TopicDomain {
     ReleaseOwnership = 0xFD,
     Disconnect = 0xFF,
     ClaimOwnership = 0xFE,
+    QuadtreeBoundariesUpdate = 0x06,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Topic {
     //Quadtree topics
     ShardCreated,       
-    PlayerStartingPosition, 
+    PlayerStartingPosition,
 
     //server topics
     PlayerStartingPositionInShard(Uuid), 
@@ -30,6 +31,7 @@ pub enum Topic {
 
     //client topics
     EntityPositionUpdate(Uuid), 
+    QuadtreeBoundariesUpdate,
 
     Raw([u8; 32]),     // Fallback
 }
@@ -69,6 +71,9 @@ impl Topic {
                 bytes[0] = TopicDomain::ClaimOwnership as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
              }
+            Topic::QuadtreeBoundariesUpdate => {
+                bytes[0] = TopicDomain::QuadtreeBoundariesUpdate as u8;
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -105,6 +110,7 @@ impl Topic {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::ClaimOwnership(uuid)
              }
+            0x06 => Topic::QuadtreeBoundariesUpdate,
             _ => Topic::Raw(bytes),
         }
     }
@@ -125,6 +131,12 @@ pub struct PositionPayload {
 pub struct StartingPositionPayload {
     pub connection_id: Uuid,
     pub position: [f64; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct QuadtreeBoundariesUpdatePayload {
+    pub margin: f32,
+    pub boundaries: Vec<Boundary>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
@@ -161,5 +173,13 @@ pub fn serialize_starting_position_payload(payload: &StartingPositionPayload) ->
 }
 
 pub fn deserialize_starting_position_payload(bytes: &[u8]) -> Option<StartingPositionPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_quadtree_boundaries_update_payload(payload: &QuadtreeBoundariesUpdatePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize quadtree boundaries update payload")
+}
+
+pub fn deserialize_quadtree_boundaries_update_payload(bytes: &[u8]) -> Option<QuadtreeBoundariesUpdatePayload> {
     wincode::deserialize(bytes).ok()
 }

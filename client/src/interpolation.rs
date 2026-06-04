@@ -1,8 +1,8 @@
-use bevy::prelude::*;
+use bevy::{ prelude::*};
 
 use common::constants::POSITION_DELTA_THRESHOLD;
 
-use super::net::{BrokerConn, PositionUpdateReceived};
+use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
@@ -12,7 +12,7 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player)
+                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -48,6 +48,10 @@ pub struct GameSceneRoot;
 #[derive(Component)]
 struct FollowCamera;
 
+
+#[derive(Component)]
+struct DebugQuadTree;
+
 /// Spawn a camera and a visual floor mesh when entering InGame.
 fn spawn_floor(
     mut commands: Commands,
@@ -62,6 +66,76 @@ fn spawn_floor(
         GameSceneRoot,
     ));
 }
+
+fn draw_debug_quad_tree(mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut events: MessageReader<QuadtreeBoundariesUpdateReceived>,
+    query: Query<Entity, With<DebugQuadTree>>,
+) {
+    let color_array = [Color::srgba(1.0, 0.0, 0.0, 0.125), Color::srgba(0.0, 1.0, 0.0, 0.125), Color::srgba(0.0, 0.0, 1.0, 0.125), Color::srgba(1.0, 1.0, 0.0, 0.125)];
+
+    let margin_color_array  = [Color::srgba(1.0, 0.0, 0.0, 0.125), Color::srgba(0.0, 1.0, 0.0, 0.125), Color::srgba(0.0, 0.0, 1.0, 0.125), Color::srgba(1.0, 1.0, 0.0, 0.125)];
+    for update in events.read() {
+        for entity in query.iter() {
+            commands.entity(entity).despawn();
+        }
+        let margin = update.payload.margin;
+        for (i, boundary) in update.payload.boundaries.iter().enumerate() {
+            let center = Vec2::new(boundary.x as f32, boundary.y as f32);
+            let size = Vec2::new((boundary.half_size * 2.0 - margin as f64 * 2.0) as f32, (boundary.half_size * 2.0 - margin as f64 * 2.0) as f32);
+            let color = color_array[i % color_array.len()];
+            commands.spawn((
+                Mesh2d(meshes.add(Rectangle::new(size.x, size.y))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+                Transform::from_translation(center.extend(0.0)),
+                GameSceneRoot,
+                DebugQuadTree
+            ));
+
+            let margin_color = margin_color_array[i % margin_color_array.len()];
+            //top margin
+            let outer_size = Vec2::new(size.x + margin * 2.0, margin);
+            let top_center = Vec2::new(center.x, center.y + boundary.half_size as f32 + margin / 2.0);
+            commands.spawn((
+                Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
+                Transform::from_translation(top_center.extend(0.0)),
+                GameSceneRoot,
+                DebugQuadTree
+            ));
+            //bottom margin
+            let bottom_center = Vec2::new(center.x, center.y - boundary.half_size as f32 - margin / 2.0);
+            commands.spawn((
+                Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
+                Transform::from_translation(bottom_center.extend(0.0)),
+                GameSceneRoot,
+                DebugQuadTree
+            ));
+            //left margin
+            let outer_size = Vec2::new(margin, size.y + margin * 2.0);
+            let left_center = Vec2::new(center.x - boundary.half_size as f32 - margin / 2.0, center.y);
+            commands.spawn((
+                Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
+                Transform::from_translation(left_center.extend(0.0)),
+                GameSceneRoot,
+                DebugQuadTree
+            ));
+            //right margin
+            let right_center = Vec2::new(center.x + boundary.half_size as f32 + margin / 2.0, center.y);
+            commands.spawn((
+                Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
+                Transform::from_translation(right_center.extend(0.0)),
+                GameSceneRoot,
+                DebugQuadTree
+            ));
+        }
+    }
+}
+
 
 fn follow_local_player(
     broker_conn: Option<Res<BrokerConn>>,
@@ -200,9 +274,9 @@ fn spawn_debug_hud(
         .unwrap_or_else(|| "—".to_string());
 
     let info = format!(
-        "Player    : {}\nPlayer ID : {}\nConnection ID : {}",
+        "Player    : {}\nConnection ID : {}",
         session.username,
-        session.player_id,
+        //session.player_id,
         connection_id,
         /*session.server_ip,
         session.server_port,
@@ -232,3 +306,4 @@ fn spawn_debug_hud(
             ));
         });
 }
+

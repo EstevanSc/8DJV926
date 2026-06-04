@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -13,6 +13,7 @@ pub struct ClientNetPlugin;
 impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PositionUpdateReceived>()
+            .add_message::<QuadtreeBoundariesUpdateReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -137,6 +138,16 @@ fn poll_net_events(
                         tracing::info!("Sent initial baseline StartingPosition Publish for player_id={player_id}");
                     }
 
+                    let subscribe_quadtree = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::QuadtreeBoundariesUpdate.to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_quadtree.into()) {
+                        tracing::error!("Failed to subscribe to QuadtreeBoundariesUpdate: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to QuadtreeBoundariesUpdate for player_id={player_id}");
+                    }
+
                     next_state.set(GameState::InGame);
                 } 
                 else {
@@ -188,10 +199,17 @@ pub struct PositionUpdateReceived {
     pub connection_id: uuid::Uuid,
     pub payload: PositionPayload,
 }
+    
+/// Message emitted when a quadtree boundaries update arrives from the server.
+#[derive(Message)]
+pub struct QuadtreeBoundariesUpdateReceived {
+    pub payload: QuadtreeBoundariesUpdatePayload,
+}
 
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     mut update_writer: MessageWriter<PositionUpdateReceived>,
+    mut quadtree_update_writer: MessageWriter<QuadtreeBoundariesUpdateReceived>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -207,6 +225,15 @@ fn receive_packets(
                                 tracing::trace!("Deserialized position update: {:?}", update);
                                 update_writer.write(PositionUpdateReceived {
                                     connection_id: entity_uuid,
+                                    payload: update,
+                                });
+                            }
+                        }
+                        Topic::QuadtreeBoundariesUpdate => {
+                            tracing::info!("Received quadtree boundaries update from server");
+                            if let Some(update) = deserialize_quadtree_boundaries_update_payload(&payload) {
+                                tracing::trace!("Deserialized quadtree boundaries update: {:?}", update);
+                                quadtree_update_writer.write(QuadtreeBoundariesUpdateReceived {
                                     payload: update,
                                 });
                             }
