@@ -12,7 +12,7 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels)
+                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -45,19 +45,49 @@ pub struct RemotePlayerLabel {
 #[derive(Component)]
 pub struct GameSceneRoot;
 
+#[derive(Component)]
+struct FollowCamera;
+
 /// Spawn a camera and a visual floor mesh when entering InGame.
 fn spawn_floor(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    commands.spawn((Camera2d, GameSceneRoot));
+    commands.spawn((Camera2d, FollowCamera, GameSceneRoot));
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::new(4000.0, 32.0))),
         MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(0.25, 0.22, 0.18)))),
         Transform::from_translation(Vec3::new(0.0, -300.0, 0.0)),
         GameSceneRoot,
     ));
+}
+
+fn follow_local_player(
+    broker_conn: Option<Res<BrokerConn>>,
+    player_query: Query<(&RemotePlayer, &Transform), Without<FollowCamera>>,
+    mut camera_query: Query<&mut Transform, (With<Camera>, With<FollowCamera>, Without<RemotePlayer>)>,
+    time: Res<Time>,
+) {
+    let Some(broker_conn) = broker_conn else { return };
+    let my_id = broker_conn.0.connection_id;
+
+    let Some((_, player_transform)) = player_query
+        .iter()
+        .find(|(player, _)| player.connection_id == my_id)
+    else {
+        return;
+    };
+
+    let Ok(mut camera_transform) = camera_query.single_mut() else { return };
+
+    let target = Vec3::new(
+        player_transform.translation.x,
+        player_transform.translation.y,
+        camera_transform.translation.z,
+    );
+
+    camera_transform.translation = target;
 }
 
 /// Spawn a circle for each new entity_id seen in position batches.
