@@ -18,7 +18,7 @@ type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, StartingPo
 type SharedEntityMap = Arc<RwLock<HashMap<uuid::Uuid, EntityData>>>;
 type SharedEntityOwners = Arc<RwLock<HashMap<uuid::Uuid, uuid::Uuid>>>;
 
-const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 1;
+const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 15;
 
 /// Load configuration from environment variables with defaults.
 struct Config {
@@ -229,12 +229,13 @@ async fn run_main_loop(
             quadtree.rebuild(boundary, points);
 
             let new_shard_set = shard_set.read().unwrap().clone();
+            let rebuilt_boundaries: Vec<Boundary> = new_shard_set.iter().copied().collect();
 
             if new_shard_set != old_shard_set {
                 tracing::info!("Shard set changed after rebuild, sending updated configuration to orchestrator...");
                 if let Some(client) = orchestrator_client.as_ref() {       
-                    send_server_configuration_update(client, new_boundaries.clone()).await?;
-                    stage_pending_shard_spawns(&pending_shard_spawns, &entity_map, new_boundaries.clone()).await;
+                    send_server_configuration_update(client, rebuilt_boundaries.clone()).await?;
+                    stage_pending_shard_spawns(&pending_shard_spawns, &entity_map, rebuilt_boundaries).await;
                 } else {
                     tracing::warn!("No connection to orchestrator, skipping shard configuration update");
                 }
@@ -357,20 +358,8 @@ impl Quadtree {
     fn split(&mut self) {
         let boundaries = self.boundary.subdivide();
 
-        {
-            let mut set = self.shard_set.write().unwrap();
-            set.remove(&self.boundary);
-            for b in boundaries {
-                set.insert(b);
-            }
-        }
-        {
-            let mut map = self.shard_map.write().unwrap();
-            map.remove(&self.boundary);
-            for b in boundaries {
-                map.entry(b).or_insert(None);
-            }
-        }
+        // REMOVE the shard_set and shard_map write locks from here!
+        // They cause premature state updates during incremental insertions.
 
         let mut children = [
             Box::new(Quadtree::new(boundaries[0], self.depth + 1, self.max_depth, self.max_capacity, self.shard_set.clone(), self.shard_map.clone())),
@@ -405,24 +394,51 @@ impl Quadtree {
     }
 
     fn rebuild(&mut self, boundary: Boundary, points: Vec<[f64; 2]>) {
-
+        // 1. Reset structure
+        self.boundary = boundary;
         self.points.clear();
-        self.points.extend(points);
         self.children = None;
 
+        // 2. Build the entire tree structure recursively
+        for point in points {
+            self.insert(point);
+        }
+
+        // 3. Collect the resulting leaf boundaries
+        let mut final_leaves = Vec::new();
+        self.collect_leaf_boundaries(&mut final_leaves);
+
+        // 4. Update shard_set all at once
         {
             let mut set = self.shard_set.write().unwrap();
             set.clear();
-            set.insert(boundary);
+            for leaf in &final_leaves {
+                set.insert(*leaf);
+            }
         }
 
+        // 5. Sync shard_map without wiping out existing UUID connections
         {
             let mut map = self.shard_map.write().unwrap();
-            map.clear();
-            map.insert(boundary, None);
+            let old_map = mem::take(&mut *map);
+            
+            for leaf in final_leaves {
+                // Retain the existing Shard UUID connection if we already have it
+                let existing_uuid = old_map.get(&leaf).and_then(|id| *id);
+                map.insert(leaf, existing_uuid);
+            }
         }
+    }
 
-        self.split();
+    // Recursively find all leaf nodes (nodes with no children)
+    fn collect_leaf_boundaries(&self, vec: &mut Vec<Boundary>) {
+        if let Some(ref children) = self.children {
+            for child in children {
+                child.collect_leaf_boundaries(vec);
+            }
+        } else {
+            vec.push(self.boundary);
+        }
     }
 }
 
