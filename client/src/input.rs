@@ -78,7 +78,6 @@ fn send_input(
     }
     
     let payload = serialize_input_payload(&InputPayload {
-        connection_id: broker_conn.0.connection_id,
         dxdy: [dx, dy],
     });
 

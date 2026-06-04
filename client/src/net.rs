@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, Topic, serialize_position_payload, deserialize_position_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -124,7 +124,7 @@ fn poll_net_events(
                         tracing::info!("Subscribed to EntityPositionUpdate for player_id={player_id}");
                     }
 
-                    let payload = serialize_position_payload(&PositionPayload {
+                    let payload = serialize_starting_position_payload(&StartingPositionPayload {
                         connection_id: player_id,
                         position: [-50.0, -50.0],
                     });
@@ -184,7 +184,10 @@ fn tick_connect_timeout(
 
 /// Message emitted when an entity position update arrives from the server.
 #[derive(Message)]
-pub struct PositionUpdateReceived(pub PositionPayload);
+pub struct PositionUpdateReceived {
+    pub connection_id: uuid::Uuid,
+    pub payload: PositionPayload,
+}
 
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
@@ -202,7 +205,10 @@ fn receive_packets(
                             tracing::debug!("Received position update for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_position_payload(&payload) {
                                 tracing::trace!("Deserialized position update: {:?}", update);
-                                update_writer.write(PositionUpdateReceived(update));
+                                update_writer.write(PositionUpdateReceived {
+                                    connection_id: entity_uuid,
+                                    payload: update,
+                                });
                             }
                         }
                         _ => {}

@@ -2,7 +2,7 @@ use crate::heartbeat::Heartbeat;
 use crate::net::{ConnectedPlayers, SimCommandSender};
 use common::broker_messages::{BrokerMessage, SendingSystem};
 use common::topics::{
-   ClaimOwnershipPayload, PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload
+   PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload
 };
 use common::{Boundary};
 use bevy::prelude::*;
@@ -456,7 +456,7 @@ fn handle_broker_message(
     }
 }
 
-pub(crate) fn publish_player_position(broker: &BrokerPeer, position_payload: PositionPayload) {
+pub(crate) fn publish_player_position(broker: &BrokerPeer, connection_id: Uuid ,position_payload: PositionPayload) {
     let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
         return;
     };
@@ -464,14 +464,14 @@ pub(crate) fn publish_player_position(broker: &BrokerPeer, position_payload: Pos
     let payload_bytes = serialize_position_payload(&position_payload); 
 
     let publish_message = BrokerMessage::serialize_publish(
-        Topic::EntityPositionUpdate(position_payload.connection_id).to_bytes(),
+        Topic::EntityPositionUpdate(connection_id).to_bytes(),
         &payload_bytes,
     );
 
     if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
         eprintln!(
             "Failed to publish EntityPositionUpdate for client_id={}: {:?}",
-            position_payload.connection_id,
+            connection_id,
             e
         );
     }

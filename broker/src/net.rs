@@ -5,7 +5,6 @@ use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, 
 use game_sockets::protocols::QuicBackend;
 use common::broker_messages::{BrokerMessage};
 use common::topics::Topic;
-use common::topics::{DisconnectPayload, serialize_disconnect_payload};
 
 pub struct BrokerConfig {
     pub ip: String,
@@ -73,9 +72,8 @@ impl BrokerState {
                     println!("Disconnected! Connection id: {:?}", conn.connection_id);
                     if self.connections.remove(&conn) {
                         let connection_id = conn.connection_id;
-                        let disconnected_payload = serialize_disconnect_payload(&DisconnectPayload { connection_id });
                         let topic = Topic::Disconnect(connection_id).to_bytes();
-                        self.publish(topic, disconnected_payload);
+                        self.publish(topic, Vec::new());
 
                         for subscribers in self.subscriptions.values_mut() {
                             subscribers.remove(&conn);

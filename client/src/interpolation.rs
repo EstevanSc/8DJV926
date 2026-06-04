@@ -67,7 +67,6 @@ fn follow_local_player(
     broker_conn: Option<Res<BrokerConn>>,
     player_query: Query<(&RemotePlayer, &Transform), Without<FollowCamera>>,
     mut camera_query: Query<&mut Transform, (With<Camera>, With<FollowCamera>, Without<RemotePlayer>)>,
-    time: Res<Time>,
 ) {
     let Some(broker_conn) = broker_conn else { return };
     let my_id = broker_conn.0.connection_id;
@@ -103,10 +102,10 @@ fn spawn_remote_players(
 ) {
     let my_connection_id = broker_conn.map(|r| r.0.connection_id);
     for update in events.read() {
-        let connection_id = update.0.connection_id;
+        let connection_id = update.connection_id;
         let already_exists = existing.iter().any(|r| r.connection_id == connection_id);
         if !already_exists {
-            let pos = Vec2::new(update.0.position[0] as f32, update.0.position[1] as f32);
+            let pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
             let is_me = my_connection_id == Some(connection_id);
             let color = if is_me {
                 Color::srgb(0.2, 1.0, 0.2) // green = local player
@@ -116,7 +115,7 @@ fn spawn_remote_players(
             let name = format!("Entity {}", connection_id);
             commands.spawn((
                 RemotePlayer {
-                    connection_id: update.0.connection_id,
+                    connection_id: update.connection_id,
                     target: pos,
                     prev: pos,
                 },
@@ -131,7 +130,7 @@ fn spawn_remote_players(
                     TextColor(Color::WHITE),
                     Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
                     RemotePlayerLabel {
-                        connection_id: update.0.connection_id,
+                        connection_id: update.connection_id,
                         display_name: name,
                     },
                 ));
@@ -149,8 +148,8 @@ fn interpolate_remote_players(
     // Apply latest update target for each incoming entity position.
     for update in events.read() {
         for (mut remote, _) in &mut query {
-            if remote.connection_id == update.0.connection_id {
-                let new_pos = Vec2::new(update.0.position[0] as f32, update.0.position[1] as f32);
+            if remote.connection_id == update.connection_id {
+                let new_pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
                 if (new_pos - remote.target).length() > POSITION_DELTA_THRESHOLD {
                     remote.prev = remote.target;
                     remote.target = new_pos;

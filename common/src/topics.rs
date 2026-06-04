@@ -108,24 +108,18 @@ pub struct ShardCreatedPayload {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct PositionPayload {
+    pub position: [f64; 2],
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct StartingPositionPayload {
     pub connection_id: Uuid,
     pub position: [f64; 2],
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct InputPayload {
-    pub connection_id: Uuid,
     pub dxdy: [f64; 2],
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
-pub struct DisconnectPayload {
-    pub connection_id: Uuid,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
-pub struct ClaimOwnershipPayload {
-    pub connection_id: Uuid,
 }
 
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
@@ -152,18 +146,10 @@ pub fn deserialize_input_payload(bytes: &[u8]) -> Option<InputPayload> {
     wincode::deserialize(bytes).ok()
 }
 
-pub fn serialize_disconnect_payload(payload: &DisconnectPayload) -> Vec<u8> {
-    wincode::serialize(payload).expect("failed to serialize disconnect payload")
+pub fn serialize_starting_position_payload(payload: &StartingPositionPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize starting position payload")
 }
 
-pub fn deserialize_disconnect_payload(bytes: &[u8]) -> Option<DisconnectPayload> {
-    wincode::deserialize(bytes).ok()
-}
-
-pub fn serialize_claim_ownership_payload(payload: &ClaimOwnershipPayload) -> Vec<u8> {
-    wincode::serialize(payload).expect("failed to serialize claim ownership payload")
-}
-
-pub fn deserialize_claim_ownership_payload(bytes: &[u8]) -> Option<ClaimOwnershipPayload> {
+pub fn deserialize_starting_position_payload(bytes: &[u8]) -> Option<StartingPositionPayload> {
     wincode::deserialize(bytes).ok()
 }

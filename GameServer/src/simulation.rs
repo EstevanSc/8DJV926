@@ -177,16 +177,18 @@ fn publish_entity_positions(
         return;
     };
 
-    let position_payloads = query.iter().enumerate().map(|(_i, (transform, net_entity))| {
-    PositionPayload {
-        connection_id: net_entity.connection_id,
-        position: [transform.translation.x as f64, transform.translation.y as f64],
+let position_payloads = query
+    .iter()
+    .map(|(transform, net_entity)| (net_entity.connection_id, PositionPayload {
+        position: [
+            transform.translation.x as f64,
+            transform.translation.y as f64,
+        ],
+    }))
+    .collect::<Vec<(uuid::Uuid, PositionPayload)>>();
 
-        }
-    }).collect::<Vec<_>>();
-
-    for snapshot in position_payloads {
-        publish_player_position(&broker, snapshot);
+    for (connection_id, position_payload) in position_payloads {
+        publish_player_position(&broker, connection_id, position_payload);
     }
 }
 
