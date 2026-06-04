@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 
 type SharedShardSet = Arc<RwLock<HashSet<Boundary>>>;
 type SharedShardMap = Arc<RwLock<HashMap<Boundary, Option<uuid::Uuid>>>>;
+type SharedPendingShardSpawns = Arc<tokio::sync::Mutex<HashMap<Boundary, Vec<PositionPayload>>>>;
 type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, PositionPayload)>>>;
 type SharedEntityMap = Arc<RwLock<HashMap<uuid::Uuid, EntityData>>>;
+type SharedEntityOwners = Arc<RwLock<HashMap<uuid::Uuid, uuid::Uuid>>>;
 
 const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 1;
 
@@ -117,10 +119,23 @@ async fn main() -> anyhow::Result<()> {
 
     let shard_set: SharedShardSet = Arc::new(RwLock::new(HashSet::new()));
     let shard_map: SharedShardMap = Arc::new(RwLock::new(HashMap::new()));
+    let pending_shard_spawns: SharedPendingShardSpawns = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let pending_players: SharedPendingPlayers = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
     let entity_map: SharedEntityMap = Arc::new(RwLock::new(HashMap::new()));
+    let entity_owners: SharedEntityOwners = Arc::new(RwLock::new(HashMap::new()));
 
-    run_main_loop(config, orchestrator_client, broker_client, shard_set, shard_map, pending_players, entity_map).await
+    run_main_loop(
+        config,
+        orchestrator_client,
+        broker_client,
+        shard_set,
+        shard_map,
+        pending_shard_spawns,
+        pending_players,
+        entity_map,
+        entity_owners,
+    )
+    .await
 }
 
 
@@ -130,8 +145,10 @@ async fn run_main_loop(
     broker_client: Option<QuicClient>,
     shard_set: SharedShardSet,
     shard_map: SharedShardMap,
+    pending_shard_spawns: SharedPendingShardSpawns,
     pending_players: SharedPendingPlayers,
     entity_map: SharedEntityMap,
+    entity_owners: SharedEntityOwners,
 ) -> anyhow::Result<()> {
     let boundary = Boundary {
         x: 0.0,
@@ -177,11 +194,15 @@ async fn run_main_loop(
         let mut flagged_for_rebuild = false;
 
         if let Some(client) = broker_client.as_mut() {
-              poll_quic_events(client, "broker", &shard_map, &pending_players, &entity_map, &mut flagged_for_rebuild)?;
+              poll_quic_events(client, "broker", &shard_map, &pending_shard_spawns, &pending_players, &entity_map, &mut flagged_for_rebuild)?;
         }
 
+          if let Some(client) = broker_client.as_ref() {
+            process_pending_shard_spawns(client, &pending_shard_spawns, &shard_map, &entity_owners).await;
+          }
+
         if let Some(client) = broker_client.as_ref() {
-              process_pending_players(&pending_players, client, &shard_map, &entity_map, &mut flagged_for_rebuild).await;
+              process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild).await;
         }
 
         if flagged_for_rebuild {
@@ -200,7 +221,9 @@ async fn run_main_loop(
             if new_shard_set != old_shard_set {
                 tracing::info!("Shard set changed after rebuild, sending updated configuration to orchestrator...");
                 if let Some(client) = orchestrator_client.as_ref() {
-                    send_server_configuration_update(client, new_shard_set.into_iter().collect()).await?;
+                    let new_boundaries: Vec<Boundary> = new_shard_set.into_iter().collect();
+                    send_server_configuration_update(client, new_boundaries.clone()).await?;
+                    stage_pending_shard_spawns(&pending_shard_spawns, &entity_map, new_boundaries).await;
                 } else {
                     tracing::warn!("No connection to orchestrator, skipping shard configuration update");
                 }
@@ -217,6 +240,7 @@ fn poll_quic_events(
     client: &mut QuicClient,
     label: &str,
     shard_map: &SharedShardMap,
+    pending_shard_spawns: &SharedPendingShardSpawns,
     pending_players: &SharedPendingPlayers,
     entity_map: &SharedEntityMap,
     flagged_for_rebuild: &mut bool,
@@ -232,7 +256,7 @@ fn poll_quic_events(
                     stream.stream_id
                 );
 
-                handle_quic_message(&data, shard_map, pending_players, entity_map, flagged_for_rebuild);
+                handle_quic_message(&data, shard_map, pending_shard_spawns, pending_players, entity_map, flagged_for_rebuild);
             }
             _ => {}
         }
@@ -395,19 +419,132 @@ async fn send_server_configuration_update(client: &QuicClient, boundaries: Vec<B
     Ok(())
 }
 
-fn handle_quic_message(data: &[u8], shard_map: &SharedShardMap, pending_players: &SharedPendingPlayers, entity_map: &SharedEntityMap, flagged_for_rebuild: &mut bool) {
-    let Some(message) = common::BrokerMessage::deserialize(data) else {
+async fn stage_pending_shard_spawns(
+    pending_shard_spawns: &SharedPendingShardSpawns,
+    entity_map: &SharedEntityMap,
+    boundaries: Vec<Boundary>,
+) {
+    let mut staged: HashMap<Boundary, Vec<PositionPayload>> = HashMap::new();
+
+    {
+        let entities = entity_map.read().unwrap();
+        for (entity_id, data) in entities.iter() {
+            if let Some(boundary) = boundaries
+                .iter()
+                .copied()
+                .find(|boundary| boundary.contains(&data.position[0], &data.position[1]))
+            {
+                staged.entry(boundary).or_default().push(PositionPayload {
+                    connection_id: *entity_id,
+                    position: data.position,
+                });
+            }
+        }
+    }
+
+    let mut pending = pending_shard_spawns.lock().await;
+    pending.clear();
+    pending.extend(staged);
+}
+
+async fn process_pending_shard_spawns(
+    broker: &QuicClient,
+    pending_shard_spawns: &SharedPendingShardSpawns,
+    shard_map: &SharedShardMap,
+    entity_owners: &SharedEntityOwners,
+) {
+    let ready = {
+        let pending = pending_shard_spawns.lock().await;
+        let shard_map = shard_map.read().unwrap();
+
+        pending
+            .iter()
+            .filter_map(|(boundary, payloads)| {
+                shard_map.get(boundary).and_then(|maybe_uuid| {
+                    maybe_uuid.map(|shard_uuid| (*boundary, shard_uuid, payloads.clone()))
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if ready.is_empty() {
+        return;
+    }
+
+    {
+        let mut pending = pending_shard_spawns.lock().await;
+        for (boundary, _, _) in &ready {
+            pending.remove(boundary);
+        }
+    }
+
+    for (_, shard_uuid, payloads) in ready {
+        for payload in payloads {
+            if let Err(e) = replay_player_on_shard(broker, shard_uuid, payload, entity_owners).await {
+                tracing::error!(
+                    "Failed to replay player_id={} on shard_uuid={}: {}",
+                    payload.connection_id,
+                    shard_uuid,
+                    e
+                );
+            }
+        }
+    }
+}
+
+async fn replay_player_on_shard(
+    broker: &QuicClient,
+    shard_uuid: uuid::Uuid,
+    payload: PositionPayload,
+    entity_owners: &SharedEntityOwners,
+) -> anyhow::Result<()> {
+    let player_id = payload.connection_id;
+
+    let old_owner = {
+        let owners = entity_owners.read().unwrap();
+        owners.get(&player_id).copied()
+    };
+
+    if let Some(old_owner) = old_owner {
+        if old_owner != shard_uuid {
+            broker.unsubscribe(old_owner, Topic::PlayerStartingPositionInShard(player_id)).await?;
+            broker.unsubscribe(old_owner, Topic::Input(player_id)).await?;
+            broker.unsubscribe(old_owner, Topic::Disconnect(player_id)).await?;
+        }
+    }
+
+    broker.subscribe(shard_uuid, Topic::PlayerStartingPositionInShard(player_id)).await?;
+    broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
+    broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
+
+    let payload_bytes = serialize_position_payload(&payload);
+    broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
+
+    entity_owners.write().unwrap().insert(player_id, shard_uuid);
+
+    Ok(())
+}
+
+fn handle_quic_message(
+    data: &[u8],
+    shard_map: &SharedShardMap,
+    pending_shard_spawns: &SharedPendingShardSpawns,
+    pending_players: &SharedPendingPlayers,
+    entity_map: &SharedEntityMap,
+    flagged_for_rebuild: &mut bool,
+) {
+    let Some(message) = BrokerMessage::deserialize(data) else {
         return;
     };
 
     match message {
-        common::BrokerMessage::Broadcast { topic, payload }
-        | common::BrokerMessage::Publish { topic, payload } => {
+        BrokerMessage::Broadcast { topic, payload }
+        | BrokerMessage::Publish { topic, payload } => {
             match Topic::from_bytes(topic) {
                 Topic::PlayerStartingPosition => {
                     handle_player_starting_position_topic(&payload, pending_players);
                 }
-                Topic::ShardCreated => handle_shard_created_topic(&payload, shard_map),
+                Topic::ShardCreated => handle_shard_created_topic(&payload, shard_map, pending_shard_spawns),
                 Topic::EntityPositionUpdate(_) => handle_entity_position_update_topic(&payload, shard_map, entity_map, flagged_for_rebuild),
                 _ => {}
             }
@@ -416,7 +553,11 @@ fn handle_quic_message(data: &[u8], shard_map: &SharedShardMap, pending_players:
     }
 }
 
-fn handle_shard_created_topic(payload: &[u8], shard_map: &SharedShardMap) {
+fn handle_shard_created_topic(
+    payload: &[u8],
+    shard_map: &SharedShardMap,
+    pending_shard_spawns: &SharedPendingShardSpawns,
+) {
     let Some(parsed) = deserialize_shard_created_payload(payload) else {
         return;
     };
@@ -427,6 +568,18 @@ fn handle_shard_created_topic(payload: &[u8], shard_map: &SharedShardMap) {
         "Shard registered: shard_uuid={} boundary=({}, {}, {})",
         parsed.shard_connection_id, parsed.boundary.x, parsed.boundary.y, parsed.boundary.half_size
     );
+
+    let pending_shard_spawns = pending_shard_spawns.clone();
+    let boundary = parsed.boundary;
+    tokio::spawn(async move {
+        let pending = pending_shard_spawns.lock().await;
+        if pending.contains_key(&boundary) {
+            tracing::info!(
+                "Shard created notification received for pending remap boundary=({}, {}, {})",
+                boundary.x, boundary.y, boundary.half_size
+            );
+        }
+    });
 }
 
 fn handle_player_starting_position_topic(payload: &[u8], pending_players: &SharedPendingPlayers) {
@@ -468,6 +621,7 @@ async fn spawn_player_on_shard(
     player_id: uuid::Uuid,
     position: [f64; 2],
     entity_map: &SharedEntityMap,
+    entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool
 ) -> anyhow::Result<()> {
     //print the ids for debugging
@@ -500,6 +654,7 @@ async fn spawn_player_on_shard(
     };
 
     entity_map.write().unwrap().insert(player_id, entity_data);
+    entity_owners.write().unwrap().insert(player_id, shard_uuid);
 
     let config = Config::from_env();
 
@@ -524,6 +679,7 @@ async fn process_pending_players(
     broker: &QuicClient,
     shard_map: &SharedShardMap,
     entity_map: &SharedEntityMap,
+    entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
 ) {
     let timeout = Duration::from_secs(PLAYER_SPAWN_RETRY_TIMEOUT_SECS);
@@ -554,7 +710,7 @@ async fn process_pending_players(
     }
 
     for (shard_uuid, player_id, position) in ready {
-        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, flagged_for_rebuild).await {
+        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, entity_owners, flagged_for_rebuild).await {
             tracing::error!("Failed to spawn player player_id={} on shard shard_uuid={}: {}", player_id, shard_uuid, e);
         } else {
             tracing::info!("Successfully processed pending spawn for player_id={}", player_id);
