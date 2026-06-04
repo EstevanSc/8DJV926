@@ -14,10 +14,8 @@ pub struct SimulationPlugin;
 const PLAYER_GRAVITY_SCALE: f32 = 0.0;
 const PLAYER_MOVEMENT_ACCELERATION: f32 = 1250.0;
 const PLAYER_MOVEMENT_DAMPING: f32 = 5.0;
-const PLAYER_SLOPE_ANGLE_DEGREES: f32 = 30.0;
 const PLAYER_COLLIDER_DENSITY: f32 = 2.0;
-
-const FLOOR_RESTITUTION: f32 = 0.7;
+const FLOOR_RESTITUTION: f32 = 0.0;
 const ARENA_WIDTH: f32 = 10000.0;
 const ARENA_WALL_THICKNESS: f32 = 10.0;
 
@@ -105,7 +103,7 @@ fn spawn_net_entities(
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
-                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING, (PLAYER_SLOPE_ANGLE_DEGREES as Scalar).to_radians()),
+                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING),
                 Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
                 Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
                 ColliderDensity(PLAYER_COLLIDER_DENSITY),
@@ -118,7 +116,7 @@ fn spawn_net_entities(
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
-                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING, (PLAYER_SLOPE_ANGLE_DEGREES as Scalar).to_radians()),
+                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING),
                 Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
                 Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
                 ColliderDensity(PLAYER_COLLIDER_DENSITY),
