@@ -29,9 +29,10 @@ impl Plugin for SimulationPlugin {
             .init_resource::<InputBuffer>()
             .add_message::<SpawnNetEntity>()
             .add_message::<DespawnNetEntity>()
+            .add_message::<ClaimAsLocalPlayer>()
             .add_systems(Startup, spawn_floor)
             .add_systems(FixedUpdate, process_net_commands)
-            .add_systems(FixedUpdate, (spawn_net_entities).after(process_net_commands))
+            .add_systems(FixedUpdate, (spawn_net_entities, claim_ghosts).after(process_net_commands))
             .add_systems(FixedUpdate, despawn_net_entities.after(spawn_net_entities))
             .add_systems(FixedUpdate, apply_inputs.after(despawn_net_entities))
             .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs)
@@ -73,6 +74,11 @@ pub struct SpawnNetEntity {
 
 #[derive(Message)]
 pub struct DespawnNetEntity {
+    pub connection_id: uuid::Uuid,
+}
+
+#[derive(Message)]
+pub struct ClaimAsLocalPlayer {
     pub connection_id: uuid::Uuid,
 }
 
@@ -147,6 +153,22 @@ fn despawn_net_entities(
     }
 }
 
+fn claim_ghosts(
+    mut commands: Commands,
+    mut events: MessageReader<ClaimAsLocalPlayer>,
+    query: Query<(Entity, &NetEntity), With<Ghost>>,
+){
+    for ev in events.read() {
+        for (entity, net_entity) in &query {
+            if net_entity.connection_id == ev.connection_id {
+                commands.entity(entity).remove::<Ghost>();
+                tracing::info!(connection_id = %ev.connection_id, "Claimed Ghost as Local Player");
+                break;
+            }
+        }
+    }
+}
+
 fn publish_entity_positions(
     query: Query<(&Transform, &NetEntity), Without<Ghost>>,
     broker: Option<Res<BrokerPeer>>,
@@ -173,8 +195,10 @@ fn process_net_commands(
     cmd_rx: Res<SimCommandReceiver>,
     mut spawn_owned_writer: MessageWriter<SpawnNetEntity>,
     mut despawn_writer: MessageWriter<DespawnNetEntity>,
+    mut claim_as_local_writer: MessageWriter<ClaimAsLocalPlayer>,
     mut input_buf: ResMut<InputBuffer>,
     mut query: Query<(Entity, &NetEntity, &mut Transform, Option<&LinearVelocity>)>,
+    ghost_query: Query<&NetEntity, With<Ghost>>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -210,6 +234,14 @@ fn process_net_commands(
             SimCommand::Left { connection_id } => {
                 despawn_writer.write(DespawnNetEntity { connection_id });
                 input_buf.0.remove(&connection_id);
+            }
+            SimCommand::GhostIsNowLocal { connection_id } => {
+                for net_entity in &ghost_query{
+                    if net_entity.connection_id == connection_id {
+                        claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id });
+                        break;
+                    }
+                }
             }
             SimCommand::Input { connection_id, dx, dy } => {
                 input_buf.0.insert(connection_id, Vec2::new(dx, dy));

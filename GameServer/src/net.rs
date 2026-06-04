@@ -16,6 +16,7 @@ pub enum SimCommand {
     Input { connection_id: Uuid, dx: f32, dy: f32 },
     GhostJoined { connection_id: Uuid, position: Vec2 },
     GhostPositionUpdate { connection_id: Uuid, position: Vec2 },
+    GhostIsNowLocal { connection_id: Uuid },
 }
 
 // ---------------------------------------------------------------------------

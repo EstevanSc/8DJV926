@@ -52,6 +52,7 @@ pub struct ServerConfig {
     pub max_players: usize,
     pub orchestrator_address: SocketAddr,
     pub shard_boundary: Boundary,
+    pub shard_margin: f32,
 }
 impl ServerConfig {
     pub fn from_env() -> Self {
@@ -85,6 +86,8 @@ impl ServerConfig {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(100.0);
 
+
+
         Self {
             // When spawned by the orchestrator DS_ID is injected so the heartbeat
             // key matches the Redis entry created during container spawn.
@@ -100,6 +103,10 @@ impl ServerConfig {
             max_players: std::env::var("MAX_PLAYERS")
                 .unwrap_or_else(|_| "2".to_string()) // low number to test FULL states easily
                 .parse::<usize>()
+                .unwrap(),
+            shard_margin: std::env::var("QUADTREE_NEARBY_MARGIN")
+                .unwrap_or_else(|_| "100.0".to_string())
+                .parse::<f32>()
                 .unwrap(),
             orchestrator_address,
             shard_boundary: Boundary {
@@ -200,6 +207,7 @@ fn poll_broker_events(
                     Some(&mut *broker),
                     &mut client_registry,
                     &sim_tx,
+                    &server_config,
                 );
             }
             GameNetworkEvent::StreamCreated(connection, stream) => {
@@ -260,6 +268,7 @@ fn receive_packets(
     mut client_registry: ResMut<PlayerRegistry>,
     sim_tx: Res<SimCommandSender>,
     conn_players: ResMut<ConnectedPlayers>,
+    server_config: Res<ServerConfig>,
 ) {
     while let Ok(Some(event)) = server.peer.poll() {
         match event {
@@ -281,6 +290,7 @@ fn receive_packets(
                     None,
                     &mut client_registry,
                     &sim_tx,
+                    &server_config,
                 );
             }
             GameNetworkEvent::Disconnected(conn) => {
@@ -340,6 +350,7 @@ fn handle_message(
     mut broker: Option<&mut BrokerPeer>,
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
+    server_config: &Res<ServerConfig>,
 ) {
     if let Some(message) = BrokerMessage::deserialize(data) {
         handle_broker_message(
@@ -349,6 +360,7 @@ fn handle_message(
             broker.as_deref_mut(),
             client_registry,
             sim_tx,   
+            server_config,
         );
         return;
     }
@@ -361,6 +373,7 @@ fn handle_broker_message(
     broker: Option<&mut BrokerPeer>,
     client_registry: &mut ResMut<PlayerRegistry>,
     sim_tx: &Res<SimCommandSender>,
+    server_config: &Res<ServerConfig>,
 ) {
     match message {
         BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
@@ -386,6 +399,7 @@ fn handle_broker_message(
                             position_payload.position[0] as f32,
                             position_payload.position[1] as f32,
                             sim_tx,
+                            server_config,
                         );
                     }
                 } else {
@@ -420,11 +434,19 @@ fn handle_broker_message(
                     eprintln!("Failed to decode broker input payload from {:?}", connection.connection_id);
                 }
             }
-
             Topic::Disconnect(client_id) => {
                 trace!("Received disconnect broadcast for client_id={}", client_id);
                 client_registry.registry.remove(&client_id);
                 let _ = sim_tx.0.send(crate::net::SimCommand::Left {
+                    connection_id: client_id,
+                });
+            }
+            Topic::ClaimOwnership(client_id) => {
+                trace!("Received ClaimOwnership broadcast for client_id={}", client_id);
+                if let Some(info) = client_registry.registry.get_mut(&client_id) {
+                    info.is_ghost = false;
+                }
+                let _ = sim_tx.0.send(crate::net::SimCommand::GhostIsNowLocal {
                     connection_id: client_id,
                 });
             }
@@ -558,7 +580,22 @@ fn handle_ghost_position_update(
     x: f32,
     y: f32,
     sim_tx: &Res<SimCommandSender>,
+    server_config: &Res<ServerConfig>,
 ) {
+    let shard_boundary = &server_config.shard_boundary;
+    let margin = server_config.shard_margin;
+    //if the position update is outside the shard boundary + 2*margin, despawn the ghost
+    if x < shard_boundary.x as f32 - shard_boundary.half_size as f32 - 2.0 * margin
+        || x > shard_boundary.x as f32 + shard_boundary.half_size as f32 + 2.0 * margin
+        || y < shard_boundary.y as f32 - shard_boundary.half_size as f32 - 2.0 * margin
+        || y > shard_boundary.y as f32 + shard_boundary.half_size as f32 + 2.0 * margin
+    {
+        let _ = sim_tx.0.send(crate::net::SimCommand::Left {
+            connection_id,
+        });
+        return;
+    }
+
     let _ = sim_tx.0.send(crate::net::SimCommand::GhostPositionUpdate {
         connection_id,
         position: Vec2 { x, y },
