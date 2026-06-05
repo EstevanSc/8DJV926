@@ -836,6 +836,14 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         })
     });
 
+    // Phase 4: async ghosting check with no locks held (reads entity_map internally).
+    check_for_shard_ghosting(
+        broker,
+        connection_id,
+        entity_map,
+        shard_map,
+    ).await;
+    
     // 3. Process the handoff check if a boundary was found
     if let Some(owner_boundary) = owner_boundary {
         tracing::info!(
@@ -875,13 +883,7 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         });
     }
 
-    // Phase 4: async ghosting check with no locks held (reads entity_map internally).
-    check_for_shard_ghosting(
-        broker,
-        connection_id,
-        entity_map,
-        shard_map,
-    ).await;
+    
 
 }
 
