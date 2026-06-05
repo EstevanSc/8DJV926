@@ -215,9 +215,9 @@ fn poll_broker_events(
                     if stream.is_reliable() && broker.control_stream.is_none() {
                         broker.control_stream = Some(stream);
 
-                        subscribe_ownership_topics(&mut broker);
                         
-                        try_announce_shard_creation(&mut broker, &server_config);
+                        try_announce_shard_creation(&mut broker, &server_config); //send the connect message
+                        subscribe_ownership_topics(&mut broker);
                     }
 
                 }

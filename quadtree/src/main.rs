@@ -814,16 +814,50 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
     let new_parent_boundary = if let Some((new_boundary, _)) = new_shard
         && let Some((old_boundary, _)) = old_shard
     {
+        tracing::info!(
+            "Entity entity_id={} is in a new shard boundary, checking for handoff necessity...",
+            connection_id
+        );
+        // 1. Get the owner of connection_id safely in a scoped block
+    let owner_id = {
+        let owners = entity_owners.read().unwrap();
+        owners.get(&connection_id).copied()
+    };
+
+    // 2. Get the boundaries of the owner_id (shard) safely in a scoped block
+    let owner_boundary = owner_id.and_then(|owner_uuid| {
+        let map = shard_map.read().unwrap();
+        map.iter().find_map(|(boundary, uuid)| {
+            if *uuid == Some(owner_uuid) {
+                Some(*boundary)
+            } else {
+                None
+            }
+        })
+    });
+
+    // 3. Process the handoff check if a boundary was found
+    if let Some(owner_boundary) = owner_boundary {
+        tracing::info!(
+            "Owner shard boundary for entity_id={} is ({}, {}, {})",
+            connection_id, owner_boundary.x, owner_boundary.y, owner_boundary.half_size
+        );
+
         let was_handoff = check_for_handoff(
             broker,
             parsed.position,
             connection_id,
-            old_boundary,
+            owner_boundary,
             new_boundary,
             shard_map,
             entity_owners,
         ).await;
+
         if was_handoff { new_boundary } else { old_boundary }
+    } else {
+        // Fallback if no owner boundary was found (adjust business logic as needed)
+        old_boundary
+    }
     } else {
         new_shard
             .map(|(b, _)| b)
@@ -931,7 +965,13 @@ async fn check_for_handoff(
 ) -> bool {
     //if the entity is no longuer whithin the margins of its old shard, swap the input subscription to the new shard and have the new shard claim ownership of the entity
     if !is_within_margin(&old_shard, position[0], position[1], Config::from_env().nearby_margin) {
+        println!("HANDOFF: Entity entity_id={} is outside the margin of its old shard boundary=({}, {}, {}), initiating handoff to new shard boundary=({}, {}, {})",
+            entity_id,
+            old_shard.x, old_shard.y, old_shard.half_size,
+            new_shard.x, new_shard.y, new_shard.half_size
+        );
         if let Some(new_shard_uuid) = shard_map.read().unwrap().get(&new_shard).and_then(|uuid| *uuid) {
+            println!("HANDOFF: Found new shard UUID {:?} for new shard boundary=({}, {}, {})", new_shard_uuid, new_shard.x, new_shard.y, new_shard.half_size);
             //subscribe the new shard to the player's input and disconnect topics
             broker.subscribe(new_shard_uuid, Topic::Input(entity_id)).await.ok();
             broker.subscribe(new_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
