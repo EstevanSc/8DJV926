@@ -38,6 +38,7 @@ struct EntityData {
     position: [f64; 2],
     entities_in_interest: HashSet<uuid::Uuid>,
     parent_boundary: Boundary,
+    owner_boundary: Boundary,
     ghosted_boundaries: HashSet<Boundary>,
 }
 
@@ -691,6 +692,7 @@ async fn spawn_player_on_shard(
         position,
         entities_in_interest: HashSet::new(),
         parent_boundary: boundary,
+        owner_boundary: boundary,
         ghosted_boundaries: HashSet::new(),
     };
 
@@ -799,91 +801,73 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         *flagged_for_rebuild = true;
     }
 
-/* 
-    // Update the entity's position, should be replaced by the code below when it works
-    if let Some((new_boundary, _)) = new_shard{
-         entity_map.write().unwrap().insert(connection_id, EntityData {
-            position: parsed.position,
-            entities_in_interest,
-            parent_boundary: new_boundary,
-        });
-    }
-*/
 
-    // Phase 2: perform the async handoff check with NO locks held.
-    let new_parent_boundary = if let Some((new_boundary, _)) = new_shard
-        && let Some((old_boundary, _)) = old_shard
-    {
-        tracing::info!(
-            "Entity entity_id={} is in a new shard boundary, checking for handoff necessity...",
-            connection_id
-        );
-        // 1. Get the owner of connection_id safely in a scoped block
-    let owner_id = {
-        let owners = entity_owners.read().unwrap();
-        owners.get(&connection_id).copied()
-    };
-
-    // 2. Get the boundaries of the owner_id (shard) safely in a scoped block
-    let owner_boundary = owner_id.and_then(|owner_uuid| {
-        let map = shard_map.read().unwrap();
-        map.iter().find_map(|(boundary, uuid)| {
-            if *uuid == Some(owner_uuid) {
-                Some(*boundary)
-            } else {
-                None
-            }
-        })
-    });
-
-    // Phase 4: async ghosting check with no locks held (reads entity_map internally).
+    // Phase 2: async ghosting check with no locks held (reads entity_map internally).
     check_for_shard_ghosting(
         broker,
         connection_id,
         entity_map,
         shard_map,
     ).await;
-    
-    // 3. Process the handoff check if a boundary was found
-    if let Some(owner_boundary) = owner_boundary {
-        tracing::info!(
-            "Owner shard boundary for entity_id={} is ({}, {}, {})",
-            connection_id, owner_boundary.x, owner_boundary.y, owner_boundary.half_size
-        );
 
+    // Phase 3: perform the async handoff check with NO locks held.
+
+    // 1. Get the owner of connection_id safely in a scoped block
+    let owner_id = {
+        let owners = entity_owners.read().unwrap();
+        owners.get(&connection_id).copied()
+    };
+    let owner_boundary = {
+        if let Some(owner_id) = owner_id {
+            shard_map.read().unwrap().iter().find_map(|(boundary, maybe_uuid)| {
+                if maybe_uuid.map(|uuid| uuid == owner_id).unwrap_or(false) {
+                    Some(*boundary)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
+    };
+
+    // 2. Get the boundaries of the owner_id (shard) safely in a scoped block
+    let new_parent_boundary = {
+        if let Some((new_boundary, _)) = new_shard {
+            new_boundary
+        } else if let Some((old_boundary, _)) = old_shard {
+            old_boundary
+        } else {
+            Boundary { x: 0.0, y: 0.0, half_size: 100.0 }
+        }
+    };
+    
+    let new_owner_boundary = if let Some(current_owner) = owner_boundary {
         let was_handoff = check_for_handoff(
             broker,
             parsed.position,
             connection_id,
-            owner_boundary,
-            new_boundary,
+            current_owner,
+            new_parent_boundary,
             shard_map,
             entity_owners,
         ).await;
 
-        if was_handoff { new_boundary } else { old_boundary }
+        if was_handoff { new_parent_boundary } else { current_owner }
     } else {
-        // Fallback if no owner boundary was found (adjust business logic as needed)
-        old_boundary
-    }
-    } else {
-        new_shard
-            .map(|(b, _)| b)
-            .or_else(|| old_shard.map(|(b, _)| b))
-            .unwrap_or(Boundary { x: 0.0, y: 0.0, half_size: 100.0 })
+        new_parent_boundary
     };
-
-    // Phase 3: acquire the write lock briefly, insert, then release immediately.
+    
+    // Phase 4: acquire the write lock briefly, insert, then release immediately.
     {
         entity_map.write().unwrap().insert(connection_id, EntityData {
             position: parsed.position,
             entities_in_interest,
             parent_boundary: new_parent_boundary,
             ghosted_boundaries,
+            owner_boundary: new_owner_boundary,
         });
     }
-
-    
 
 }
 
@@ -1009,8 +993,8 @@ async fn check_for_shard_ghosting(
     entity_map: &SharedEntityMap,
     shard_map: &SharedShardMap,
 ) {
-   // Compare desired ghost subscriptions against the previous set so shards stop simulating
-   // ghosts once the entity leaves their margin.
+    // Compare desired ghost subscriptions against the previous set so shards stop simulating
+    // ghosts once the entity leaves their margin.
     let nearby_margin = Config::from_env().nearby_margin;
     let (position, current_boundary, previous_ghosted_boundaries) = {
         let entity_map = entity_map.read().unwrap();
@@ -1019,7 +1003,7 @@ async fn check_for_shard_ghosting(
         };
         (
             entity.position,
-            entity.parent_boundary,
+            entity.owner_boundary,
             entity.ghosted_boundaries.clone(),
         )
     };

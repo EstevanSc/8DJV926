@@ -400,21 +400,24 @@ fn handle_broker_message(
                     eprintln!("Failed to decode EntityPositionUpdate payload for entity_id={}", entity_id);
                     return;
                 };
-
+                println!("Received Ghost EntityPositionUpdate for entity_id={}", entity_id);
                 match client_registry.registry.get(&entity_id) {
                     Some(info) if info.is_ghost => {
+                        println!("Handling broker position update for ghost entity_id={}", entity_id);
                         handle_ghost_position_update(
                             entity_id,
                             position_payload.position[0] as f32,
                             position_payload.position[1] as f32,
                             sim_tx,
                             server_config,
+                            client_registry,
                         );
                     }
                     Some(_) => {
-                        trace!("Ignoring broker position update for locally owned entity_id={}", entity_id);
+                        println!("Ignoring broker position update for ghost locally owned entity_id={}", entity_id);
                     }
                     None => {
+                        println!("Received Ghost EntityPositionUpdate for entity_id={}", entity_id);
                         handle_ghost_joined(
                             entity_id,
                             entity_id,
@@ -450,13 +453,16 @@ fn handle_broker_message(
             }
             Topic::ClaimOwnership(shard_id) => {
                 let Ok(connection_id) = Uuid::from_slice(&payload) else {
-                    eprintln!("Received ClaimOwnership for shard_id={} with invalid payload", shard_id);
+                    println!("ERROR Received ClaimOwnership for shard_id={} with invalid payload", shard_id);
                     return;
                 };
 
-                trace!("Received ClaimOwnership broadcast for shard_id={} connection_id={}", shard_id, connection_id);
+                println!("Received ClaimOwnership (should GhostIsNowLocal) broadcast for shard_id={} connection_id={}", shard_id, connection_id);
                 if let Some(info) = client_registry.registry.get_mut(&connection_id) {
                     info.is_ghost = false;
+                }
+                else{
+                    println!("Received ClaimOwnership for connection_id={} that is not in the registry", connection_id);
                 }
                 let _ = sim_tx.0.send(crate::net::SimCommand::GhostIsNowLocal {
                     connection_id,
@@ -468,9 +474,12 @@ fn handle_broker_message(
                     return;
                 };
 
-                trace!("Received ReleaseOwnership broadcast for shard_id={} connection_id={}", shard_id, connection_id);
+                println!("Received ReleaseOwnership (should LocalIsNowGhost) broadcast for shard_id={} connection_id={}", shard_id, connection_id);
                 if let Some(info) = client_registry.registry.get_mut(&connection_id) {
                     info.is_ghost = true;
+                }
+                else{
+                    println!("Received ReleaseOwnership for connection_id={} that is not in the registry", connection_id);
                 }
                 let _ = sim_tx.0.send(crate::net::SimCommand::LocalIsNowGhost {
                     connection_id,
@@ -624,6 +633,7 @@ fn handle_ghost_position_update(
     y: f32,
     sim_tx: &Res<SimCommandSender>,
     server_config: &Res<ServerConfig>,
+    client_registry: &mut ResMut<PlayerRegistry>,
 ) {
     let shard_boundary = &server_config.shard_boundary;
     let margin = server_config.shard_margin;
@@ -636,6 +646,7 @@ fn handle_ghost_position_update(
         let _ = sim_tx.0.send(crate::net::SimCommand::Left {
             connection_id,
         });
+        client_registry.registry.remove(&connection_id); // remove from registry so he can come back later
         return;
     }
 

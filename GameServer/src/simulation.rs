@@ -199,15 +199,15 @@ fn publish_entity_positions(
         return;
     };
 
-let position_payloads = query
-    .iter()
-    .map(|(transform, net_entity)| (net_entity.connection_id, PositionPayload {
-        position: [
-            transform.translation.x as f64,
-            transform.translation.y as f64,
-        ],
-    }))
-    .collect::<Vec<(uuid::Uuid, PositionPayload)>>();
+    let position_payloads = query
+        .iter()
+        .map(|(transform, net_entity)| (net_entity.connection_id, PositionPayload {
+            position: [
+                transform.translation.x as f64,
+                transform.translation.y as f64,
+            ],
+        }))
+        .collect::<Vec<(uuid::Uuid, PositionPayload)>>();
 
     for (connection_id, position_payload) in position_payloads {
         publish_player_position(&broker, connection_id, position_payload);
@@ -261,14 +261,21 @@ fn process_net_commands(
                 input_buf.0.remove(&connection_id);
             }
             SimCommand::GhostIsNowLocal { connection_id } => {
+                let mut found = false;
                 for net_entity in &ghost_query{
                     if net_entity.connection_id == connection_id {
+                        found = true;
+                        println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={}", connection_id);
                         claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id });
                         break;
                     }
                 }
+                if !found {
+                    println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={} but no matching Ghost found", connection_id);
+                }
             }
             SimCommand::LocalIsNowGhost { connection_id } => {
+                println!("ReleaseOwnership : Received LocalIsNowGhost for connection_id={}", connection_id);
                 mark_as_ghost_writer.write(MarkAsGhost { connection_id });
             }
             SimCommand::Input { connection_id, dx, dy } => {
