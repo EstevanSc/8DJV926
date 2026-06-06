@@ -204,19 +204,13 @@ async fn run_main_loop(
           }
 
         if let Some(client) = broker_client.as_ref() {
-              process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild).await;
+              process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild, &shard_set).await;
         }
 
-        let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
-                    //broadcast the new shard boundaries to all connected clients
-        let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
-            margin: config.nearby_margin as f32,
-            boundaries: new_boundaries.clone(),
-        });
-        if let Some(broker) = broker_client.as_ref() {
-            broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+        if let Some(client) = broker_client.as_ref() {
+            apply_area_of_interest(client, &entity_map).await;
         }
-
+        
         if flagged_for_rebuild {
             tracing::info!("Rebuilding quadtree due to shard changes...");
 
@@ -240,11 +234,16 @@ async fn run_main_loop(
                 } else {
                     tracing::warn!("No connection to orchestrator, skipping shard configuration update");
                 }
+                let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
+                    //broadcast the new shard boundaries to all connected clients
+                let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
+                    margin: config.nearby_margin as f32,
+                    boundaries: new_boundaries.clone(),
+                });
+                if let Some(broker) = broker_client.as_ref() {
+                    broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+                }
             }
-        }
-
-        if let Some(client) = broker_client.as_ref() {
-            apply_area_of_interest(client, &entity_map).await;
         }
     }
 }
@@ -659,7 +658,8 @@ async fn spawn_player_on_shard(
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
-    shard_map: &SharedShardMap
+    shard_map: &SharedShardMap,
+    shard_set: SharedShardSet
 ) -> anyhow::Result<()> {
     //print the ids for debugging
     tracing::info!("Spawning player player_id={} on shard shard_uuid={}", player_id, shard_uuid);
@@ -709,6 +709,15 @@ async fn spawn_player_on_shard(
     let payload_bytes = serialize_position_payload(&PositionPayload { position });
     broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
 
+    // send the quadtree boundaries to new client for debugging and visualization purposes
+    let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
+                    //broadcast the new shard boundaries to all connected clients
+            let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
+                margin: config.nearby_margin as f32,
+                boundaries: new_boundaries.clone(),
+            });
+    broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+
     tracing::info!(
         "Spawned player player_id={}  on shard shard_uuid={}",
         player_id, shard_uuid
@@ -724,6 +733,7 @@ async fn process_pending_players(
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
+    shard_set: &SharedShardSet
 ) {
     let timeout = Duration::from_secs(PLAYER_SPAWN_RETRY_TIMEOUT_SECS);
     let mut ready: Vec<(uuid::Uuid, uuid::Uuid, [f64; 2])> = Vec::new();
@@ -753,7 +763,7 @@ async fn process_pending_players(
     }
 
     for (shard_uuid, player_id, position) in ready {
-        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, entity_owners, flagged_for_rebuild, shard_map).await {
+        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, entity_owners, flagged_for_rebuild, shard_map, shard_set.clone()).await {
             tracing::error!("Failed to spawn player player_id={} on shard shard_uuid={}: {}", player_id, shard_uuid, e);
         } else {
             tracing::info!("Successfully processed pending spawn for player_id={}", player_id);
@@ -860,13 +870,22 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
     
     // Phase 4: acquire the write lock briefly, insert, then release immediately.
     {
-        entity_map.write().unwrap().insert(connection_id, EntityData {
-            position: parsed.position,
-            entities_in_interest,
-            parent_boundary: new_parent_boundary,
-            ghosted_boundaries,
-            owner_boundary: new_owner_boundary,
-        });
+        let mut map = entity_map.write().unwrap();
+        if let Some(entity_data) = map.get_mut(&connection_id) {
+            entity_data.position = parsed.position;
+            entity_data.entities_in_interest = entities_in_interest;
+            entity_data.parent_boundary = new_parent_boundary;
+            entity_data.owner_boundary = new_owner_boundary;
+            // Don't update ghosted_boundaries here since check_for_shard_ghosting will handle that separately
+        } else {
+            map.insert(connection_id, EntityData {
+                position: parsed.position,
+                entities_in_interest,
+                parent_boundary: new_parent_boundary,
+                ghosted_boundaries,
+                owner_boundary: new_owner_boundary,
+            });
+        }
     }
 
 }
