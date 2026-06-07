@@ -160,6 +160,20 @@ pub struct AuthorityDebugPacketPayload {
     pub sender_id: Uuid,
 }
 
+/// ReleaseOwnership payload (enitity UUID and shard UUID so it can publish claimOwnership )
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct ReleaseOwnershipPayload {
+    pub entity_id: Uuid,
+    pub shard_id: Uuid,
+}
+
+/// ClaimOwnership payload (enitity UUID and speed so shard can keep the simulation)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct ClaimOwnershipPayload {
+    pub entity_id: Uuid,
+    pub speed: [f64; 2],
+}
+
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
     wincode::serialize(payload).expect("failed to serialize shard created payload")
 }
@@ -205,5 +219,21 @@ pub fn serialize_authority_debug_packet_payload(payload: &AuthorityDebugPacketPa
 }
 
 pub fn deserialize_authority_debug_packet_payload(bytes: &[u8]) -> Option<AuthorityDebugPacketPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_release_ownership_payload(payload: &ReleaseOwnershipPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize release ownership payload")
+}
+
+pub fn deserialize_release_ownership_payload(bytes: &[u8]) -> Option<ReleaseOwnershipPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_claim_ownership_payload(payload: &ClaimOwnershipPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize claim ownership payload")
+}
+
+pub fn deserialize_claim_ownership_payload(bytes: &[u8]) -> Option<ClaimOwnershipPayload> {
     wincode::deserialize(bytes).ok()
 }

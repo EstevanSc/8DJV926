@@ -1,7 +1,7 @@
 mod quic_client;
 use common::{Boundary, Quadrant};
 use common::topics::{
-    PositionPayload, StartingPositionPayload, QuadtreeBoundariesUpdatePayload, Topic, deserialize_position_payload, deserialize_shard_created_payload, serialize_position_payload, deserialize_starting_position_payload, serialize_quadtree_boundaries_update_payload
+    PositionPayload, QuadtreeBoundariesUpdatePayload, StartingPositionPayload, Topic, ReleaseOwnershipPayload, deserialize_position_payload, deserialize_shard_created_payload, deserialize_starting_position_payload, serialize_position_payload, serialize_quadtree_boundaries_update_payload, serialize_release_ownership_payload
 };
 use common::BrokerMessage;
 use game_sockets::GameNetworkEvent;
@@ -977,18 +977,24 @@ async fn check_for_handoff(
         );
         if let Some(new_shard_uuid) = shard_map.read().unwrap().get(&new_shard).and_then(|uuid| *uuid) {
             println!("HANDOFF: Found new shard UUID {:?} for new shard boundary=({}, {}, {})", new_shard_uuid, new_shard.x, new_shard.y, new_shard.half_size);
-            //subscribe the new shard to the player's input and disconnect topics
-            broker.subscribe(new_shard_uuid, Topic::Input(entity_id)).await.ok();
-            broker.subscribe(new_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
-
-            broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
-
             //unsubscribe the old shard from the player's input and disconnect topics
             if let Some(old_shard_uuid) = shard_map.read().unwrap().get(&old_shard).and_then(|uuid| *uuid) {
-                broker.publish(Topic::ReleaseOwnership(old_shard_uuid), entity_id.as_bytes()).await.ok();
-                broker.unsubscribe(old_shard_uuid, Topic::Input(entity_id)).await.ok();
-                broker.unsubscribe(old_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
+                let payload = serialize_release_ownership_payload(&ReleaseOwnershipPayload {
+                    entity_id,
+                    shard_id: new_shard_uuid,
+                });
+                broker.publish(Topic::ReleaseOwnership(old_shard_uuid), &payload).await.ok();
+                //broker.unsubscribe(old_shard_uuid, Topic::Input(entity_id)).await.ok();
+                //broker.unsubscribe(old_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
             }
+            else { // Release ownership will send the claim otherwise to ensure one authority at a time
+                broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
+            }
+            //subscribe the new shard to the player's input and disconnect topics
+            //broker.subscribe(new_shard_uuid, Topic::Input(entity_id)).await.ok();
+            //broker.subscribe(new_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
+
+            // broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
 
             entity_owners.write().unwrap().insert(entity_id, new_shard_uuid);
 
