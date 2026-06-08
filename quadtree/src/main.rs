@@ -1,7 +1,7 @@
 mod quic_client;
 use common::{Boundary, Quadrant};
 use common::topics::{
-    PositionPayload, StartingPositionPayload, QuadtreeBoundariesUpdatePayload, Topic, deserialize_position_payload, deserialize_shard_created_payload, serialize_position_payload, deserialize_starting_position_payload, serialize_quadtree_boundaries_update_payload
+    PositionPayload, QuadtreeBoundariesUpdatePayload, StartingPositionPayload, Topic, ReleaseOwnershipPayload, deserialize_position_payload, deserialize_shard_created_payload, deserialize_starting_position_payload, serialize_position_payload, serialize_quadtree_boundaries_update_payload, serialize_release_ownership_payload
 };
 use common::BrokerMessage;
 use game_sockets::GameNetworkEvent;
@@ -38,6 +38,7 @@ struct EntityData {
     position: [f64; 2],
     entities_in_interest: HashSet<uuid::Uuid>,
     parent_boundary: Boundary,
+    owner_boundary: Boundary,
     ghosted_boundaries: HashSet<Boundary>,
 }
 
@@ -203,19 +204,13 @@ async fn run_main_loop(
           }
 
         if let Some(client) = broker_client.as_ref() {
-              process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild).await;
+              process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild, &shard_set).await;
         }
 
-        let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
-                    //broadcast the new shard boundaries to all connected clients
-        let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
-            margin: config.nearby_margin as f32,
-            boundaries: new_boundaries.clone(),
-        });
-        if let Some(broker) = broker_client.as_ref() {
-            broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+        if let Some(client) = broker_client.as_ref() {
+            apply_area_of_interest(client, &entity_map).await;
         }
-
+        
         if flagged_for_rebuild {
             tracing::info!("Rebuilding quadtree due to shard changes...");
 
@@ -239,11 +234,16 @@ async fn run_main_loop(
                 } else {
                     tracing::warn!("No connection to orchestrator, skipping shard configuration update");
                 }
+                let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
+                    //broadcast the new shard boundaries to all connected clients
+                let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
+                    margin: config.nearby_margin as f32,
+                    boundaries: new_boundaries.clone(),
+                });
+                if let Some(broker) = broker_client.as_ref() {
+                    broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+                }
             }
-        }
-
-        if let Some(client) = broker_client.as_ref() {
-            apply_area_of_interest(client, &entity_map).await;
         }
     }
 }
@@ -658,7 +658,8 @@ async fn spawn_player_on_shard(
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
-    shard_map: &SharedShardMap
+    shard_map: &SharedShardMap,
+    shard_set: SharedShardSet
 ) -> anyhow::Result<()> {
     //print the ids for debugging
     tracing::info!("Spawning player player_id={} on shard shard_uuid={}", player_id, shard_uuid);
@@ -691,6 +692,7 @@ async fn spawn_player_on_shard(
         position,
         entities_in_interest: HashSet::new(),
         parent_boundary: boundary,
+        owner_boundary: boundary,
         ghosted_boundaries: HashSet::new(),
     };
 
@@ -707,6 +709,15 @@ async fn spawn_player_on_shard(
     let payload_bytes = serialize_position_payload(&PositionPayload { position });
     broker.publish(Topic::PlayerStartingPositionInShard(player_id), &payload_bytes).await?;
 
+    // send the quadtree boundaries to new client for debugging and visualization purposes
+    let new_boundaries: Vec<Boundary> = shard_set.read().unwrap().iter().copied().collect();
+                    //broadcast the new shard boundaries to all connected clients
+            let payload = serialize_quadtree_boundaries_update_payload(&QuadtreeBoundariesUpdatePayload {
+                margin: config.nearby_margin as f32,
+                boundaries: new_boundaries.clone(),
+            });
+    broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
+
     tracing::info!(
         "Spawned player player_id={}  on shard shard_uuid={}",
         player_id, shard_uuid
@@ -722,6 +733,7 @@ async fn process_pending_players(
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
+    shard_set: &SharedShardSet
 ) {
     let timeout = Duration::from_secs(PLAYER_SPAWN_RETRY_TIMEOUT_SECS);
     let mut ready: Vec<(uuid::Uuid, uuid::Uuid, [f64; 2])> = Vec::new();
@@ -751,7 +763,7 @@ async fn process_pending_players(
     }
 
     for (shard_uuid, player_id, position) in ready {
-        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, entity_owners, flagged_for_rebuild, shard_map).await {
+        if let Err(e) = spawn_player_on_shard(broker, shard_uuid, player_id, position, entity_map, entity_owners, flagged_for_rebuild, shard_map, shard_set.clone()).await {
             tracing::error!("Failed to spawn player player_id={} on shard shard_uuid={}: {}", player_id, shard_uuid, e);
         } else {
             tracing::info!("Successfully processed pending spawn for player_id={}", player_id);
@@ -799,55 +811,82 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         *flagged_for_rebuild = true;
     }
 
-/* 
-    // Update the entity's position, should be replaced by the code below when it works
-    if let Some((new_boundary, _)) = new_shard{
-         entity_map.write().unwrap().insert(connection_id, EntityData {
-            position: parsed.position,
-            entities_in_interest,
-            parent_boundary: new_boundary,
-        });
-    }
-*/
 
-    // Phase 2: perform the async handoff check with NO locks held.
-    let new_parent_boundary = if let Some((new_boundary, _)) = new_shard
-        && let Some((old_boundary, _)) = old_shard
-    {
-        let was_handoff = check_for_handoff(
-            broker,
-            parsed.position,
-            connection_id,
-            old_boundary,
-            new_boundary,
-            shard_map,
-            entity_owners,
-        ).await;
-        if was_handoff { new_boundary } else { old_boundary }
-    } else {
-        new_shard
-            .map(|(b, _)| b)
-            .or_else(|| old_shard.map(|(b, _)| b))
-            .unwrap_or(Boundary { x: 0.0, y: 0.0, half_size: 100.0 })
-    };
-
-    // Phase 3: acquire the write lock briefly, insert, then release immediately.
-    {
-        entity_map.write().unwrap().insert(connection_id, EntityData {
-            position: parsed.position,
-            entities_in_interest,
-            parent_boundary: new_parent_boundary,
-            ghosted_boundaries,
-        });
-    }
-
-    // Phase 4: async ghosting check with no locks held (reads entity_map internally).
+    // Phase 2: async ghosting check with no locks held (reads entity_map internally).
     check_for_shard_ghosting(
         broker,
         connection_id,
         entity_map,
         shard_map,
     ).await;
+
+    // Phase 3: perform the async handoff check with NO locks held.
+
+    // 1. Get the owner of connection_id safely in a scoped block
+    let owner_id = {
+        let owners = entity_owners.read().unwrap();
+        owners.get(&connection_id).copied()
+    };
+    let owner_boundary = {
+        if let Some(owner_id) = owner_id {
+            shard_map.read().unwrap().iter().find_map(|(boundary, maybe_uuid)| {
+                if maybe_uuid.map(|uuid| uuid == owner_id).unwrap_or(false) {
+                    Some(*boundary)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
+    };
+
+    // 2. Get the boundaries of the owner_id (shard) safely in a scoped block
+    let new_parent_boundary = {
+        if let Some((new_boundary, _)) = new_shard {
+            new_boundary
+        } else if let Some((old_boundary, _)) = old_shard {
+            old_boundary
+        } else {
+            Boundary { x: 0.0, y: 0.0, half_size: 100.0 }
+        }
+    };
+    
+    let new_owner_boundary = if let Some(current_owner) = owner_boundary {
+        let was_handoff = check_for_handoff(
+            broker,
+            parsed.position,
+            connection_id,
+            current_owner,
+            new_parent_boundary,
+            shard_map,
+            entity_owners,
+        ).await;
+
+        if was_handoff { new_parent_boundary } else { current_owner }
+    } else {
+        new_parent_boundary
+    };
+    
+    // Phase 4: acquire the write lock briefly, insert, then release immediately.
+    {
+        let mut map = entity_map.write().unwrap();
+        if let Some(entity_data) = map.get_mut(&connection_id) {
+            entity_data.position = parsed.position;
+            entity_data.entities_in_interest = entities_in_interest;
+            entity_data.parent_boundary = new_parent_boundary;
+            entity_data.owner_boundary = new_owner_boundary;
+            // Don't update ghosted_boundaries here since check_for_shard_ghosting will handle that separately
+        } else {
+            map.insert(connection_id, EntityData {
+                position: parsed.position,
+                entities_in_interest,
+                parent_boundary: new_parent_boundary,
+                ghosted_boundaries,
+                owner_boundary: new_owner_boundary,
+            });
+        }
+    }
 
 }
 
@@ -931,19 +970,31 @@ async fn check_for_handoff(
 ) -> bool {
     //if the entity is no longuer whithin the margins of its old shard, swap the input subscription to the new shard and have the new shard claim ownership of the entity
     if !is_within_margin(&old_shard, position[0], position[1], Config::from_env().nearby_margin) {
+        println!("HANDOFF: Entity entity_id={} is outside the margin of its old shard boundary=({}, {}, {}), initiating handoff to new shard boundary=({}, {}, {})",
+            entity_id,
+            old_shard.x, old_shard.y, old_shard.half_size,
+            new_shard.x, new_shard.y, new_shard.half_size
+        );
         if let Some(new_shard_uuid) = shard_map.read().unwrap().get(&new_shard).and_then(|uuid| *uuid) {
-            //subscribe the new shard to the player's input and disconnect topics
-            broker.subscribe(new_shard_uuid, Topic::Input(entity_id)).await.ok();
-            broker.subscribe(new_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
-
-            broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
-
+            println!("HANDOFF: Found new shard UUID {:?} for new shard boundary=({}, {}, {})", new_shard_uuid, new_shard.x, new_shard.y, new_shard.half_size);
             //unsubscribe the old shard from the player's input and disconnect topics
             if let Some(old_shard_uuid) = shard_map.read().unwrap().get(&old_shard).and_then(|uuid| *uuid) {
-                broker.publish(Topic::ReleaseOwnership(old_shard_uuid), entity_id.as_bytes()).await.ok();
-                broker.unsubscribe(old_shard_uuid, Topic::Input(entity_id)).await.ok();
-                broker.unsubscribe(old_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
+                let payload = serialize_release_ownership_payload(&ReleaseOwnershipPayload {
+                    entity_id,
+                    shard_id: new_shard_uuid,
+                });
+                broker.publish(Topic::ReleaseOwnership(old_shard_uuid), &payload).await.ok();
+                //broker.unsubscribe(old_shard_uuid, Topic::Input(entity_id)).await.ok();
+                //broker.unsubscribe(old_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
             }
+            else { // Release ownership will send the claim otherwise to ensure one authority at a time
+                broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
+            }
+            //subscribe the new shard to the player's input and disconnect topics
+            //broker.subscribe(new_shard_uuid, Topic::Input(entity_id)).await.ok();
+            //broker.subscribe(new_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
+
+            // broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
 
             entity_owners.write().unwrap().insert(entity_id, new_shard_uuid);
 
@@ -967,8 +1018,8 @@ async fn check_for_shard_ghosting(
     entity_map: &SharedEntityMap,
     shard_map: &SharedShardMap,
 ) {
-   // Compare desired ghost subscriptions against the previous set so shards stop simulating
-   // ghosts once the entity leaves their margin.
+    // Compare desired ghost subscriptions against the previous set so shards stop simulating
+    // ghosts once the entity leaves their margin.
     let nearby_margin = Config::from_env().nearby_margin;
     let (position, current_boundary, previous_ghosted_boundaries) = {
         let entity_map = entity_map.read().unwrap();
@@ -977,7 +1028,7 @@ async fn check_for_shard_ghosting(
         };
         (
             entity.position,
-            entity.parent_boundary,
+            entity.owner_boundary,
             entity.ghosted_boundaries.clone(),
         )
     };

@@ -137,6 +137,8 @@ impl BrokerState {
             match topic_desc {
                 Topic::Input(_) => {}
                 Topic::EntityPositionUpdate(_) => {}
+                Topic::AuthorityDebugPacket(_) => {}
+                Topic::QuadtreeBoundariesUpdate => {}
                 _ => println!("Broker: publishing {:?} to {} subscribers. The ids of the subscribers are {:?}", topic_desc, subscribers.len(), subscribers.iter().map(|c| c.connection_id).collect::<Vec<_>>()),
             }
 

@@ -2,7 +2,7 @@ use crate::heartbeat::Heartbeat;
 use crate::net::{ConnectedPlayers, SimCommandSender};
 use common::broker_messages::{BrokerMessage, SendingSystem};
 use common::topics::{
-   PositionPayload, ShardCreatedPayload, Topic, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload, AuthorityDebugPacketPayload, serialize_authority_debug_packet_payload
+   PositionPayload, ShardCreatedPayload, Topic, ClaimOwnershipPayload, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload, AuthorityDebugPacketPayload, serialize_authority_debug_packet_payload, deserialize_release_ownership_payload, deserialize_claim_ownership_payload, serialize_claim_ownership_payload
 };
 use common::{Boundary};
 use bevy::prelude::*;
@@ -215,9 +215,9 @@ fn poll_broker_events(
                     if stream.is_reliable() && broker.control_stream.is_none() {
                         broker.control_stream = Some(stream);
 
-                        subscribe_ownership_topics(&mut broker);
                         
-                        try_announce_shard_creation(&mut broker, &server_config);
+                        try_announce_shard_creation(&mut broker, &server_config); //send the connect message
+                        subscribe_ownership_topics(&mut broker);
                     }
 
                 }
@@ -400,21 +400,24 @@ fn handle_broker_message(
                     eprintln!("Failed to decode EntityPositionUpdate payload for entity_id={}", entity_id);
                     return;
                 };
-
+                //println!("Received Ghost EntityPositionUpdate for entity_id={}", entity_id);
                 match client_registry.registry.get(&entity_id) {
                     Some(info) if info.is_ghost => {
+                        //println!("Handling broker position update for ghost entity_id={}", entity_id);
                         handle_ghost_position_update(
                             entity_id,
                             position_payload.position[0] as f32,
                             position_payload.position[1] as f32,
                             sim_tx,
                             server_config,
+                            client_registry,
                         );
                     }
                     Some(_) => {
-                        trace!("Ignoring broker position update for locally owned entity_id={}", entity_id);
+                        tracing::warn!("Ignoring broker position update for ghost locally owned entity_id={}", entity_id);
                     }
                     None => {
+                        //println!("Received Ghost EntityPositionUpdate for entity_id={}", entity_id);
                         handle_ghost_joined(
                             entity_id,
                             entity_id,
@@ -449,31 +452,59 @@ fn handle_broker_message(
                 });
             }
             Topic::ClaimOwnership(shard_id) => {
-                let Ok(connection_id) = Uuid::from_slice(&payload) else {
-                    eprintln!("Received ClaimOwnership for shard_id={} with invalid payload", shard_id);
-                    return;
+                let received_payload = match deserialize_claim_ownership_payload(&payload) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Failed to decode ClaimOwnership payload for shard_id={}", shard_id);
+                        return;
+                    }
                 };
+                let connection_id = received_payload.entity_id;
+                let speed = received_payload.speed;
 
-                trace!("Received ClaimOwnership broadcast for shard_id={} connection_id={}", shard_id, connection_id);
+                println!("Received ClaimOwnership (should GhostIsNowLocal) broadcast for shard_id={} connection_id={}", shard_id, connection_id);
                 if let Some(info) = client_registry.registry.get_mut(&connection_id) {
                     info.is_ghost = false;
                 }
+                else{
+                    println!("Received ClaimOwnership for connection_id={} that is not in the registry", connection_id);
+                }
                 let _ = sim_tx.0.send(crate::net::SimCommand::GhostIsNowLocal {
                     connection_id,
+                    speed,
                 });
+
+                // subscribe to entity's input and disconnect topics
+                if let Some(broker) = broker {
+                    subscribe_to_topic(broker, shard_id, Topic::Input(connection_id));
+                    subscribe_to_topic(broker, shard_id, Topic::Disconnect(connection_id));
+                }
             }
             Topic::ReleaseOwnership(shard_id) => {
-                let Ok(connection_id) = Uuid::from_slice(&payload) else {
+                /*let Ok(connection_id) = Uuid::from_slice(&payload) else {
                     eprintln!("Received ReleaseOwnership for shard_id={} with invalid payload", shard_id);
                     return;
+                };*/
+                let received_payload = match deserialize_release_ownership_payload(&payload) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Failed to decode ReleaseOwnership payload for shard_id={}", shard_id);
+                        return;
+                    }
                 };
+                let connection_id = received_payload.entity_id;
+                let receiver_shard_id = received_payload.shard_id;
 
-                trace!("Received ReleaseOwnership broadcast for shard_id={} connection_id={}", shard_id, connection_id);
-                if let Some(info) = client_registry.registry.get_mut(&connection_id) {
+                println!("Received ReleaseOwnership (should LocalIsNowGhost) broadcast for shard_id={} connection_id={}", shard_id, received_payload.entity_id);
+                if let Some(info) = client_registry.registry.get_mut(&received_payload.entity_id) {
                     info.is_ghost = true;
+                }
+                else{
+                    println!("Received ReleaseOwnership for connection_id={} that is not in the registry", connection_id);
                 }
                 let _ = sim_tx.0.send(crate::net::SimCommand::LocalIsNowGhost {
                     connection_id,
+                    receiver_shard_id,
                 });
             }
             _ => {}
@@ -624,6 +655,7 @@ fn handle_ghost_position_update(
     y: f32,
     sim_tx: &Res<SimCommandSender>,
     server_config: &Res<ServerConfig>,
+    client_registry: &mut ResMut<PlayerRegistry>,
 ) {
     let shard_boundary = &server_config.shard_boundary;
     let margin = server_config.shard_margin;
@@ -636,6 +668,7 @@ fn handle_ghost_position_update(
         let _ = sim_tx.0.send(crate::net::SimCommand::Left {
             connection_id,
         });
+        client_registry.registry.remove(&connection_id); // remove from registry so he can come back later
         return;
     }
 
@@ -671,7 +704,7 @@ fn send_heartbeat(
             if let Err(e) = udp_socket.send_to(bytes, config.orchestrator_address) {
                 eprintln!("Failed to send heartbeat packet: {:?}", e);
             } else {
-                println!(
+                /*println!(
                     "Heartbeat sent: {}/{} players. Status: {}",
                     player_count,
                     config.max_players,
@@ -680,8 +713,82 @@ fn send_heartbeat(
                     } else {
                         "AVAILABLE"
                     }
-                );
+                );*/
             }
         }
     }}
 
+/// method to unsubscribe from a topic
+fn unsubscribe_from_topic(broker: &BrokerPeer, connection_id: Uuid, topic: Topic) {
+    let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
+        return;
+    };
+
+    let unsubscribe_message =
+        BrokerMessage::serialize_unsubscribe(connection_id, topic.to_bytes());
+
+    if let Err(e) = broker
+        .peer
+        .send(&connection, &control_stream, unsubscribe_message.into())
+    {
+        eprintln!(
+            "Failed to unsubscribe from topic {:?} for client_id={}: {:?}",
+            topic, connection_id, e
+        );
+    }
+}
+
+/// method to subscribe to a topic
+fn subscribe_to_topic(broker: &BrokerPeer, connection_id: Uuid, topic: Topic) {
+    let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
+        return;
+    };
+
+    let subscribe_message =
+        BrokerMessage::serialize_subscribe(connection_id, topic.to_bytes());
+
+    if let Err(e) = broker
+        .peer
+        .send(&connection, &control_stream, subscribe_message.into())
+    {
+        eprintln!(
+            "Failed to subscribe to topic {:?} for client_id={}: {:?}",
+            topic, connection_id, e
+        );
+    }
+}
+
+/// Method to publish a message to a topic
+fn publish_to_topic(broker: &BrokerPeer, topic: Topic, payload: Vec<u8>) {
+    let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
+        return;
+    };
+
+    let publish_message = BrokerMessage::serialize_publish(topic.to_bytes(), &payload);
+
+    if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
+        eprintln!(
+            "Failed to publish to topic {:?}: {:?}",
+            topic, e
+        );
+    }
+}
+
+/// method to send claim ownership, called by simulation
+pub(crate) fn send_claim_ownership(broker: &BrokerPeer, shard_id: Uuid, entity_id: Uuid, velocity: [f64; 2]) {
+    // unsubscribe from entity's input and disconnect
+    let own_shard_id = match broker.connection {
+        Some(conn) => conn.connection_id,
+        None => {
+            eprintln!("Failed to send ClaimOwnership for entity_id={} because broker connection is missing", entity_id);
+            return;
+        }
+    };
+    unsubscribe_from_topic(broker, own_shard_id, Topic::Input(entity_id));
+    unsubscribe_from_topic(broker, own_shard_id, Topic::Disconnect(entity_id));
+    let claim_ownership_payload = serialize_claim_ownership_payload(&ClaimOwnershipPayload {
+    entity_id: entity_id,
+    speed: velocity,
+    });
+    publish_to_topic(broker, Topic::ClaimOwnership(shard_id), claim_ownership_payload);
+}

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use super::net::{SimCommand, SimCommandReceiver};
-use super::server::{publish_player_position, BrokerPeer};
+use super::server::{publish_player_position, BrokerPeer, send_claim_ownership};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
@@ -81,11 +81,13 @@ pub struct DespawnNetEntity {
 #[derive(Message)]
 pub struct ClaimAsLocalPlayer {
     pub connection_id: uuid::Uuid,
+    pub speed: [f64; 2],
 }
 
 #[derive(Message)]
 pub struct MarkAsGhost {
     pub connection_id: uuid::Uuid,
+    pub receiver_shard_id: uuid::Uuid,
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +170,9 @@ fn claim_ghosts(
         for (entity, net_entity) in &query {
             if net_entity.connection_id == ev.connection_id {
                 commands.entity(entity).remove::<Ghost>();
+                let velocity = Vec2::new(ev.speed[0] as f32, ev.speed[1] as f32);
+                commands.entity(entity).insert(LinearVelocity(velocity));
+                
                 tracing::info!(connection_id = %ev.connection_id, "Claimed Ghost as Local Player");
                 break;
             }
@@ -178,13 +183,29 @@ fn claim_ghosts(
 fn mark_locals_as_ghosts(
     mut commands: Commands,
     mut events: MessageReader<MarkAsGhost>,
-    query: Query<(Entity, &NetEntity), Without<Ghost>>,
+    query: Query<(Entity, &NetEntity, Option<&LinearVelocity>), Without<Ghost>>,
+    broker: Option<Res<BrokerPeer>>,
 ) {
     for ev in events.read() {
-        for (entity, net_entity) in &query {
+        for (entity, net_entity, velocity) in &query {
             if net_entity.connection_id == ev.connection_id {
                 commands.entity(entity).insert(Ghost);
+                
+                let speed = velocity
+                    .map(|vel| [vel.x as f64, vel.y as f64])
+                    .unwrap_or([0.0, 0.0]);
+                
                 tracing::info!(connection_id = %ev.connection_id, "Marked Local Player as Ghost");
+                
+                // Publish the claim ownership message to the new shard so it can get the authority directly
+                if let Some(broker) = &broker {
+                    send_claim_ownership(
+                        broker.as_ref(),
+                        ev.receiver_shard_id,
+                        ev.connection_id,
+                        speed,
+                    );
+                }
                 break;
             }
         }
@@ -199,15 +220,15 @@ fn publish_entity_positions(
         return;
     };
 
-let position_payloads = query
-    .iter()
-    .map(|(transform, net_entity)| (net_entity.connection_id, PositionPayload {
-        position: [
-            transform.translation.x as f64,
-            transform.translation.y as f64,
-        ],
-    }))
-    .collect::<Vec<(uuid::Uuid, PositionPayload)>>();
+    let position_payloads = query
+        .iter()
+        .map(|(transform, net_entity)| (net_entity.connection_id, PositionPayload {
+            position: [
+                transform.translation.x as f64,
+                transform.translation.y as f64,
+            ],
+        }))
+        .collect::<Vec<(uuid::Uuid, PositionPayload)>>();
 
     for (connection_id, position_payload) in position_payloads {
         publish_player_position(&broker, connection_id, position_payload);
@@ -260,16 +281,23 @@ fn process_net_commands(
                 despawn_writer.write(DespawnNetEntity { connection_id });
                 input_buf.0.remove(&connection_id);
             }
-            SimCommand::GhostIsNowLocal { connection_id } => {
+            SimCommand::GhostIsNowLocal { connection_id, speed } => {
+                let mut found = false;
                 for net_entity in &ghost_query{
                     if net_entity.connection_id == connection_id {
-                        claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id });
+                        found = true;
+                        println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={}", connection_id);
+                        claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id, speed });
                         break;
                     }
                 }
+                if !found {
+                    println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={} but no matching Ghost found", connection_id);
+                }
             }
-            SimCommand::LocalIsNowGhost { connection_id } => {
-                mark_as_ghost_writer.write(MarkAsGhost { connection_id });
+            SimCommand::LocalIsNowGhost { connection_id, receiver_shard_id } => {
+                println!("ReleaseOwnership : Received LocalIsNowGhost for connection_id={}", connection_id);
+                mark_as_ghost_writer.write(MarkAsGhost { connection_id, receiver_shard_id });
             }
             SimCommand::Input { connection_id, dx, dy } => {
                 input_buf.0.insert(connection_id, Vec2::new(dx, dy));
