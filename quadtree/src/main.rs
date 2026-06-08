@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 type SharedShardSet = Arc<RwLock<HashSet<Boundary>>>;
 type SharedShardMap = Arc<RwLock<HashMap<Boundary, Option<uuid::Uuid>>>>;
-type SharedPendingShardSpawns = Arc<tokio::sync::Mutex<HashMap<Boundary, Vec<StartingPositionPayload>>>>;
 type SharedPendingPlayers = Arc<tokio::sync::Mutex<VecDeque<(Instant, StartingPositionPayload)>>>;
 type SharedEntityMap = Arc<RwLock<HashMap<uuid::Uuid, EntityData>>>;
 type SharedEntityOwners = Arc<RwLock<HashMap<uuid::Uuid, uuid::Uuid>>>;
@@ -122,7 +121,6 @@ async fn main() -> anyhow::Result<()> {
 
     let shard_set: SharedShardSet = Arc::new(RwLock::new(HashSet::new()));
     let shard_map: SharedShardMap = Arc::new(RwLock::new(HashMap::new()));
-    let pending_shard_spawns: SharedPendingShardSpawns = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let pending_players: SharedPendingPlayers = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
     let entity_map: SharedEntityMap = Arc::new(RwLock::new(HashMap::new()));
     let entity_owners: SharedEntityOwners = Arc::new(RwLock::new(HashMap::new()));
@@ -133,7 +131,6 @@ async fn main() -> anyhow::Result<()> {
         broker_client,
         shard_set,
         shard_map,
-        pending_shard_spawns,
         pending_players,
         entity_map,
         entity_owners,
@@ -148,7 +145,6 @@ async fn run_main_loop(
     broker_client: Option<QuicClient>,
     shard_set: SharedShardSet,
     shard_map: SharedShardMap,
-    pending_shard_spawns: SharedPendingShardSpawns,
     pending_players: SharedPendingPlayers,
     entity_map: SharedEntityMap,
     entity_owners: SharedEntityOwners,
@@ -198,7 +194,7 @@ async fn run_main_loop(
         let mut flagged_for_rebuild = false;
 
         if let Some(client) = broker_client.as_mut() {
-            poll_quic_events(client, "broker", &shard_map, &pending_shard_spawns, &pending_players, &entity_map, &entity_owners, &mut flagged_for_rebuild, &mut pending_shard_to_destroy).await?;
+            poll_quic_events(client, "broker", &shard_map, &pending_players, &entity_map, &entity_owners, &mut flagged_for_rebuild).await?;
         }
 
         if let Some(client) = broker_client.as_ref() {
@@ -257,12 +253,10 @@ async fn poll_quic_events(
     broker: &mut QuicClient,
     label: &str,
     shard_map: &SharedShardMap,
-    pending_shard_spawns: &SharedPendingShardSpawns,
     pending_players: &SharedPendingPlayers,
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
-    pending_shard_to_destroy: &mut PendingShardToDestroy,
 ) -> anyhow::Result<()> {
     while let Some(event) = broker.poll()? {
         match event {
@@ -275,7 +269,7 @@ async fn poll_quic_events(
                     stream.stream_id
                 );
 
-                handle_quic_message(&data, shard_map, pending_players, entity_map, entity_owners, flagged_for_rebuild, broker, pending_shard_to_destroy).await;
+                handle_quic_message(&data, shard_map, pending_players, entity_map, entity_owners, flagged_for_rebuild, broker).await;
             }
             _ => {}
         }
@@ -450,13 +444,11 @@ async fn send_server_configuration_update(client: &QuicClient, boundaries: Vec<B
 async fn handle_quic_message(
     data: &[u8],
     shard_map: &SharedShardMap,
-    //pending_shard_spawns: &SharedPendingShardSpawns,
     pending_players: &SharedPendingPlayers,
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
     broker: &QuicClient,
-    pending_shard_to_destroy: &mut PendingShardToDestroy,
 ) {
     let Some(message) = BrokerMessage::deserialize(data) else {
         return;
@@ -715,6 +707,7 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         connection_id,
         entity_map,
         shard_map,
+        entity_owners,
     ).await;
 
     // Phase 3: perform the async handoff check with NO locks held.
@@ -867,13 +860,13 @@ async fn check_for_handoff(
 ) -> bool {
     //if the entity is no longuer whithin the margins of its old shard, swap the input subscription to the new shard and have the new shard claim ownership of the entity
     if !is_within_margin(&old_shard, position[0], position[1], Config::from_env().nearby_margin) {
-        println!("HANDOFF: Entity entity_id={} is outside the margin of its old shard boundary=({}, {}, {}), initiating handoff to new shard boundary=({}, {}, {})",
+        /*println!("HANDOFF: Entity entity_id={} is outside the margin of its old shard boundary=({}, {}, {}), initiating handoff to new shard boundary=({}, {}, {})",
             entity_id,
             old_shard.x, old_shard.y, old_shard.half_size,
             new_shard.x, new_shard.y, new_shard.half_size
-        );
+        );*/
         if let Some(new_shard_uuid) = shard_map.read().unwrap().get(&new_shard).and_then(|uuid| *uuid) {
-            println!("HANDOFF: Found new shard UUID {:?} for new shard boundary=({}, {}, {})", new_shard_uuid, new_shard.x, new_shard.y, new_shard.half_size);
+            //println!("HANDOFF: Found new shard UUID {:?} for new shard boundary=({}, {}, {})", new_shard_uuid, new_shard.x, new_shard.y, new_shard.half_size);
             //unsubscribe the old shard from the player's input and disconnect topics
             if let Some(old_shard_uuid) = shard_map.read().unwrap().get(&old_shard).and_then(|uuid| *uuid) {
                 let payload = serialize_release_ownership_payload(&ReleaseOwnershipPayload {
@@ -914,6 +907,7 @@ async fn check_for_shard_ghosting(
     entity_id: uuid::Uuid,
     entity_map: &SharedEntityMap,
     shard_map: &SharedShardMap,
+    entity_owners: &SharedEntityOwners,
 ) {
     // Compare desired ghost subscriptions against the previous set so shards stop simulating
     // ghosts once the entity leaves their margin.
@@ -929,6 +923,7 @@ async fn check_for_shard_ghosting(
             entity.ghosted_boundaries.clone(),
         )
     };
+    let owner_of_entity = entity_owners.read().unwrap().get(&entity_id).copied();
 
     let desired_ghosts = {
         let map = shard_map.read().unwrap();
@@ -944,7 +939,7 @@ async fn check_for_shard_ghosting(
     };
 
     for (boundary, shard_uuid) in &desired_ghosts {
-        if previous_ghosted_boundaries.contains(boundary) {
+        if previous_ghosted_boundaries.contains(boundary) || Some(*shard_uuid) == owner_of_entity {
             continue;
         }
 
@@ -1007,37 +1002,40 @@ async fn retain_old_shards_during_rebuild(
             continue;
         }
         else {
-            let parent_shard = old_shard_set.iter().find(|old| old.contains(&new_shard.x, &new_shard.y));
-            if let Some(parent) = parent_shard {
-            tracing::info!("keeping parent shard for new shard ({}, {}, {}) during rebuild: parent boundary=({}, {}, {})", new_shard.x, new_shard.y, new_shard.half_size, parent.x, parent.y, parent.half_size);
-            rebuilt_boundaries.push(*parent);
-            let parent_uuid = shard_map.get(parent).and_then(|id| *id);
-            if !parent_uuid.is_some() {
-                tracing::warn!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, marking for destruction", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size);
-            }
-            else{
-                tracing::info!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has registered shard UUID {:?}, retaining during rebuild", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size, parent_uuid);
-                pending_shard_to_destroy.insert((parent_uuid.unwrap(), *parent));
-            }
-            shard_set.write().unwrap().insert(*parent);
-            }
-            else{
-                // find all the childrens
-                let childrens = old_shard_set.iter().filter(|old| new_shard.contains(&old.x, &old.y)).copied().collect::<Vec<_>>();
-                tracing::info!("keeping children shards for new shard ({}, {}, {}) during rebuild: {} children found", new_shard.x, new_shard.y, new_shard.half_size, childrens.len());
-                rebuilt_boundaries.extend(childrens.clone());
-                for child in childrens {
-                    shard_set.write().unwrap().insert(child);
-                    let child_uuid = shard_map.get(&child).and_then(|id| *id);
-                    if !child_uuid.is_some() {
-                        tracing::warn!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, marking for destruction", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size);
+            let parent_shard = old_shard_set.iter().find(|old| old.contains(&new_shard.x, &new_shard.y) && old.half_size > new_shard.half_size);
+                if let Some(parent) = parent_shard {
+                    if parent == new_shard {
+                        continue; // skip if the new shard is the same as the parent shard
                     }
-                    else{
-                        tracing::info!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has registered shard UUID {:?}, retaining during rebuild", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size, child_uuid);
-                        pending_shard_to_destroy.insert((child_uuid.unwrap(), child));
+                tracing::info!("keeping parent shard for new shard ({}, {}, {}) during rebuild: parent boundary=({}, {}, {})", new_shard.x, new_shard.y, new_shard.half_size, parent.x, parent.y, parent.half_size);
+                rebuilt_boundaries.push(*parent);
+                let parent_uuid = shard_map.get(parent).and_then(|id| *id);
+                if !parent_uuid.is_some() {
+                    tracing::warn!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, marking for destruction", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size);
+                }
+                else{
+                    tracing::info!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has registered shard UUID {:?}, retaining during rebuild", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size, parent_uuid);
+                    pending_shard_to_destroy.insert((parent_uuid.unwrap(), *parent));
+                }
+                shard_set.write().unwrap().insert(*parent);
+                }
+                else{
+                    // find all the childrens
+                    let childrens = old_shard_set.iter().filter(|old| new_shard.contains(&old.x, &old.y)).copied().collect::<Vec<_>>();
+                    tracing::info!("keeping children shards for new shard ({}, {}, {}) during rebuild: {} children found", new_shard.x, new_shard.y, new_shard.half_size, childrens.len());
+                    rebuilt_boundaries.extend(childrens.clone());
+                    for child in childrens {
+                        shard_set.write().unwrap().insert(child);
+                        let child_uuid = shard_map.get(&child).and_then(|id| *id);
+                        if !child_uuid.is_some() {
+                            tracing::warn!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, marking for destruction", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size);
+                        }
+                        else{
+                            tracing::info!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has registered shard UUID {:?}, retaining during rebuild", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size, child_uuid);
+                            pending_shard_to_destroy.insert((child_uuid.unwrap(), child));
+                        }
                     }
                 }
-            }
         }
     }
 }
@@ -1050,18 +1048,20 @@ async fn handle_shard_destruction(
     shard_map: &SharedShardMap,
     entity_owners: &SharedEntityOwners,
 ) {
+    let margin = Config::from_env().nearby_margin;
     let entities_to_process = {
         let map = entity_map.read().unwrap();
         map.iter()
-            .filter(|(_, data)| destroyed_boundary.contains(&data.position[0], &data.position[1]))
+            .filter(|(_, data)| destroyed_boundary.contains(&data.position[0], &data.position[1])|| is_within_margin(&destroyed_boundary, data.position[0], data.position[1], margin))
             .map(|(id, data)| (*id, data.position))
             .collect::<Vec<_>>()
     };
-
+    tracing::info!("Processing shard destruction for shard_uuid={} with boundary=({}, {}, {}): {} entities found within or near the destroyed shard", destroyed_shard_uuid, destroyed_boundary.x, destroyed_boundary.y, destroyed_boundary.half_size, entities_to_process.len());
     for (entity_id, position) in entities_to_process {
         if let Some((_, Some(new_shard_uuid))) = find_shard_for_position(shard_map, position[0], position[1]) {
             // Prevent attempting handoff to itself
             if new_shard_uuid == destroyed_shard_uuid {
+                tracing::warn!("shard_for_position returned the destroyed shard itself for entity_id={}, skipping handoff", entity_id);
                 continue;
             }
             
@@ -1079,6 +1079,23 @@ async fn handle_shard_destruction(
                 entity_owners.write().unwrap().insert(entity_id, new_shard_uuid);
             } else {
                 let _ = broker.subscribe(new_shard_uuid, Topic::EntityPositionUpdate(entity_id)).await;
+            }
+        }
+    }
+    for (entity_id, owner_id) in entity_owners.read().unwrap().iter() {
+        if *owner_id == destroyed_shard_uuid {
+            let position = entity_map.read().unwrap().get(entity_id).map(|data| data.position);
+            if let Some((_, Some(new_shard_uuid))) = find_shard_for_position(shard_map, position.unwrap()[0], position.unwrap()[1]) {
+                if new_shard_uuid == destroyed_shard_uuid {
+                    tracing::warn!("shard_for_position returned the destroyed shard itself for entity_id={}, skipping handoff", entity_id);
+                    continue;
+                }
+                let payload = serialize_release_ownership_payload(&ReleaseOwnershipPayload {
+                    entity_id: *entity_id,
+                    shard_id: new_shard_uuid,
+                });
+                let _ = broker.publish(Topic::ReleaseOwnership(destroyed_shard_uuid), &payload).await;
+                entity_owners.write().unwrap().insert(*entity_id, new_shard_uuid);
             }
         }
     }
