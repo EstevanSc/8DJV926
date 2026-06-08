@@ -1082,21 +1082,34 @@ async fn handle_shard_destruction(
             }
         }
     }
-    for (entity_id, owner_id) in entity_owners.read().unwrap().iter() {
-        if *owner_id == destroyed_shard_uuid {
-            let position = entity_map.read().unwrap().get(entity_id).map(|data| data.position);
-            if let Some((_, Some(new_shard_uuid))) = find_shard_for_position(shard_map, position.unwrap()[0], position.unwrap()[1]) {
-                if new_shard_uuid == destroyed_shard_uuid {
-                    tracing::warn!("shard_for_position returned the destroyed shard itself for entity_id={}, skipping handoff", entity_id);
-                    continue;
-                }
-                let payload = serialize_release_ownership_payload(&ReleaseOwnershipPayload {
-                    entity_id: *entity_id,
-                    shard_id: new_shard_uuid,
-                });
-                let _ = broker.publish(Topic::ReleaseOwnership(destroyed_shard_uuid), &payload).await;
-                entity_owners.write().unwrap().insert(*entity_id, new_shard_uuid);
-            }
+
+    let ownership_updates: Vec<(uuid::Uuid, uuid::Uuid)> = {
+        let owners = entity_owners.read().unwrap();
+        let entity_map_r = entity_map.read().unwrap();
+        
+        owners.iter()
+            .filter(|(_, owner_id)| **owner_id == destroyed_shard_uuid)
+            .filter_map(|(entity_id, _)| {
+                let position = entity_map_r.get(entity_id)?.position;
+                let (_, new_shard_uuid) = find_shard_for_position(shard_map, position[0], position[1])
+                    .filter(|(_, uuid)| *uuid != Some(destroyed_shard_uuid))?;
+                Some((*entity_id, new_shard_uuid?))
+            })
+            .collect()
+    };
+
+    for (entity_id, new_shard_uuid) in &ownership_updates {
+        let payload = serialize_release_ownership_payload(&ReleaseOwnershipPayload {
+            entity_id: *entity_id,
+            shard_id: *new_shard_uuid,
+        });
+        let _ = broker.publish(Topic::ReleaseOwnership(destroyed_shard_uuid), &payload).await;
+    }
+
+    {
+        let mut owners = entity_owners.write().unwrap();
+        for (entity_id, new_shard_uuid) in ownership_updates {
+            owners.insert(entity_id, new_shard_uuid);
         }
     }
 }
@@ -1130,6 +1143,7 @@ async fn handle_pending_shard_destructions(
         }
     }
     for (uuid, boundary) in shard_to_remove_from_pending {
+        tracing::info!("Removing shard_uuid={} with boundary=({}, {}, {}) from pending destruction list", uuid, boundary.x, boundary.y, boundary.half_size);
         pending_shard_to_destroy.remove(&(uuid, boundary));
     }
 }
