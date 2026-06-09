@@ -167,7 +167,7 @@ async fn run_main_loop(
                 entity_map.values().map(|data| data.position).collect()
             };
 
-            quadtree.rebuild(boundary, points, &shard_set, &shard_map).await;
+            quadtree.rebuild(boundary, points, &shard_set, &shard_map, &mut pending_shard_to_destroy).await;
 
             let new_shard_set = shard_set.read().unwrap().clone();
             let mut rebuilt_boundaries: Vec<Boundary> = new_shard_set.iter().copied().collect();
@@ -175,6 +175,7 @@ async fn run_main_loop(
             if new_shard_set != old_shard_set || should_handle_pending_destructions {
                 // add the older shards for each new shard which has not it's uuid assigned yet in the rebuilt_boundaries so orchestrator don't kill them before the new ones are up
                 retain_old_shards_during_rebuild(&old_shard_set,&new_shard_set,&shard_set,&old_shard_map,&mut rebuilt_boundaries, &mut pending_shard_to_destroy,).await;
+                tracing::info!("Pending to destroy: {:?}", pending_shard_to_destroy);
                 if let Some(broker) = broker_client.as_ref() {
                     handle_pending_shard_destructions(broker, &entity_map, &shard_map, &entity_owners, &shard_set,&mut pending_shard_to_destroy).await;
                 }
@@ -344,7 +345,7 @@ impl Quadtree {
         self.children.as_mut().unwrap()[idx].insert(point, shard_set, shard_map);
     }
 
-    async fn rebuild(&mut self, boundary: Boundary, points: Vec<[f64; 2]>, shard_set: &SharedShardSet, shard_map: &SharedShardMap) {
+    async fn rebuild(&mut self, boundary: Boundary, points: Vec<[f64; 2]>, shard_set: &SharedShardSet, shard_map: &SharedShardMap, pending_shard_to_destroy: &mut PendingShardToDestroy) {
         // 1. Reset structure
         self.boundary = boundary;
         self.points.clear();
@@ -372,10 +373,22 @@ impl Quadtree {
         {
             let mut map = shard_map.write().unwrap();
             let old_map = mem::take(&mut *map);
-            
+
             for leaf in final_leaves {
                 // Retain the existing Shard UUID connection if we already have it
-                let existing_uuid = old_map.get(&leaf).and_then(|id| *id);
+                let mut existing_uuid = old_map.get(&leaf).and_then(|id| *id);
+                let mut shard_to_remove_from_destroy: Option<(uuid::Uuid, Boundary)> = None;
+                for pending_shard in pending_shard_to_destroy.iter() {
+                    if pending_shard.1.x == leaf.x && pending_shard.1.y == leaf.y && pending_shard.1.half_size == leaf.half_size {
+                        tracing::info!("Retaining old shard {:?} in shard_map during rebuild to avoid pending destruction", leaf);
+                        existing_uuid = Some(pending_shard.0);
+                        shard_to_remove_from_destroy = Some((*pending_shard).clone());
+                        break;
+                    }
+                }
+                if let Some(shard_to_remove) = shard_to_remove_from_destroy {
+                    pending_shard_to_destroy.remove(&shard_to_remove);
+                }
                 map.insert(leaf, existing_uuid);
             }
         }
