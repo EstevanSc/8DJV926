@@ -72,7 +72,7 @@ impl Topic {
             Topic::ClaimOwnership(uuid) => {
                 bytes[0] = TopicDomain::ClaimOwnership as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
-             }
+            }
             Topic::QuadtreeBoundariesUpdate => {
                 bytes[0] = TopicDomain::QuadtreeBoundariesUpdate as u8;
             }
@@ -115,7 +115,7 @@ impl Topic {
             0xFE => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::ClaimOwnership(uuid)
-             }
+            }
             0x06 => Topic::QuadtreeBoundariesUpdate,
             0x07 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
@@ -171,6 +171,7 @@ pub struct ReleaseOwnershipPayload {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
 pub struct ClaimOwnershipPayload {
     pub entity_id: Uuid,
+    pub entity_position: [f64; 2],
     pub speed: [f64; 2],
 }
 

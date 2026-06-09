@@ -33,8 +33,9 @@ impl Plugin for SimulationPlugin {
             .add_message::<MarkAsGhost>()
             .add_systems(Startup, spawn_floor)
             .add_systems(FixedUpdate, process_net_commands)
-            .add_systems(FixedUpdate, (spawn_net_entities, claim_ghosts, mark_locals_as_ghosts).after(process_net_commands))
-            .add_systems(FixedUpdate, despawn_net_entities.after(spawn_net_entities))
+            .add_systems(FixedUpdate, (spawn_net_entities).after(process_net_commands))
+            .add_systems(FixedUpdate, (claim_ghosts, mark_locals_as_ghosts).after(spawn_net_entities))
+            .add_systems(FixedUpdate, despawn_net_entities.after(claim_ghosts))
             .add_systems(FixedUpdate, apply_inputs.after(despawn_net_entities))
             .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs)
             );
@@ -82,6 +83,7 @@ pub struct DespawnNetEntity {
 pub struct ClaimAsLocalPlayer {
     pub connection_id: uuid::Uuid,
     pub speed: [f64; 2],
+    pub position: [f64; 2],
 }
 
 #[derive(Message)]
@@ -172,6 +174,7 @@ fn claim_ghosts(
                 commands.entity(entity).remove::<Ghost>();
                 let velocity = Vec2::new(ev.speed[0] as f32, ev.speed[1] as f32);
                 commands.entity(entity).insert(LinearVelocity(velocity));
+                commands.entity(entity).insert(Transform::from_translation(Vec3::new(ev.position[0] as f32, ev.position[1] as f32, 0.0)));
                 
                 tracing::info!(connection_id = %ev.connection_id, "Claimed Ghost as Local Player");
                 break;
@@ -183,16 +186,20 @@ fn claim_ghosts(
 fn mark_locals_as_ghosts(
     mut commands: Commands,
     mut events: MessageReader<MarkAsGhost>,
-    query: Query<(Entity, &NetEntity, Option<&LinearVelocity>), Without<Ghost>>,
+    query: Query<(Entity, &NetEntity, Option<&LinearVelocity>, Option<&Transform>), Without<Ghost>>,
     broker: Option<Res<BrokerPeer>>,
 ) {
     for ev in events.read() {
-        for (entity, net_entity, velocity) in &query {
+        for (entity, net_entity, velocity, transform) in &query {
             if net_entity.connection_id == ev.connection_id {
                 commands.entity(entity).insert(Ghost);
                 
                 let speed = velocity
                     .map(|vel| [vel.x as f64, vel.y as f64])
+                    .unwrap_or([0.0, 0.0]);
+                
+                let position = transform
+                    .map(|t| [t.translation.x as f64, t.translation.y as f64])
                     .unwrap_or([0.0, 0.0]);
                 
                 tracing::info!(connection_id = %ev.connection_id, "Marked Local Player as Ghost");
@@ -204,6 +211,7 @@ fn mark_locals_as_ghosts(
                         ev.receiver_shard_id,
                         ev.connection_id,
                         speed,
+                        position,
                     );
                 }
                 break;
@@ -281,18 +289,25 @@ fn process_net_commands(
                 despawn_writer.write(DespawnNetEntity { connection_id });
                 input_buf.0.remove(&connection_id);
             }
-            SimCommand::GhostIsNowLocal { connection_id, speed } => {
+            SimCommand::GhostIsNowLocal { connection_id, speed, position } => {
                 let mut found = false;
                 for net_entity in &ghost_query{
                     if net_entity.connection_id == connection_id {
                         found = true;
                         println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={}", connection_id);
-                        claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id, speed });
+                        claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id, speed, position });
                         break;
                     }
                 }
                 if !found {
                     println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={} but no matching Ghost found", connection_id);
+                    // create the ghost
+                    spawn_owned_writer.write(SpawnNetEntity {
+                        net_entity: NetEntity { connection_id},
+                        position: Vec2::new(position[0] as f32, position[1] as f32),
+                        is_ghost: true,
+                    });
+                    claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id, speed, position });
                 }
             }
             SimCommand::LocalIsNowGhost { connection_id, receiver_shard_id } => {

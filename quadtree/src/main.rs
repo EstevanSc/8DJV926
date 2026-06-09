@@ -166,6 +166,7 @@ async fn run_main_loop(
     let orchestrator_client = orchestrator_client;
     let mut broker_client = broker_client;
     let mut pending_shard_to_destroy: PendingShardToDestroy = HashSet::new();
+    let mut should_handle_pending_destructions = false;
 
     if let Some(client) = broker_client.as_ref() {
         let client_id = client.connection_id();
@@ -192,25 +193,31 @@ async fn run_main_loop(
         tick.tick().await;
 
         let mut flagged_for_rebuild = false;
+        
+        let old_shard_map = shard_map.read().unwrap().clone();
+        
 
         if let Some(client) = broker_client.as_mut() {
-            poll_quic_events(client, "broker", &shard_map, &pending_players, &entity_map, &entity_owners, &mut flagged_for_rebuild).await?;
+            poll_quic_events(client, "broker", &shard_map, &pending_players, &entity_map, &entity_owners, &mut flagged_for_rebuild, &mut should_handle_pending_destructions).await?;
         }
 
         if let Some(client) = broker_client.as_ref() {
-              process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild, &shard_set).await;
+            process_pending_players(&pending_players, client, &shard_map, &entity_map, &entity_owners, &mut flagged_for_rebuild, &shard_set).await;
         }
 
         if let Some(client) = broker_client.as_ref() {
             apply_area_of_interest(client, &entity_map).await;
         }
         
-        if flagged_for_rebuild {
+        if flagged_for_rebuild || should_handle_pending_destructions{
             tracing::info!("Rebuilding quadtree due to shard changes...");
 
             let old_shard_set = shard_set.read().unwrap().clone();
-            let old_shard_map = shard_map.read().unwrap().clone();
-
+            // print the current shard map for debugging
+            tracing::info!("Current shard map:");
+            for (boundary, uuid) in old_shard_map.iter() {
+                tracing::info!("Boundary: ({}, {}, {}), UUID: {:?}", boundary.x, boundary.y, boundary.half_size, uuid);
+            }
             let points: Vec<[f64; 2]> = {
                 let entity_map = entity_map.read().unwrap();
                 entity_map.values().map(|data| data.position).collect()
@@ -221,9 +228,9 @@ async fn run_main_loop(
             let new_shard_set = shard_set.read().unwrap().clone();
             let mut rebuilt_boundaries: Vec<Boundary> = new_shard_set.iter().copied().collect();
 
-            if new_shard_set != old_shard_set {
+            if new_shard_set != old_shard_set || should_handle_pending_destructions {
                 // add the older shards for each new shard which has not it's uuid assigned yet in the rebuilt_boundaries so orchestrator don't kill them before the new ones are up
-                retain_old_shards_during_rebuild(&old_shard_set,&new_shard_set,&shard_set,&old_shard_map,&mut rebuilt_boundaries, &mut pending_shard_to_destroy).await;
+                retain_old_shards_during_rebuild(&old_shard_set,&new_shard_set,&shard_set,&old_shard_map,&mut rebuilt_boundaries, &mut pending_shard_to_destroy,).await;
                 if let Some(broker) = broker_client.as_ref() {
                     handle_pending_shard_destructions(broker, &entity_map, &shard_map, &entity_owners, &shard_set,&mut pending_shard_to_destroy).await;
                 }
@@ -244,6 +251,11 @@ async fn run_main_loop(
                 if let Some(broker) = broker_client.as_ref() {
                     broker.publish(Topic::QuadtreeBoundariesUpdate, &payload).await?;
                 }
+
+                // print should_handle_pending_destructions for debugging
+                let number_of_pending_destructions = pending_shard_to_destroy.len();
+                should_handle_pending_destructions = number_of_pending_destructions > 0;
+                tracing::info!("should_handle_pending_destructions={}", should_handle_pending_destructions);
             }
         }
     }
@@ -257,6 +269,7 @@ async fn poll_quic_events(
     entity_map: &SharedEntityMap,
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
+    should_handle_pending_destructions: &mut bool,
 ) -> anyhow::Result<()> {
     while let Some(event) = broker.poll()? {
         match event {
@@ -269,7 +282,7 @@ async fn poll_quic_events(
                     stream.stream_id
                 );
 
-                handle_quic_message(&data, shard_map, pending_players, entity_map, entity_owners, flagged_for_rebuild, broker).await;
+                handle_quic_message(&data, shard_map, pending_players, entity_map, entity_owners, flagged_for_rebuild, broker, should_handle_pending_destructions).await;
             }
             _ => {}
         }
@@ -449,6 +462,7 @@ async fn handle_quic_message(
     entity_owners: &SharedEntityOwners,
     flagged_for_rebuild: &mut bool,
     broker: &QuicClient,
+    should_handle_pending_destructions: &mut bool,
 ) {
     let Some(message) = BrokerMessage::deserialize(data) else {
         return;
@@ -461,7 +475,7 @@ async fn handle_quic_message(
                 Topic::PlayerStartingPosition => {
                     handle_player_starting_position_topic(&payload, pending_players);
                 }
-                Topic::ShardCreated => handle_shard_created_topic(&payload, shard_map, flagged_for_rebuild, entity_map, broker).await,
+                Topic::ShardCreated => handle_shard_created_topic(&payload, shard_map, flagged_for_rebuild, entity_map, broker, should_handle_pending_destructions).await,
                 Topic::EntityPositionUpdate(uuid) => {
                     handle_entity_position_update_topic(uuid, &payload, shard_map, entity_map, entity_owners, flagged_for_rebuild, broker).await
                 }
@@ -478,12 +492,14 @@ async fn  handle_shard_created_topic(
     flagged_for_rebuild: &mut bool,
     entity_map: &SharedEntityMap,
     broker: &QuicClient,
+    should_handle_pending_destructions: &mut bool,
 ) {
     let Some(parsed) = deserialize_shard_created_payload(payload) else {
+        tracing::error!("Failed to deserialize ShardCreated payload") ;
         return;
     };
     *flagged_for_rebuild = true;
-    {
+    *should_handle_pending_destructions = true;
         let mut map = shard_map.write().unwrap();
         map.insert(parsed.boundary, Some(parsed.shard_connection_id));
         tracing::info!(
@@ -503,7 +519,6 @@ async fn  handle_shard_created_topic(
                 broker.publish(Topic::EntityPositionUpdate(*entity_id), &payload).await.unwrap_or_else(|e| tracing::error!("Failed to publish entity position to new shard: {}", e));
             }
         }
-    }
 }
 
 fn handle_player_starting_position_topic(payload: &[u8], pending_players: &SharedPendingPlayers) {

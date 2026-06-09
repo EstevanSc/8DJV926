@@ -461,6 +461,7 @@ fn handle_broker_message(
                 };
                 let connection_id = received_payload.entity_id;
                 let speed = received_payload.speed;
+                let position = received_payload.entity_position;
 
                 println!("Received ClaimOwnership (should GhostIsNowLocal) broadcast for shard_id={} connection_id={}", shard_id, connection_id);
                 if let Some(info) = client_registry.registry.get_mut(&connection_id) {
@@ -468,10 +469,16 @@ fn handle_broker_message(
                 }
                 else{
                     println!("Received ClaimOwnership for connection_id={} that is not in the registry", connection_id);
+                    // create the client in the registry so he can be marked as local and receive inputs
+                    client_registry.registry.insert(
+                        connection_id,
+                        ClientInfo { is_ghost: false },
+                    );
                 }
                 let _ = sim_tx.0.send(crate::net::SimCommand::GhostIsNowLocal {
                     connection_id,
                     speed,
+                    position,
                 });
 
                 // subscribe to entity's input and disconnect topics
@@ -501,6 +508,10 @@ fn handle_broker_message(
                 }
                 else{
                     println!("Received ReleaseOwnership for connection_id={} that is not in the registry", connection_id);
+                    client_registry.registry.insert(
+                        connection_id,
+                        ClientInfo { is_ghost: true },
+                    );
                 }
                 let _ = sim_tx.0.send(crate::net::SimCommand::LocalIsNowGhost {
                     connection_id,
@@ -775,7 +786,7 @@ fn publish_to_topic(broker: &BrokerPeer, topic: Topic, payload: Vec<u8>) {
 }
 
 /// method to send claim ownership, called by simulation
-pub(crate) fn send_claim_ownership(broker: &BrokerPeer, shard_id: Uuid, entity_id: Uuid, velocity: [f64; 2]) {
+pub(crate) fn send_claim_ownership(broker: &BrokerPeer, shard_id: Uuid, entity_id: Uuid, velocity: [f64; 2], position: [f64; 2]) {
     // unsubscribe from entity's input and disconnect
     let own_shard_id = match broker.connection {
         Some(conn) => conn.connection_id,
@@ -788,6 +799,7 @@ pub(crate) fn send_claim_ownership(broker: &BrokerPeer, shard_id: Uuid, entity_i
     unsubscribe_from_topic(broker, own_shard_id, Topic::Disconnect(entity_id));
     let claim_ownership_payload = serialize_claim_ownership_payload(&ClaimOwnershipPayload {
     entity_id: entity_id,
+    entity_position: position,
     speed: velocity,
     });
     publish_to_topic(broker, Topic::ClaimOwnership(shard_id), claim_ownership_payload);
