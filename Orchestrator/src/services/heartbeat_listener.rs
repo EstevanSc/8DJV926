@@ -32,7 +32,7 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient, heartbeat_ttl_second
         match socket.recv_from(&mut buffer).await {
             Ok((n, addr)) => {
                 let payload = &buffer[..n];
-                tracing::info!("Received heartbeat from {}: {} bytes", addr, n);
+                //tracing::info!("Received heartbeat from {}: {} bytes", addr, n);
 
                 // Parse JSON payload
                 match String::from_utf8(payload.to_vec()) {
@@ -81,12 +81,12 @@ async fn listen_loop(socket: UdpSocket, redis: RedisClient, heartbeat_ttl_second
                                                 e
                                             );
                                         } else {
-                                            tracing::info!(
+                                            /*tracing::info!(
                                                 "Updated server {} in Redis (status: {}, TTL: {}s)",
                                                 heartbeat.id,
                                                 status,
                                                 heartbeat_ttl_seconds
-                                            );
+                                            );*/
                                         }
                                     }
                                     Err(e) => {

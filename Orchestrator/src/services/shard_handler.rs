@@ -76,6 +76,28 @@ async fn handle_shard_update(
     let to_add_len = to_add.len();
     let to_remove_len = to_remove.len();
 
+    for boundary in to_add {
+        let center = center_key(&boundary);
+        tracing::info!("Orchestrator: spawning server for shard center ({}, {})", boundary.x, boundary.y);
+
+        match find_available_port(redis, base_port).await {
+            Ok(port) => {
+                match docker_ops::spawn_server_for_boundary(docker, redis, port, boundary).await {
+                    Ok(redis_key) => {
+                        current_shards.insert(center, redis_key);
+                        current_centers.insert(center);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to spawn server for shard center ({}, {}): {}", boundary.x, boundary.y, e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("No available port for shard center ({}, {}): {}", boundary.x, boundary.y, e);
+            }
+        }
+    }
+
     for center in to_remove {
         if let Some(redis_key) = current_shards.remove(&center) {
             current_centers.remove(&center);
@@ -97,28 +119,6 @@ async fn handle_shard_update(
                 tracing::error!("Failed to remove Redis key {}: {}", redis_key, e);
             } else {
                 tracing::info!("Removed server for shard center ({}, {})", f64::from_bits(center.0), f64::from_bits(center.1));
-            }
-        }
-    }
-
-    for boundary in to_add {
-        let center = center_key(&boundary);
-        tracing::info!("Orchestrator: spawning server for shard center ({}, {})", boundary.x, boundary.y);
-
-        match find_available_port(redis, base_port).await {
-            Ok(port) => {
-                match docker_ops::spawn_server_for_boundary(docker, redis, port, boundary).await {
-                    Ok(redis_key) => {
-                        current_shards.insert(center, redis_key);
-                        current_centers.insert(center);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to spawn server for shard center ({}, {}): {}", boundary.x, boundary.y, e);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("No available port for shard center ({}, {}): {}", boundary.x, boundary.y, e);
             }
         }
     }
