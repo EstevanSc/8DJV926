@@ -1,4 +1,6 @@
 mod quic_client;
+mod config;
+
 use common::{Boundary, Quadrant};
 use common::topics::{
     PositionPayload, QuadtreeBoundariesUpdatePayload, StartingPositionPayload, Topic, ReleaseOwnershipPayload, deserialize_position_payload, deserialize_shard_created_payload, deserialize_starting_position_payload, serialize_position_payload, serialize_quadtree_boundaries_update_payload, serialize_release_ownership_payload
@@ -10,6 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use crate::config::Config;
 
 type SharedShardSet = Arc<RwLock<HashSet<Boundary>>>;
 type SharedShardMap = Arc<RwLock<HashMap<Boundary, Option<uuid::Uuid>>>>;
@@ -20,71 +23,12 @@ type PendingShardToDestroy = HashSet<(uuid::Uuid, Boundary)>;
 
 const PLAYER_SPAWN_RETRY_TIMEOUT_SECS: u64 = 15;
 
-/// Load configuration from environment variables with defaults.
-struct Config {
-    world_size: f64,
-    max_capacity: usize,
-    max_depth: u8,
-    nearby_margin: f64,
-    orchestrator_host: String,
-    orchestrator_port: u16,
-    broker_host: String,
-    broker_port: u16,
-    entity_add_interval_ms: u64,
-    area_of_interest_radius: f64,
-}
-
 struct EntityData {
     position: [f64; 2],
     entities_in_interest: HashSet<uuid::Uuid>,
     parent_boundary: Boundary,
     owner_boundary: Boundary,
     ghosted_boundaries: HashSet<Boundary>,
-}
-
-impl Config {
-    fn from_env() -> Self {
-        dotenv::dotenv().ok();
-
-        Config {
-            world_size: std::env::var("QUADTREE_WORLD_SIZE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(100.0),
-            max_capacity: std::env::var("QUADTREE_MAX_CAPACITY")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(4),
-            max_depth: std::env::var("QUADTREE_MAX_DEPTH")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10),
-            nearby_margin: std::env::var("QUADTREE_NEARBY_MARGIN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5.0),
-            orchestrator_host: std::env::var("QUADTREE_ORCHESTRATOR_HOST")
-                .unwrap_or_else(|_| "localhost".to_string()),
-            orchestrator_port: std::env::var("QUADTREE_ORCHESTRATOR_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5000),
-            broker_host: std::env::var("QUADTREE_BROKER_HOST")
-                .unwrap_or_else(|_| "broker".to_string()),
-            broker_port: std::env::var("QUADTREE_BROKER_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(7776),
-            entity_add_interval_ms: std::env::var("QUADTREE_ENTITY_ADD_INTERVAL_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1000),
-            area_of_interest_radius: std::env::var("QUADTREE_AREA_OF_INTEREST_RADIUS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10.0),
-        }
-    }
 }
 
 #[tokio::main]
@@ -255,7 +199,7 @@ async fn run_main_loop(
                 // print should_handle_pending_destructions for debugging
                 let number_of_pending_destructions = pending_shard_to_destroy.len();
                 should_handle_pending_destructions = number_of_pending_destructions > 0;
-                tracing::info!("should_handle_pending_destructions={}", should_handle_pending_destructions);
+                //tracing::info!("should_handle_pending_destructions={}", should_handle_pending_destructions);
             }
         }
     }
@@ -1137,28 +1081,28 @@ async fn handle_pending_shard_destructions(
     shard_set: &SharedShardSet,
     pending_shard_to_destroy: &mut PendingShardToDestroy,
 ) {
-    tracing::info!("shard set before processing pending destructions:");
+    //tracing::info!("shard set before processing pending destructions:");
     for boundary in shard_set.read().unwrap().iter() {
-        tracing::info!("Shard boundary=({}, {}, {})", boundary.x, boundary.y, boundary.half_size);
+        //tracing::info!("Shard boundary=({}, {}, {})", boundary.x, boundary.y, boundary.half_size);
     }
-    tracing::info!("pending shard destructions:");
+    //tracing::info!("pending shard destructions:");
     for (uuid, boundary) in pending_shard_to_destroy.iter() {
-        tracing::info!("pending destruction of shard_uuid={} with boundary=({}, {}, {})", uuid, boundary.x, boundary.y, boundary.half_size);
+        //tracing::info!("pending destruction of shard_uuid={} with boundary=({}, {}, {})", uuid, boundary.x, boundary.y, boundary.half_size);
     }
     let mut shard_to_remove_from_pending = HashSet::<(uuid::Uuid, Boundary)>::new();
     for shard_to_destroy in pending_shard_to_destroy.iter() {
-        tracing::info!("begin Processing pending shard destruction for shard_uuid={} with boundary=({}, {}, {})", shard_to_destroy.0, shard_to_destroy.1.x, shard_to_destroy.1.y, shard_to_destroy.1.half_size);
+        //tracing::info!("begin Processing pending shard destruction for shard_uuid={} with boundary=({}, {}, {})", shard_to_destroy.0, shard_to_destroy.1.x, shard_to_destroy.1.y, shard_to_destroy.1.half_size);
         let shard_uuid = shard_to_destroy.0;
         let shard_boundary = shard_to_destroy.1;
         let shard_in_set = shard_set.read().unwrap().contains(&shard_boundary);
         if !shard_in_set {
-            tracing::info!("Processing pending shard destruction for shard_uuid={} with boundary=({}, {}, {})", shard_uuid, shard_boundary.x, shard_boundary.y, shard_boundary.half_size);
+            //tracing::info!("Processing pending shard destruction for shard_uuid={} with boundary=({}, {}, {})", shard_uuid, shard_boundary.x, shard_boundary.y, shard_boundary.half_size);
             handle_shard_destruction(broker, shard_uuid, shard_boundary, entity_map, shard_map, entity_owners).await;
             shard_to_remove_from_pending.insert((shard_uuid, shard_boundary));
         }
     }
     for (uuid, boundary) in shard_to_remove_from_pending {
-        tracing::info!("Removing shard_uuid={} with boundary=({}, {}, {}) from pending destruction list", uuid, boundary.x, boundary.y, boundary.half_size);
+        //tracing::info!("Removing shard_uuid={} with boundary=({}, {}, {}) from pending destruction list", uuid, boundary.x, boundary.y, boundary.half_size);
         pending_shard_to_destroy.remove(&(uuid, boundary));
     }
 }
