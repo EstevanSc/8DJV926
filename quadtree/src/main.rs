@@ -423,6 +423,17 @@ async fn handle_quic_message(
                 Topic::EntityPositionUpdate(uuid) => {
                     handle_entity_position_update_topic(uuid, &payload, shard_map, entity_map, entity_owners, flagged_for_rebuild, broker).await
                 }
+                Topic::Disconnect(uuid) => {
+                    tracing::info!("Received disconnect for entity_id={}", uuid);
+                    entity_map.write().unwrap().remove(&uuid);
+                    entity_owners.write().unwrap().remove(&uuid);
+                    if let Err(e) = broker.unsubscribe(uuid, Topic::EntityPositionUpdate(uuid)).await {
+                        tracing::error!("Failed to unsubscribe from position updates for entity {:?}: {}", uuid, e);
+                    } else {
+                        tracing::info!("Unsubscribed from position updates for entity {:?} due to disconnect", uuid);
+                    }
+                    *flagged_for_rebuild = true;
+                }
                 _ => {}
             }
         }
@@ -518,7 +529,7 @@ async fn spawn_player_on_shard(
     broker.subscribe(shard_uuid, Topic::PlayerStartingPositionInShard(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
-    
+
     //subscribe the client to the player's position updates so it can track its own position for interpolation
     broker.subscribe(player_id, Topic::EntityPositionUpdate(player_id)).await?;
 
@@ -531,6 +542,7 @@ async fn spawn_player_on_shard(
 
     //subscribe the quadtree to the player's position updates so it can track which shard they are in
     broker.subscribe(broker.connection_id(), Topic::EntityPositionUpdate(player_id)).await?; 
+    broker.subscribe(broker.connection_id(), Topic::Disconnect(player_id)).await?;
 
     let boundary = find_shard_for_position(shard_map, position[0], position[1])
         .map(|(b, _)| b)
@@ -624,6 +636,11 @@ async fn handle_entity_position_update_topic(connection_id: uuid::Uuid, payload:
         print!("Failed to deserialize EntityPositionUpdate payload") ;
         return;
     };
+    let is_known_entity = entity_map.read().unwrap().contains_key(&connection_id);
+    if !is_known_entity {
+        tracing::warn!("Received position update for unknown entity_id={}, treating as new spawn at ({}, {})", connection_id, parsed.position[0], parsed.position[1]);
+        return;
+    }
 
     // Phase 1: collect all needed data under short-lived read locks, then release them
     // before any await points to avoid holding locks across suspension points.
