@@ -66,12 +66,18 @@ impl BrokerState {
                 GameNetworkEvent::Connected(conn) => {
                     println!("Connected! Connection id: {:?}", conn.connection_id);
                     self.connections.insert(conn);
-                    connection_map.insert(conn.connection_id, conn);
+                    //connection_map.insert(conn.connection_id, conn); // handled on BorkerMessage::Connect
                 }
                 GameNetworkEvent::Disconnected(conn) => {
-                    println!("Disconnected! Connection id: {:?}", conn.connection_id);
+                    let mut connection_id = conn.connection_id;
+                    for (id, existing_conn) in connection_map.iter() {
+                        if &conn == existing_conn {
+                            connection_id = *id;
+                            break;
+                        }
+                    }
+                    println!("Disconnected! Connection id: {:?}", connection_id);
                     if self.connections.remove(&conn) {
-                        let connection_id = conn.connection_id;
                         let topic = Topic::Disconnect(connection_id).to_bytes();
                         self.publish(topic, Vec::new());
 
