@@ -262,7 +262,7 @@ fn receive_packets(
                                 });
                             }
                         }
-                        Topic::AuthorityDebugPacket(entity_uuid) => {
+                        Topic::AuthorityDebugPacket(_entity_uuid) => {
                             //tracing::info!("Received authority debug packet from server for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_authority_debug_packet_payload(&payload) {
                                 //tracing::trace!("Deserialized authority debug packet: {:?}", update);
