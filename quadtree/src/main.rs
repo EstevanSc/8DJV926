@@ -131,7 +131,7 @@ async fn run_main_loop(
     } else {
         tracing::warn!("No connection to orchestrator, skipping initial shard configuration update");
     }
-    let mut tick = tokio::time::interval(Duration::from_millis(config.entity_add_interval_ms));
+    let mut tick = tokio::time::interval(Duration::from_millis(config.quadtree_tick_ms));
 
     loop {
         tick.tick().await;
@@ -875,17 +875,11 @@ async fn check_for_handoff(
                     shard_id: new_shard_uuid,
                 });
                 broker.publish(Topic::ReleaseOwnership(old_shard_uuid), &payload).await.ok();
-                //broker.unsubscribe(old_shard_uuid, Topic::Input(entity_id)).await.ok();
-                //broker.unsubscribe(old_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
             }
             else { // Release ownership will send the claim otherwise to ensure one authority at a time
                 broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
             }
-            //subscribe the new shard to the player's input and disconnect topics
-            //broker.subscribe(new_shard_uuid, Topic::Input(entity_id)).await.ok();
-            //broker.subscribe(new_shard_uuid, Topic::Disconnect(entity_id)).await.ok();
-
-            // broker.publish(Topic::ClaimOwnership(new_shard_uuid), entity_id.as_bytes()).await.ok();
+            //claim sent to new shard by old shard
 
             entity_owners.write().unwrap().insert(entity_id, new_shard_uuid);
 
@@ -1012,7 +1006,7 @@ async fn retain_old_shards_during_rebuild(
                 rebuilt_boundaries.push(*parent);
                 let parent_uuid = shard_map.get(parent).and_then(|id| *id);
                 if !parent_uuid.is_some() {
-                    tracing::warn!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, marking for destruction", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size);
+                    tracing::warn!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, not marking for destruction (maybe already done)", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size);
                 }
                 else{
                     tracing::info!("Parent shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has registered shard UUID {:?}, retaining during rebuild", parent.x, parent.y, parent.half_size, new_shard.x, new_shard.y, new_shard.half_size, parent_uuid);
@@ -1026,10 +1020,13 @@ async fn retain_old_shards_during_rebuild(
                     tracing::info!("keeping children shards for new shard ({}, {}, {}) during rebuild: {} children found", new_shard.x, new_shard.y, new_shard.half_size, childrens.len());
                     rebuilt_boundaries.extend(childrens.clone());
                     for child in childrens {
+                        if child.x == new_shard.x && child.y == new_shard.y && child.half_size == new_shard.half_size {
+                            continue; // skip if the new shard is the same as the child shard
+                        }
                         shard_set.write().unwrap().insert(child);
                         let child_uuid = shard_map.get(&child).and_then(|id| *id);
                         if !child_uuid.is_some() {
-                            tracing::warn!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, marking for destruction", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size);
+                            tracing::warn!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has no registered shard UUID, not marking for destruction (may be already done)", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size);
                         }
                         else{
                             tracing::info!("Child shard boundary=({}, {}, {}) for new shard ({}, {}, {}) has registered shard UUID {:?}, retaining during rebuild", child.x, child.y, child.half_size, new_shard.x, new_shard.y, new_shard.half_size, child_uuid);

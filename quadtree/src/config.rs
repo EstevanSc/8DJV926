@@ -8,7 +8,7 @@ pub struct Config {
     pub orchestrator_port: u16,
     pub broker_host: String,
     pub broker_port: u16,
-    pub entity_add_interval_ms: u64,
+    pub quadtree_tick_ms: u64,
     pub area_of_interest_radius: f64,
 }
 
@@ -45,10 +45,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7776),
-            entity_add_interval_ms: std::env::var("QUADTREE_ENTITY_ADD_INTERVAL_MS")
+            quadtree_tick_ms: std::env::var("QUADTREE_TICK_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(1000),
+                .unwrap_or(50),
             area_of_interest_radius: std::env::var("QUADTREE_AREA_OF_INTEREST_RADIUS")
                 .ok()
                 .and_then(|v| v.parse().ok())
