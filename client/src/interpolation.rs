@@ -79,9 +79,22 @@ fn draw_debug_quad_tree(mut commands: Commands,
     mut events: MessageReader<QuadtreeBoundariesUpdateReceived>,
     query: Query<Entity, With<DebugQuadTree>>,
 ) {
-    let color_array = [Color::srgba(1.0, 0.0, 0.0, 0.125), Color::srgba(0.0, 1.0, 0.0, 0.125), Color::srgba(0.0, 0.0, 1.0, 0.125), Color::srgba(1.0, 1.0, 0.0, 0.125)];
+    let color_array = [
+        Color::srgba(1.0, 0.0, 0.0, 0.125),   // 1. Red (Primary)
+        Color::srgba(1.0, 0.5, 0.0, 0.125),   // 2. Orange (Tertiary)
+        Color::srgba(1.0, 1.0, 0.0, 0.125),   // 3. Yellow (Secondary)
+        Color::srgba(0.5, 1.0, 0.0, 0.125),   // 4. Lime / Chartreuse (Tertiary)
+        Color::srgba(0.0, 1.0, 0.0, 0.125),   // 5. Green (Primary)
+        Color::srgba(0.0, 1.0, 0.5, 0.125),   // 6. Spring Green (Tertiary)
+        Color::srgba(0.0, 1.0, 1.0, 0.125),   // 7. Cyan / Aqua (Secondary)
+        Color::srgba(0.0, 0.5, 1.0, 0.125),   // 8. Azure / Sky Blue (Tertiary)
+        Color::srgba(0.0, 0.0, 1.0, 0.125),   // 9. Blue (Primary)
+        Color::srgba(0.5, 0.0, 1.0, 0.125),   // 10. Violet / Purple (Tertiary)
+        Color::srgba(1.0, 0.0, 1.0, 0.125),   // 11. Magenta / Fuchsia (Secondary)
+        Color::srgba(1.0, 0.0, 0.5, 0.125),   // 12. Rose (Tertiary)
+    ];
 
-    let margin_color_array  = [Color::srgba(1.0, 0.0, 0.0, 0.125), Color::srgba(0.0, 1.0, 0.0, 0.125), Color::srgba(0.0, 0.0, 1.0, 0.125), Color::srgba(1.0, 1.0, 0.0, 0.125)];
+    //let margin_color_array  = [Color::srgba(1.0, 0.0, 0.0, 0.125), Color::srgba(0.0, 1.0, 0.0, 0.125), Color::srgba(0.0, 0.0, 1.0, 0.125), Color::srgba(1.0, 1.0, 0.0, 0.125)];
     for update in events.read() {
         for entity in query.iter() {
             commands.entity(entity).despawn();
@@ -99,7 +112,7 @@ fn draw_debug_quad_tree(mut commands: Commands,
                 DebugQuadTree
             ));
 
-            let margin_color = margin_color_array[i % margin_color_array.len()];
+            let margin_color = color_array[i % color_array.len()];
             //top margin
             let outer_size = Vec2::new(size.x + margin * 2.0, margin);
             let top_center = Vec2::new(center.x, center.y + boundary.half_size as f32 + margin / 2.0);

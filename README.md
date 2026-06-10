@@ -29,11 +29,13 @@ Then you will be redirected to the broker, and the register to the spatial servi
 
 In the gatekeeper's logs you will be able to see the login feedbacks (wrong passeword, new user created...)
 
-![gatekeeper-login.png](docs/gatekeeper-login.png)
+![connected.png](docs/connected.png) *Game view for the client*
 
 When connected you will be able to see the quadtree with margins, area of interest, entities and debug information in the client.
 
-![connected.png](docs/connected.png) *Game view for the client*
+![quadtree-seperation.png](docs/quadtree-seperation.png)
+
+![second-separation-and-interest.png](docs/second-separation-and-interest.png)
 
 You can observe the authority change in the up left corner or in the servers and quadtree logs.
 
