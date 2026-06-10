@@ -11,7 +11,7 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud, handle_disconnect)
+                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud, handle_disconnect, delete_entities_outside_of_interest)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -53,6 +53,10 @@ struct DebugQuadTree;
 
 #[derive(Component)]
 struct DebugUI;
+
+#[derive(Component)]
+struct SelfPlayer;
+
 
 /// Spawn a camera and a visual floor mesh when entering InGame.
 fn spawn_floor(
@@ -188,29 +192,64 @@ fn spawn_remote_players(
             } else {
                 Color::srgb(0.2, 0.6, 1.0) // blue = other players
             };
-            let name = format!("Entity {}", connection_id);
-            commands.spawn((
-                RemotePlayer {
-                    connection_id: update.connection_id,
-                    target: pos,
-                    prev: pos,
-                },
-                Mesh2d(meshes.add(Circle::new(16.0))),
-                MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-                Transform::from_translation(pos.extend(0.0)),
-            )).with_children(|parent| {
-                let label_text = format_remote_player_label(&name, pos);
-                parent.spawn((
-                    Text2d::new(label_text),
-                    TextFont { font_size: 12.0, ..default() },
-                    TextColor(Color::WHITE),
-                    Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
-                    RemotePlayerLabel {
+            let name = format!("{}", connection_id);
+            if is_me {
+                commands.spawn((
+                    RemotePlayer {
                         connection_id: update.connection_id,
-                        display_name: name,
+                        target: pos,
+                        prev: pos,
                     },
-                ));
-            });
+                    SelfPlayer,
+                    Mesh2d(meshes.add(Circle::new(16.0))),
+                    MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+                    Transform::from_translation(pos.extend(0.0)),
+                )).with_children(|parent| {
+                    let label_text = format_remote_player_label(&name, pos);
+                    // 1. Spawn the Text Label Child
+                    parent.spawn((
+                        Text2d::new(label_text),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::WHITE),
+                        // Position it slightly higher in Z-space than the circle so text is on top
+                        Transform::from_translation(Vec3::new(0.0, 28.0, 2.0)), 
+                        RemotePlayerLabel {
+                            connection_id: update.connection_id,
+                            display_name: name,
+                        },
+                    ));
+
+                    // 2. Spawn the Transparent Circle Child
+                    parent.spawn((
+                        Mesh2d(meshes.add(Circle::new(500.0))),
+                        // Alpha is now 0.5, and it will render perfectly!
+                        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgba(1.0, 1.0, 1.0, 0.125)))),
+                    ));
+                });
+            } else {
+                commands.spawn((
+                    RemotePlayer {
+                        connection_id: update.connection_id,
+                        target: pos,
+                        prev: pos,
+                    },
+                    Mesh2d(meshes.add(Circle::new(16.0))),
+                    MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+                    Transform::from_translation(pos.extend(0.0)),
+                )).with_children(|parent| {
+                    let label_text = format_remote_player_label(&name, pos);
+                    parent.spawn((
+                        Text2d::new(label_text),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::WHITE),
+                        Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
+                        RemotePlayerLabel {
+                            connection_id: update.connection_id,
+                            display_name: name,
+                        },
+                    ));
+                });
+            }
         }
     }
 }
@@ -341,6 +380,28 @@ fn handle_disconnect(
             if remote.connection_id == connection_id {
                 commands.entity(entity).despawn();
             }
+        }
+    }
+}
+
+fn delete_entities_outside_of_interest(
+    mut commands: Commands,
+    query_player: Query<(Entity, &RemotePlayer, &Transform, &SelfPlayer)>,
+    query_non_player: Query<(Entity, &RemotePlayer, &Transform), Without<SelfPlayer>>,
+) {
+    let player_position = if let Some((_, _remote, transform, _)) = query_player.iter().next() {
+        transform.translation.truncate()
+    } else {
+        //print!("No player entity found for delete_entities_outside_of_interest system.\n");
+        return;
+    };
+
+    //print!("Player position: {:?}\n", player_position);
+
+    for (entity, _remote, transform) in &query_non_player {
+        let pos = transform.translation.truncate();
+        if (pos - player_position).length() > 500.0 {
+            commands.entity(entity).despawn();
         }
     }
 }
