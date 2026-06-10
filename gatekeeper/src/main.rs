@@ -1,5 +1,4 @@
 mod db;
-mod redis_ops;
 mod routes;
 
 use axum::{

@@ -6,6 +6,8 @@ members = [
     "GameServer",
     "Orchestrator",
     "game_sockets",
+    "quadtree",
+    "broker",
 ]
 resolver = "2"
 

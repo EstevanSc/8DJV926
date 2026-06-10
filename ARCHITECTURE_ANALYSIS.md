@@ -11,6 +11,8 @@ The workspace is a Rust monorepo with multiple crates:
 - `GameServer`: Dedicated game server running simulation + networking + heartbeat emission.
 - `gatekeeper`: Login/auth and server-assignment HTTP service.
 - `Orchestrator`: Fleet manager, heartbeat listener, and Docker scaler.
+- `quadtree`: Spacial service dictating the server configuration and dealing with authority transfers
+- `broker`: The message broker, which is responsible for receiving messages and forwarding them to the appropriate receivers.
 
 Infrastructure around those crates:
 - root `docker-compose.yml`: runs Redis + Gatekeeper + Orchestrator, and defines game-server image.
@@ -56,21 +58,18 @@ Interactive game client (Bevy app) with three phases:
 3. Login flow:
    - captures username/password in UI.
    - POST `/login` to gatekeeper.
-   - receives `player_id` + target server (`ip`, `port`, `zone`).
+   - receives target server (`ip`, `port`, `zone`).
    - stores `GameSession` resource and transitions to `Connecting`.
 4. Connecting flow:
    - creates `GamePeer` with QUIC backend.
    - connects to server.
-   - on `Connected`, sends `GameMessage::Join { username }`.
-   - waits for `Welcome { player_id }`.
-   - derives local `entity_id` from UUID bytes and moves to `InGame`.
 5. In-game flow:
    - `input.rs`: reads keyboard, serializes `PlayerInput`, sends on stream 0.
-   - `net.rs`: receives `PositionBatch` snapshots.
+   - `net.rs`: receives the individual position of every entity in its area of interest.
    - `interpolation.rs`: creates circles/name tags for unseen entity ids, then lerps transform to latest target position.
 
 ### Key design choices
-- Uses shared packet types from `common` (`PlayerInput`, `PositionBatch`), reducing wire-protocol drift.
+- Uses shared packet types from `common` (`PlayerInput`), reducing wire-protocol drift.
 - Uses optimistic interpolation with `POSITION_DELTA_THRESHOLD` to avoid micro-jitter updates.
 - Keeps network peer in `Mutex<GamePeer>` for Bevy resource synchronization.
 
@@ -83,25 +82,24 @@ Shared contract crate used by gatekeeper, orchestrator, server, and client.
 
 ### Contents and role
 - `packets.rs`:
-  - `PositionSnapshot`, `PositionBatch` for state replication.
-  - `PlayerInput` for client movement commands.
-  - also defines `ConnectRequest` / `AuthAck` structs.
+  - Defines network schemas for QUIC/UDP, including `PositionSnapshot` and `PositionBatch` for entity sync, plus `ConnectRequest` and `AuthAck` for session handshakes.
 - `heartbeat.rs`:
-  - `Heartbeat` schema sent from game server to orchestrator.
+  - Contains the `Heartbeat` schema sent from game servers to the Orchestrator for tracking server status.
 - `server_info.rs`:
-  - canonical server metadata (`id`, `ip`, `port`, `zone`, `status`, `player_count`, `max_players`).
+  - Provides the canonical `ServerInfo` structure for server metadata (`id`, `ip`, `port`, `zone`, `status`, `player_count`, `max_players`), used by the Gatekeeper for routing.
 - `redis_client.rs`:
-  - async wrapper over Redis `ConnectionManager` with `scan`, `hset_multiple`, `hget`, `expire`, `hincr`, etc.
+  - Implements an async wrapper over Redis `ConnectionManager` with helpers for `scan`, `hset_multiple`, `hget`, `expire`, and `hincr`.
 - `constants.rs`:
-  - transport/visibility tuning values:
-    - `POSITION_DELTA_THRESHOLD`.
-    - `INTEREST_RADIUS_TILES`.
+  - Stores transport and visibility tuning values such as `POSITION_DELTA_THRESHOLD` and `INTEREST_RADIUS_TILES`.
 - `redis_keys.rs`:
-  - key helpers like `server:<id>`.
+  - Defines shared key naming patterns like `server:<id>` and `servers:active`.
+- `shard_data.rs`:
+  - Contains shared structures for quadtree management, including `Boundary` logic, quadrant subdivision, and serialization.
+- `topics.rs` & `broker_messages.rs`:
+  - Defines the messaging contract for the broker, including `Publish`/`Subscribe` types and a strongly-typed topic system for inter-service communication.
 
 ### Why it matters
-This crate is the integration backbone. It aligns data models across services and avoids duplicate schema definitions.
-
+This crate is the integration backbone. It aligns data models across services, centralizes serialization logic, and avoids duplicate schema definitions.
 ---
 
 ## `docs`
@@ -164,43 +162,34 @@ Pluggable network transport abstraction exposing a unified API (`GamePeer`) over
 ## `GameServer`
 
 ### Purpose
-Dedicated authoritative simulation server for gameplay sessions.
+Dedicated authoritative simulation server for gameplay sessions and shard-based entity management.
 
 ### Structure
-- `src/main.rs`: starts Bevy app with `ServerPlugin` + `SimulationPlugin`.
-- `src/server.rs`: network bind, packet receive loop, join/welcome handling, heartbeat sending.
-- `src/simulation.rs`: physics world, player spawn/despawn/input application, snapshot broadcast.
-- `src/char_controller.rs`: movement and grounded-state systems.
-- `src/interest.rs`: visibility culling based on radius.
-- `src/net.rs`: sim command channel and connection registry helpers.
-- `src/messages.rs`: `GameMessage::{Join,Welcome}` contract.
-- `src/heartbeat.rs`: local heartbeat struct (currently duplicate of shared schema).
-- `src/bin/test_client.rs`: standalone mock QUIC test client.
+- `src/main.rs`: Starts Bevy app with `ServerPlugin` + `SimulationPlugin`.
+- `src/server.rs`: Network bind, broker event loop, message handling (ownership/input), and heartbeat sending.
+- `src/simulation.rs`: Physics world, entity lifecycle (spawn/despawn), ownership transition logic, and snapshot broadcasting.
+- `src/char_controller.rs`: Character movement, damping, and grounded-state systems.
+- `src/net.rs`: Inter-thread simulation command channel and connection registry helpers.
+- `src/messages.rs`: `GameMessage::{Join,Welcome}` legacy authentication contract.
+- `src/heartbeat.rs`: Local heartbeat struct used for reporting status to the Orchestrator.
 
 ### Runtime behavior
 1. On startup:
-   - reads env config (`DS_PORT`, `DS_ID`, `DS_PUBLIC_IP`, `DS_ZONE`, `MAX_PLAYERS`, `ORCH_HOST`).
-   - binds QUIC listener.
-2. On client connect:
-   - stores connection in `ConnectedPlayers`.
-3. On `Join` message:
-   - derives deterministic `entity_id` from connection UUID.
-   - inserts player into registry.
-   - pushes `SimCommand::PlayerJoined` into simulation.
-   - responds `Welcome { player_id }`.
-4. Input handling:
-   - receives serialized `PlayerInput` and forwards into simulation via channel.
-5. Simulation tick:
-   - drains join/leave/input commands.
-   - updates physics and player movement.
-   - interest-filters visible entities per observer.
-   - sends per-client `PositionBatch` on stream 0.
-6. Heartbeat:
-   - every 5 seconds sends JSON UDP heartbeat to orchestrator (`id`, `ip`, `port`, occupancy, capacity).
+   - Reads env config (e.g., `DS_PORT`, `DS_SHARD_CENTER_X`, `DS_ZONE`, `MAX_PLAYERS`).
+   - Binds QUIC listener and establishes control/snapshot streams with the broker.
+   - Announces shard boundary creation via the broker.
+2. Broker Event Handling:
+   - Processes `ClaimOwnership` to promote ghosts to local players and `ReleaseOwnership` to demote them.
+   - Routes player inputs received from the broker into the simulation.
+3. Simulation Tick:
+   - Drains join/leave/input commands from the inter-thread channel.
+   - Updates physics and enforces boundary logic to despawn entities exiting the shard.
+   - Publishes authoritative `PositionPayload` to the broker for active entities.
+4. Heartbeat:
+   - Every 5 seconds sends JSON UDP heartbeat to the orchestrator reporting server occupancy and status.
 
 ### Notable architecture detail
-The game server is authoritative for positions and occupancy reality, while gatekeeper uses Redis approximations for routing in-between heartbeat intervals.
-
+The game server operates within a distributed quadtree; entities are marked as "Local" (full physics authority) or "Ghost" (network-synchronized). Authority is dynamically handed off between shards via broker publications when players cross defined `Boundary` limits.
 ---
 
 ## `gatekeeper`
@@ -227,7 +216,7 @@ Authentication/entry gateway for clients.
 4. Atomically `HINCRBY player_count +1` on selected server.
 5. Return JSON:
    - `player_id` (db id as string),
-   - selected `ServerInfo` (ip/port/zone/status/capacity).
+   - broker connection info (`ip`, `port`) for client to connect.
 
 ### Key integration role
 Acts as traffic director from identity layer to runtime world instance.
@@ -237,43 +226,99 @@ Acts as traffic director from identity layer to runtime world instance.
 ## `Orchestrator`
 
 ### Purpose
-Fleet-control plane for game servers.
+Fleet-control plane responsible for the lifecycle management and health monitoring of game server instances.
 
 ### Structure
-- `src/main.rs`: service startup and task orchestration.
-- `src/config.rs`: environment parsing defaults.
-- `src/services/heartbeat_listener.rs`: UDP heartbeat ingestion + Redis persistence.
-- `src/services/scaler.rs`: periodic scale up/down loop.
-- `src/docker_ops.rs`: Docker API operations for container lifecycle.
-- `src/api/health.rs`: health endpoint under `/api/health`.
-- `mock_server.sh`: test heartbeat generator.
+- `src/main.rs`: Entry point; initializes the configuration, Redis connection, and background worker tasks.
+- `src/config.rs`: Environment variable parsing and default configuration management.
+- `src/services/heartbeat_listener.rs`: UDP background task for ingesting heartbeats and maintaining Redis-based server states.
+- `src/services/shard_handler.rs`: Logic for processing quadtree layout updates and orchestrating server spawning/teardown.
+- `src/docker_ops.rs`: Docker daemon abstraction (via `bollard`) for container lifecycle (spawn/stop).
+- `src/quic_server.rs`: QUIC listener for receiving real-time spatial shard updates from the Quadtree service.
+- `src/api/health.rs`: Health check endpoint for service liveness verification.
 
 ### Runtime behavior
-1. On startup:
-   - loads config (`PORT`, `ORCH_PORT`, `REDIS_URL`, `DS_BASE_PORT`, `HOT_SERVERS_MIN`, etc).
-   - connects to Redis.
-   - starts heartbeat listener task (UDP).
-   - connects to Docker daemon and starts scaler task.
-   - starts HTTP API.
-2. Heartbeat listener:
-   - receives JSON UDP payloads from game servers.
-   - computes status:
-     - `empty` if players = 0,
-     - `full` if players >= max,
-     - else `available`.
-   - writes to `server:<id>` hash in Redis.
-   - sets TTL (`HEARTBEAT_TTL_SECONDS`) so stale servers auto-expire.
-3. Scaler:
-   - at fixed interval (`SCALER_INTERVAL_SECONDS`), scans Redis.
-   - if empty servers < `HOT_SERVERS_MIN`: spawn new game-server containers.
-   - if empty servers > `HOT_SERVERS_MIN`: stop excess containers and delete Redis keys.
-4. Docker spawning:
-   - injects env vars (`DS_ID`, `DS_PORT`, `DS_PUBLIC_IP`, `ORCH_HOST`, etc).
-   - maps UDP game port to host.
-   - pre-registers Redis entry with `status=starting`; later overwritten by heartbeat state.
+1. **Startup**: 
+   - Loads configuration (`PORT`, `REDIS_URL`, `DS_BASE_PORT`) and establishes Redis connectivity.
+   - Spawns the background heartbeat listener (UDP) and the shard handler task.
+2. **Heartbeat Listener**:
+   - Ingests JSON UDP payloads from game servers.
+   - Updates server status (`empty`, `available`, `full`) in Redis with a TTL (`HEARTBEAT_TTL_SECONDS`) to handle node failures.
+3. **Shard & Quadtree Updates**:
+   - Receives boundary updates via QUIC from the Quadtree service.
+   - Compares the desired state with the current server layout and triggers Docker operations to add or remove instances accordingly.
+4. **Docker Management**:
+   - Spawns containers with required environment variables (`DS_ID`, `DS_PORT`, `DS_SHARD_CENTER_X/Y`, etc.).
+   - Maps dedicated game ports to the host and performs pre-registration in Redis with `status=starting` before the first heartbeat confirms the server is ready.
 
 ### Why this is important
-Orchestrator closes the loop between observed capacity and desired warm capacity.
+The Orchestrator acts as the glue between spatial partitioning (Quadtree) and physical deployment (Docker). By reacting dynamically to shard updates, it ensures the fleet maintains the necessary capacity for the current game world topology while handling the full lifecycle of ephemeral server instances.
+---
+### `QUADTREE`
+
+---
+
+## `quadtree`
+
+### Purpose
+The `quadtree` crate serves as the spatial partitioning coordinator and dynamic world sharding engine. It is responsible for tracking entity positions globally, dynamically splitting or merging spatial regions (shards) based on player density, and informing the `Orchestrator` and `broker` of world boundary updates to facilitate horizontal scaling of game server instances.
+
+### Structure
+- `config.rs`: Manages environment configuration mapping parameters such as world dimensions, depth limitations, and capacity rules.
+- `quic_client.rs`: A wrapper layer over `game_sockets` providing dedicated asynchronous QUIC client connection logic optimized for communication with the central orchestrator and broker.
+- `main.rs`: Orchestrates the main execution tick loop, handles network events, runs spatial subdivision geometry logic, and coordinates player placement and area-of-interest management.
+
+### Internal Behavior
+1. **Startup & Network Initialization**:
+   - Spawns and maps configuration values derived from environment variables via `Config::from_env()`.
+   - Establishes two independent, parallel QUIC links using `QuicClient`: one dedicated to the `Orchestrator` for fleet topology reporting, and one to the `broker` for real-time messaging.
+   - Registers its connection with the broker, announcing its system type (`SendingSystem::Quadtree`), and subscribes to structural topics: `Topic::ShardCreated` and `Topic::PlayerStartingPosition`.
+2. **The Tick Loop**:
+   - Executes periodically according to the interval configured via `entity_add_interval_ms`.
+   - On each tick, it processes incoming QUIC messages from the broker, resolves player placement, maps field-of-interest sets, and determines if a tree structural mutation is necessary.
+3. **Dynamic Rebuild & Subdivisions**:
+   - When entity density within a local spatial sector violates `max_capacity`, the quadtree triggers a geometry calculation. It splits the node into four sub-quadrants (`NorthEast`, `NorthWest`, `SouthEast`, `SouthWest`) provided the tree hasn't breached its `max_depth` restriction.
+   - Structural updates execute safely by flushing positions and executing an atomic tree rewrite. Leaf boundaries collected during the query update the system's runtime collection (`SharedShardSet` and `SharedShardMap`).
+4. **Player Spawning & Lifecycle Handshakes**:
+   - When a `PlayerStartingPosition` payload is pulled from the broker queue, the system maps the coordinates to its active spatial cells using `find_shard_for_position`.
+   - If a valid, initialized Shard UUID exists for that boundary, the quadtree executes a cluster-wide lifecycle setup via the broker:
+     - Subscribes the assigned target `GameServer` (shard) to the player's inputs, disconnect events, and position channels.
+     - Subscribes the quadtree itself to the entity's movement updates.
+     - Publishes a `PlayerStartingPositionInShard` notification to instruct the game server to spawn the actor.
+5. **Area of Interest (AoI) Culling**:
+   - Leverages `area_of_interest_radius` and a configured `nearby_margin` to dynamically evaluate entity proximity.
+   - Identifies which entities are close enough to cross shard borders, ensuring that position states are "ghosted" or mirrored across neighboring shard boundaries to guarantee smooth visual continuity for clients moving near edge lines.
+
+### Key Design Choices
+- **Dual QUIC Separation**: Separating broker messaging from orchestrator fleet reporting allows telemetry collection and low-latency state publishing to happen on separate streams without resource contention.
+- **Safe Rebuild Synchronization**: The `rebuild` sequence utilizes structured memory take swaps (`mem::take`) and explicitly protects data mappings from premature states during insertion cycles. It preserves existing active Shard UUID connections during rewrites so the Orchestrator doesn't clean up running containers before replacements initialize.
+- **Deferred Deletions**: Tracked via `PendingShardToDestroy` structures, old shards are gracefully retained until newly substituted spaces register themselves over the network, eliminating coordinate gaps or orphan player drops during live splits.
+
+---
+
+## `Broker`
+
+### Purpose
+Centralized message-routing service that acts as the pub/sub backbone for inter-service communication across the distributed game world.
+
+### Structure
+- `src/main.rs`: Initializes the broker network peer and starts the main event loop.
+- `src/net.rs`: Implements the `BrokerState` logic, including connection management, topic subscription tracking, and message broadcasting.
+
+### Runtime behavior
+1. **Startup**: 
+   - Parses `BROKER_PORT` from environment variables.
+   - Binds a `GamePeer` using the QUIC backend to listen for incoming connections.
+2. **Connection Management**: 
+   - Tracks active `GameConnection` instances and maintains an internal `connection_map` linking UUIDs to network peers.
+   - Automatically handles cleanup of subscriptions and state when a client disconnects.
+3. **Pub/Sub Logic**:
+   - `Subscribe`/`Unsubscribe`: Manages a registry of subscribers per topic, allowing services to express interest in specific events like `Input`, `EntityPositionUpdate`, or `Disconnect`.
+   - `Publish`: Receives payloads from publishers, identifies interested subscribers, and forwards the data as a `Broadcast` message over reliable streams.
+   - `Connect`: Allows systems (Client, Server, Orchestrator) to register their system identity with the broker.
+
+### Why this is important
+The broker decouples services by eliminating the need for point-to-point communication. It enables a dynamic architecture where game servers can subscribe to entity-specific topics (e.g., input from a specific player) or system-wide events (e.g., shard updates) without needing to know the location or address of the originating service.
 
 ---
 
@@ -298,117 +343,3 @@ Repository history and SCM metadata.
 - `clippy.toml`: lint policy.
 - `rustfmt.toml`: formatting policy.
 - `.env`: runtime environment values for compose and services.
-
----
-
-## 3) Component Interaction Model
-
-## High-Level Interaction Graph
-
-```mermaid
-flowchart LR
-    A[Client Bevy App] -->|POST /login| B[Gatekeeper HTTP]
-    B -->|Read/Create player| C[Supabase REST]
-    B -->|Discover server keys| D[Redis]
-    B -->|HINCRBY player_count| D
-    B -->|LoginResponse player_id + server ip/port| A
-
-    A -->|QUIC join + input + recv snapshots| E[GameServer]
-    E -->|UDP heartbeat JSON| F[Orchestrator UDP Listener]
-    F -->|HSET server hash + TTL| D
-
-    G[Orchestrator Scaler] -->|SCAN server:*| D
-    G -->|Spawn/Stop containers| H[Docker Daemon]
-    H -->|Run containers| E
-
-    F -->|/api/health| I[HTTP API]
-```
-
-## Detailed Runtime Sequence (Login to Gameplay)
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant CL as Client
-    participant GK as Gatekeeper
-    participant SB as Supabase
-    participant RD as Redis
-    participant OR as Orchestrator
-    participant GS as GameServer
-
-    U->>CL: Enter username/password
-    CL->>GK: POST /login
-    GK->>SB: find_player(name)
-    alt existing user
-        SB-->>GK: row
-        GK->>GK: verify password
-    else new user
-        GK->>SB: create_player(name,password)
-        SB-->>GK: created row
-    end
-
-    GK->>RD: SCAN/HGET server:* status/capacity
-    RD-->>GK: candidate servers
-    GK->>RD: HINCRBY server:<id> player_count 1
-    GK-->>CL: player_id + server info
-
-    CL->>GS: QUIC connect
-    GS-->>CL: Connected event
-    CL->>GS: GameMessage::Join
-    GS-->>CL: GameMessage::Welcome
-
-    loop every frame
-        CL->>GS: PlayerInput (datagram)
-        GS->>GS: Simulate + interest filter
-        GS-->>CL: PositionBatch snapshots
-    end
-
-    loop every 5s
-        GS->>OR: UDP Heartbeat JSON
-        OR->>RD: HSET server:<id> fields + EXPIRE TTL
-    end
-
-    loop every scaler interval
-        OR->>RD: list empty servers
-        alt too few empties
-            OR->>OR: spawn container via Docker
-        else too many empties
-            OR->>OR: stop/remove excess
-        end
-    end
-```
-
----
-
-## 4) Data Contracts and State Ownership
-
-### Ownership boundaries
-- Identity truth: Supabase (`PlayerInformation`).
-- Fleet/server availability truth: Redis hashes `server:<id>` driven by orchestrator heartbeats.
-- Live simulation truth: GameServer in-memory Bevy world.
-
-### Temporary consistency mechanism
-Gatekeeper increments `player_count` in Redis immediately after assignment. This bridges the delay until next heartbeat refresh from the game server.
-
----
-
-## 5) Operational Notes
-
-- Root compose runs core backend services and leaves client as local process.
-- Orchestrator requires Docker socket mount to manage game-server containers.
-- Heartbeat TTL allows passive cleanup of dead servers without explicit deregistration.
-- QUIC transport handles both reliable messages and low-latency datagrams for gameplay.
-
----
-
-## 6) Folder-to-Responsibility Summary
-
-- `.cargo`: build profile tuning.
-- `client`: UI/login + connection + gameplay rendering/input.
-- `common`: cross-service protocol and Redis abstractions.
-- `docs`: visual evidence of system behavior.
-- `game_sockets`: protocol-agnostic networking layer.
-- `GameServer`: authoritative simulation + session runtime + heartbeats.
-- `gatekeeper`: auth and server assignment.
-- `Orchestrator`: heartbeat ingestion and dynamic scaling.
-- `target`: generated build artifacts.

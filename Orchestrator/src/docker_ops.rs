@@ -26,6 +26,10 @@ fn game_network() -> String {
     std::env::var("GAME_NETWORK").unwrap_or_else(|_| "game-net".to_string())
 }
 
+fn broker_host() -> String {
+    std::env::var("BROKER_HOST").unwrap_or_else(|_| "broker".to_string())
+}
+
 // ── public API ───────────────────────────────────────────────────────────────
 
 /// Connect to the Docker daemon via the platform-default socket.
@@ -46,40 +50,43 @@ pub async fn stop_container(docker: &Docker, container_id: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// Spawn a new game-server container on the given UDP port.
+/// Spawn a new game-server container for a specific shard boundary center.
 ///
-/// - Creates and starts the container on the configured Docker network.
-/// - Passes `DS_ID=<server_id>` so the game server uses the same ID as the
-///   Redis key, ensuring heartbeats update the correct entry.
-/// - Pre-registers `server:<id>` in Redis with `status=starting`; the
-///   heartbeat listener promotes it to `empty` once the server is running.
-pub async fn spawn_server(
+/// Similar to `spawn_server` but also:
+/// - Passes `DS_SHARD_CENTER_X/Y=<center>` to the container
+/// - Stores the shard center in Redis entry
+/// - Returns the Redis key for the server
+pub async fn spawn_server_for_boundary(
     docker: &Docker,
     redis: &RedisClient,
     port: u16,
+    boundary: common::Boundary,
 ) -> anyhow::Result<String> {
     let server_id = Uuid::new_v4().to_string();
+    let shard_center = format!("{},{}", boundary.x, boundary.y);
 
-    // PUBLIC_ADDR is the address clients use to reach this server.
-    // Defaults to "localhost" for local dev with Docker port-mapping.
-    // Set the orchestrator env var PUBLIC_ADDR to override in production.
     let public_addr = std::env::var("PUBLIC_ADDR").unwrap_or_else(|_| "localhost".to_string());
     let zone = std::env::var("DS_ZONE").unwrap_or_else(|_| "zone_A".to_string());
     let max_players = std::env::var("MAX_PLAYERS").unwrap_or_else(|_| "2".to_string());
     let orch_host = std::env::var("ORCH_HOST").unwrap_or_else(|_| "orchestrator:7000".to_string());
+    let broker_host = broker_host();
     let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
 
     let env = vec![
         format!("DS_ID={server_id}"),
         format!("DS_PORT={port}"),
+        format!("DS_SHARD_CENTER_X={}", boundary.x),
+        format!("DS_SHARD_CENTER_Y={}", boundary.y),
+        format!("DS_SHARD_HALF_SIZE={}", boundary.half_size),
+        format!("DS_SHARD_CENTER={shard_center}"),
         format!("DS_ZONE={zone}"),
         format!("DS_PUBLIC_IP={public_addr}"),
         format!("MAX_PLAYERS={max_players}"),
+        format!("BROKER_HOST={broker_host}"),
         format!("ORCH_HOST={orch_host}"),
         format!("RUST_LOG={rust_log}"),
     ];
 
-    // Bind the QUIC UDP port to the host so clients can reach the container.
     let port_key = format!("{port}/udp");
     let host_config = HostConfig {
         port_bindings: Some(HashMap::from([(
@@ -116,6 +123,7 @@ pub async fn spawn_server(
         labels: Some(HashMap::from([
             ("mmo.role".to_string(), "game-server".to_string()),
             ("mmo.server-id".to_string(), server_id.clone()),
+            ("mmo.shard-center".to_string(), shard_center.clone()),
         ])),
         ..Default::default()
     };
@@ -132,14 +140,12 @@ pub async fn spawn_server(
         .await
         .context("start game-server container")?;
 
-    // Pre-register in Redis. The heartbeat listener will overwrite these fields
-    // (except container_id) once the server starts sending heartbeats, moving
-    // status from "starting" → "empty".
     let redis_key = format!("server:{server_id}");
     let mut fields: HashMap<&str, String> = HashMap::new();
     fields.insert("container_id", container_id.clone());
     fields.insert("ip", public_addr);
     fields.insert("port", port.to_string());
+    fields.insert("shard_center", shard_center.clone());
     fields.insert("zone", zone);
     fields.insert("status", "starting".to_string());
     fields.insert("player_count", "0".to_string());
@@ -153,8 +159,9 @@ pub async fn spawn_server(
         server_id = %server_id,
         container_id = %container_id,
         port,
-        "Game server container started",
+        shard_center = %shard_center,
+        "Game server container started for shard center",
     );
 
-    Ok(server_id)
+    Ok(redis_key)
 }

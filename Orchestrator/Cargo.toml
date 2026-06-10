@@ -11,11 +11,15 @@ path = "src/main.rs"
 common             = { workspace = true }
 tokio              = { workspace = true }
 axum               = { workspace = true }
+rcgen              = "0.11"
+game_sockets       = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
+wincode            = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenv             = { workspace = true }
 anyhow             = { workspace = true }
 uuid               = { workspace = true }
 bollard            = { workspace = true }
+bytes              = { workspace = true }

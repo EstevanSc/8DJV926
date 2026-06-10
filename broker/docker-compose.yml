@@ -1,0 +1,15 @@
+﻿version: '3.8'
+
+services:
+  broker:
+    build:
+      context: ../
+      dockerfile: broker/Dockerfile
+    image: mmo-broker:latest
+    container_name: mmo_broker
+    ports:
+      - "7776:7776/udp"
+    environment:
+      - BROKER_PORT=7776
+      - BROKER_PUBLIC_IP=localhost
+    restart: unless-stopped

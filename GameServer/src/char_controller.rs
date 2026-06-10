@@ -33,10 +33,6 @@ pub struct MovementAcceleration(pub Scalar);
 #[derive(Component)]
 pub struct MovementDampingFactor(pub Scalar);
 
-/// The strength of a jump.
-#[derive(Component)]
-pub struct JumpImpulse(pub Scalar);
-
 /// The maximum angle a slope can have for a character controller
 /// to be able to climb and jump. If the slope is steeper than this angle,
 /// the character will slide down.
@@ -60,29 +56,23 @@ pub struct CharacterControllerBundle {
 pub struct MovementBundle {
     acceleration: MovementAcceleration,
     damping: MovementDampingFactor,
-    jump_impulse: JumpImpulse,
-    max_slope_angle: MaxSlopeAngle,
 }
 
 impl MovementBundle {
     pub const fn new(
         acceleration: Scalar,
         damping: Scalar,
-        jump_impulse: Scalar,
-        max_slope_angle: Scalar,
     ) -> Self {
         Self {
             acceleration: MovementAcceleration(acceleration),
             damping: MovementDampingFactor(damping),
-            jump_impulse: JumpImpulse(jump_impulse),
-            max_slope_angle: MaxSlopeAngle(max_slope_angle),
         }
     }
 }
 
 impl Default for MovementBundle {
     fn default() -> Self {
-        Self::new(30.0, 0.9, 7.0, PI * 0.45)
+        Self::new(30.0, 0.9)
     }
 }
 
@@ -107,10 +97,8 @@ impl CharacterControllerBundle {
         mut self,
         acceleration: Scalar,
         damping: Scalar,
-        jump_impulse: Scalar,
-        max_slope_angle: Scalar,
     ) -> Self {
-        self.movement = MovementBundle::new(acceleration, damping, jump_impulse, max_slope_angle);
+        self.movement = MovementBundle::new(acceleration, damping);
         self
     }
 }
@@ -152,7 +140,7 @@ fn apply_movement_damping(
     let delta_time = time.delta_secs_f64().adjust_precision();
 
     for (damping_factor, mut linear_velocity) in &mut query {
-        // We could use `LinearDamping`, but we don't want to dampen movement along the Y axis
         linear_velocity.x *= 1.0 / (1.0 + damping_factor.0 * delta_time);
+        linear_velocity.y *= 1.0 / (1.0 + damping_factor.0 * delta_time);
     }
 }

@@ -6,6 +6,13 @@ use wincode::{SchemaRead, SchemaWrite};
 // Unreliable datagrams — sent every tick via QUIC unreliable datagrams.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq, Eq)]
+pub enum SnapshotAuthority {
+    Owned,
+    PendingHandOff,
+    Ghost,
+}
+
 /// Position and velocity snapshot for a single entity.
 /// Sent unreliably every tick; dropped packets are simply skipped.
 /// Entity IDs are u32 — never UUIDs — to keep datagrams small.
