@@ -1,8 +1,7 @@
 use bevy::{ prelude::*};
 
 use common::constants::POSITION_DELTA_THRESHOLD;
-
-use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived};
+use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived, DisconnectReceived};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
@@ -12,7 +11,7 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud)
+                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud, handle_disconnect)
                     .run_if(in_state(GameState::InGame)),
             );
     }
@@ -331,3 +330,17 @@ fn spawn_debug_hud(
         });
 }
 
+fn handle_disconnect(
+    mut commands: Commands,
+    mut events: MessageReader<DisconnectReceived>,
+    mut query: Query<(Entity, &RemotePlayer), Without<FollowCamera>>,
+) {
+    for event in events.read() {
+        let connection_id = event.entity_id;
+        for (entity, remote) in &mut query {
+            if remote.connection_id == connection_id {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+}

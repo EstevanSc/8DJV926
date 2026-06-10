@@ -825,6 +825,12 @@ async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMa
             } else {
                 tracing::info!("Subscribed to position updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
             }
+            // send subscription to disconnect topic as well
+            if let Err(e) = broker.subscribe(entity_id, Topic::Disconnect(new_id)).await {
+                tracing::error!("Failed to subscribe to disconnect updates for entity {:?}: {}", new_id, e);
+            } else {
+                tracing::info!("Subscribed to disconnect updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
+            }
         }
 
         for old_id in no_longer_in_interest {
@@ -833,6 +839,12 @@ async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMa
                 tracing::error!("Failed to unsubscribe from position updates for entity {:?}: {}", old_id, e);
             } else {
                 tracing::info!("Unsubscribed from position updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
+            }
+            // send unsubscription to disconnect topic as well
+            if let Err(e) = broker.unsubscribe(entity_id, Topic::Disconnect(old_id)).await {
+                tracing::error!("Failed to unsubscribe from disconnect updates for entity {:?}: {}", old_id, e);
+            } else {
+                tracing::info!("Unsubscribed from disconnect updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
             }
         }
     }

@@ -15,6 +15,7 @@ impl Plugin for ClientNetPlugin {
         app.add_message::<PositionUpdateReceived>()
             .add_message::<QuadtreeBoundariesUpdateReceived>()
             .add_message::<AuthorityDebugPacketReceived>()
+            .add_message::<DisconnectReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -222,11 +223,17 @@ pub struct AuthorityDebugPacketReceived {
     pub payload: AuthorityDebugPacketPayload,
 }
 
+#[derive(Message)]
+pub struct DisconnectReceived {
+    pub entity_id: uuid::Uuid,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     mut update_writer: MessageWriter<PositionUpdateReceived>,
     mut quadtree_update_writer: MessageWriter<QuadtreeBoundariesUpdateReceived>,
     mut authority_debug_writer: MessageWriter<AuthorityDebugPacketReceived>,
+    mut disconnect_writer: MessageWriter<DisconnectReceived>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -239,7 +246,7 @@ fn receive_packets(
                         Topic::EntityPositionUpdate( entity_uuid) => {
                             //tracing::debug!("Received position update for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_position_payload(&payload) {
-                                tracing::trace!("Deserialized position update: {:?}", update);
+                                //tracing::trace!("Deserialized position update: {:?}", update);
                                 update_writer.write(PositionUpdateReceived {
                                     connection_id: entity_uuid,
                                     payload: update,
@@ -247,22 +254,28 @@ fn receive_packets(
                             }
                         }
                         Topic::QuadtreeBoundariesUpdate => {
-                            tracing::info!("Received quadtree boundaries update from server");
+                            //tracing::info!("Received quadtree boundaries update from server");
                             if let Some(update) = deserialize_quadtree_boundaries_update_payload(&payload) {
-                                tracing::trace!("Deserialized quadtree boundaries update: {:?}", update);
+                                //tracing::trace!("Deserialized quadtree boundaries update: {:?}", update);
                                 quadtree_update_writer.write(QuadtreeBoundariesUpdateReceived {
                                     payload: update,
                                 });
                             }
                         }
                         Topic::AuthorityDebugPacket(entity_uuid) => {
-                            tracing::info!("Received authority debug packet from server for entity {:?}", entity_uuid);
+                            //tracing::info!("Received authority debug packet from server for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_authority_debug_packet_payload(&payload) {
-                                tracing::trace!("Deserialized authority debug packet: {:?}", update);
+                                //tracing::trace!("Deserialized authority debug packet: {:?}", update);
                                 authority_debug_writer.write(AuthorityDebugPacketReceived {
                                     payload: update,
                                 });
                             }
+                        }
+                        Topic::Disconnect(uuid) => {
+                            tracing::info!("Received disconnect message for entity {:?}", uuid);
+                            disconnect_writer.write(DisconnectReceived {
+                                entity_id: uuid,
+                            });
                         }
                         _ => {}
                     },
