@@ -1,4 +1,11 @@
-This project contains a implementation of a Gatekeeper, an Orchestrator, a server and a client.
+This project implements the necessary structure for a simplified MMO game:
+- a **Gatekeeper**
+- a **Pub/Sub Broker**
+- an **Orchestrator**
+- a quadtree-based **Spatial Service**
+- **Dedicated Game Servers**
+- a **client**
+
 ## Team members:
 - Bastien Gadoury
 - Estevan Schmitt
