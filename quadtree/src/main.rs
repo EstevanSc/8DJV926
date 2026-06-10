@@ -1120,28 +1120,17 @@ async fn handle_pending_shard_destructions(
     shard_set: &SharedShardSet,
     pending_shard_to_destroy: &mut PendingShardToDestroy,
 ) {
-    //tracing::info!("shard set before processing pending destructions:");
-    for boundary in shard_set.read().unwrap().iter() {
-        //tracing::info!("Shard boundary=({}, {}, {})", boundary.x, boundary.y, boundary.half_size);
-    }
-    //tracing::info!("pending shard destructions:");
-    for (uuid, boundary) in pending_shard_to_destroy.iter() {
-        //tracing::info!("pending destruction of shard_uuid={} with boundary=({}, {}, {})", uuid, boundary.x, boundary.y, boundary.half_size);
-    }
     let mut shard_to_remove_from_pending = HashSet::<(uuid::Uuid, Boundary)>::new();
     for shard_to_destroy in pending_shard_to_destroy.iter() {
-        //tracing::info!("begin Processing pending shard destruction for shard_uuid={} with boundary=({}, {}, {})", shard_to_destroy.0, shard_to_destroy.1.x, shard_to_destroy.1.y, shard_to_destroy.1.half_size);
         let shard_uuid = shard_to_destroy.0;
         let shard_boundary = shard_to_destroy.1;
         let shard_in_set = shard_set.read().unwrap().contains(&shard_boundary);
         if !shard_in_set {
-            //tracing::info!("Processing pending shard destruction for shard_uuid={} with boundary=({}, {}, {})", shard_uuid, shard_boundary.x, shard_boundary.y, shard_boundary.half_size);
             handle_shard_destruction(broker, shard_uuid, shard_boundary, entity_map, shard_map, entity_owners).await;
             shard_to_remove_from_pending.insert((shard_uuid, shard_boundary));
         }
     }
     for (uuid, boundary) in shard_to_remove_from_pending {
-        //tracing::info!("Removing shard_uuid={} with boundary=({}, {}, {}) from pending destruction list", uuid, boundary.x, boundary.y, boundary.half_size);
         pending_shard_to_destroy.remove(&(uuid, boundary));
     }
 }
