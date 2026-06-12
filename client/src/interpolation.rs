@@ -45,7 +45,7 @@ pub struct RemotePlayerLabel {
 pub struct GameSceneRoot;
 
 #[derive(Component)]
-struct FollowCamera;
+pub struct FollowCamera;
 
 
 #[derive(Component)]
@@ -55,7 +55,7 @@ struct DebugQuadTree;
 struct DebugUI;
 
 #[derive(Component)]
-struct SelfPlayer;
+pub struct SelfPlayer;
 
 
 /// Spawn a camera and a visual floor mesh when entering InGame.
