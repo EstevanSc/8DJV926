@@ -138,3 +138,22 @@ services:
     image: game-server:latest
     deploy:
       replicas: 0
+
+
+  # ── AI Service ───────────────────────────────────────────────────────────
+  # Headless Bevy service that spawns AI entities and manages their behaviour trees.
+  # Connects to the broker as regular clients (one QUIC connection per AI entity).
+  ai_service:
+    build:
+      context: .
+      dockerfile: ai_service/Dockerfile
+    image: ai_service:latest
+    networks:
+      - game-net
+    environment:
+      RUST_LOG: info
+    depends_on:
+      - broker
+      - quadtree
+    restart: unless-stopped
+ 

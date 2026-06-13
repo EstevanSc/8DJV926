@@ -13,6 +13,7 @@ COPY game_sockets ./game_sockets
 COPY common ./common
 COPY quadtree ./quadtree
 COPY broker ./broker
+COPY ai_service ./ai_service
 
 # Build the quadtree binary
 RUN cargo build --release -p quadtree
