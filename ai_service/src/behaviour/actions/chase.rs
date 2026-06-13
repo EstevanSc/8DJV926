@@ -3,7 +3,7 @@ use bevy_behave::prelude::*;
 
 use crate::components::{AiIntent, AiPosition, Perception};
 
-const AGGRO_RANGE: f64 = 30.0;
+const AGGRO_RANGE: f64 = 300.0;
 
 /// Trigger payload for the CheckNearby condition node.
 #[derive(Clone, Debug)]
@@ -19,7 +19,8 @@ pub fn on_check_nearby(
     query: Query<&Perception>,
     mut commands: Commands,
 ) {
-    print!("CheckNearby triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::info!("CheckNearby triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::info!("Perception query: {:?}", query.iter().collect::<Vec<_>>());
     let ctx = trigger.event().ctx();
 
     let in_range = query
@@ -41,7 +42,7 @@ pub fn on_chase(
     mut query: Query<(&AiPosition, &Perception, &mut AiIntent)>,
     mut commands: Commands,
 ) {
-    print!("Chase triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::info!("Chase triggered for entity {:?}", trigger.event().ctx().target_entity());
     let ctx = trigger.event().ctx();
 
     let Ok((pos, perception, mut intent)) = query.get_mut(ctx.target_entity()) else {
