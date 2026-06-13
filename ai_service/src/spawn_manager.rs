@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
+use bevy_behave::prelude::*;
 use uuid::Uuid;
 
 use crate::behaviour::trees::build_tree;
@@ -59,18 +60,20 @@ fn spawn_zone_entities(commands: &mut Commands, zone: &ZoneConfig) {
 
         let waypoints = vec![
             pos,
-            [pos[0] + 20.0, pos[1]],
-            [pos[0] + 20.0, pos[1] + 20.0],
-            [pos[0], pos[1] + 20.0],
+            [pos[0] + 100.0, pos[1]],
+            [pos[0] + 100.0, pos[1] + 100.0],
+            [pos[0], pos[1] + 100.0],
         ];
 
-        let tree = build_tree(id);
-
-        commands.spawn(AiEntity { id })
+        let agent = commands.spawn(AiEntity { id })
             .insert(AiPosition { x: pos[0], y: pos[1] })
             .insert(Perception::default())
             .insert(PatrolRoute { waypoints, current: 0 })
             .insert(AiIntent::Idle)
-            .insert(tree);
+            .id();
+
+        let tree = build_tree(id);
+        commands.spawn((Name::new(format!("BT-{id}")), tree))
+            .insert(BehaveTargetEntity::Entity(agent));
     }
 }

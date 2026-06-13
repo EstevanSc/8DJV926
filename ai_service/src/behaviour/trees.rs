@@ -10,12 +10,14 @@ use super::actions::patrol::Patrol;
 pub fn goblin_tree(_id: Uuid) -> BehaveTree {
     print!("Building Goblin behaviour tree for entity {:?}...", _id);
     let tree: Tree<Behave> = behave! {
-        Behave::Fallback => {
-            Behave::Sequence => {
-                Behave::trigger(CheckNearby),
-                Behave::trigger(Chase),
-            },
-            Behave::trigger(Patrol),
+        Behave::Forever => {
+            Behave::Fallback => {
+                Behave::Sequence => {
+                    Behave::trigger(CheckNearby),
+                    Behave::trigger(Chase),
+                },
+                Behave::trigger(Patrol),
+            }
         }
     };
     BehaveTree::new(tree)

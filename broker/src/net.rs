@@ -141,7 +141,7 @@ impl BrokerState {
 
             let topic_desc = Topic::from_bytes(topic);
             match topic_desc {
-                //Topic::Input(_) => {}
+                Topic::Input(_) => {}
                 Topic::EntityPositionUpdate(_) => {}
                 Topic::AuthorityDebugPacket(_) => {}
                 Topic::QuadtreeBoundariesUpdate => {}

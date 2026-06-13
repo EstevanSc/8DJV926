@@ -104,17 +104,19 @@ fn upsert_nearby(perception: &mut Perception, id: Uuid, pos: [f64; 2]) {
 
 /// Reads AiIntent components and publishes the corresponding broker messages.
 fn flush_intents(
-    mut query: Query<(&AiEntity, &mut AiIntent)>,
+    mut query: Query<(&AiEntity, &mut AiPosition, &mut AiIntent)>,
     clients: Res<AiClients>,
 ) {
     let pool = clients.0.lock().unwrap();
 
-    for (ai, mut intent) in &mut query {
+    for (ai, position, mut intent) in &mut query {
         let Some(client) = pool.clients.get(&ai.id) else { continue };
 
         match *intent {
             AiIntent::MoveTo(target) => {
-                let dir = [target[0].signum(), target[1].signum()];
+                let dir = [target[0] - position.x, target[1] - position.y];
+                let mag = (dir[0].powi(2) + dir[1].powi(2)).sqrt();
+                let dir = if mag > 0.0 { [dir[0] / mag, dir[1] / mag] } else { [0.0, 0.0] };
                 tracing::debug!("AI {} moving toward {:?}, dir {:?}", ai.id, target, dir);
                 let payload = serialize_input_payload(&InputPayload { dxdy: dir });
                 client.publish(Topic::Input(ai.id).to_bytes(), &payload);
