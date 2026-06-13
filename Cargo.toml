@@ -7,7 +7,7 @@ members = [
     "Orchestrator",
     "game_sockets",
     "quadtree",
-    "broker",
+    "broker", "AbilityService",
 ]
 resolver = "2"
 
