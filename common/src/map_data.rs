@@ -1,16 +1,17 @@
-const MAP_WIDTH: usize = 256;
-const MAP_HEIGHT: usize = 256;
+pub const MAP_WIDTH: usize = 1 * 64;
+pub const MAP_HEIGHT: usize = 1 * 64;
+pub const TILE_SIZE: f32 = 32.0;
 
 pub struct BitMap {
-    // 256 rows, each holding 4 u64 integers (4 * 64 = 256 bits per row)
-    pub data: [[u64; 4]; MAP_HEIGHT],
+    // 64 rows, each holding 1 u64 integer (1 * 64 = 64 bits per row)
+    pub data: [[u64; 1]; MAP_HEIGHT],
 }
 
 impl BitMap {
     /// Creates an empty map (all 0s / empty space)
     pub fn new() -> Self {
         Self {
-            data: [[0; 4]; MAP_HEIGHT],
+            data: [[0; 1]; MAP_HEIGHT],
         }
     }
 
@@ -41,11 +42,9 @@ impl BitMap {
                 if x == 0 || x == MAP_WIDTH - 1 || y == 0 || y == MAP_HEIGHT - 1 {
                     self.set_wall(x, y);
                 }
-                // 2. Create Internal Obstacles (Pillars every 8 tiles, leaving a margin)
-                else if x > 10 && x < MAP_WIDTH - 10 && y > 10 && y < MAP_HEIGHT - 10 {
-                    if x % 8 == 0 && y % 8 == 0 {
-                        self.set_wall(x, y);
-                    }
+                // 2. Create Internal Obstacles (Pillars every 8 tiles)
+                if x % 8 == 0 && y % 8 == 0 {
+                    self.set_wall(x, y);
                 }
             }
         }

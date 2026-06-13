@@ -1,5 +1,6 @@
 use avian2d::{math::*, prelude::*};
 use common::topics::PositionPayload;
+use common::map_data::{BitMap, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 
 use std::collections::HashMap;
 
@@ -31,7 +32,7 @@ impl Plugin for SimulationPlugin {
             .add_message::<DespawnNetEntity>()
             .add_message::<ClaimAsLocalPlayer>()
             .add_message::<MarkAsGhost>()
-            .add_systems(Startup, spawn_floor)
+            .add_systems(Startup, spawn_map)
             .add_systems(FixedUpdate, process_net_commands)
             .add_systems(FixedUpdate, (spawn_net_entities).after(process_net_commands))
             .add_systems(FixedUpdate, (claim_ghosts, mark_locals_as_ghosts).after(spawn_net_entities))
@@ -97,14 +98,30 @@ pub struct MarkAsGhost {
 // ---------------------------------------------------------------------------
 
 /// Spawn the static floor so players don't fall into the void.
-fn spawn_floor(mut commands: Commands) {
-    commands.spawn((
-        Transform::from_translation(Vec3::new(0.0, -300.0, 0.0)),
-        GlobalTransform::default(),
-        RigidBody::Static,
-        Collider::rectangle(ARENA_WIDTH, ARENA_WALL_THICKNESS),
-        Restitution::new(FLOOR_RESTITUTION).with_combine_rule(CoefficientCombine::Max),
-    ));
+fn spawn_map(mut commands: Commands) {
+    let mut map = BitMap::new();
+    map.generate_map();
+    map.print_sub_grid(0, 0, 64, 32);
+
+    for y in 0..map.data.len() {
+        for x in 0..map.data[y].len() * 64 {
+            if map.is_wall(x, y) {
+                // 1. Convert tile coordinate to initial world space
+                // 2. Subtract half-map size to center it at (0,0)
+                // 3. Add 4.0 (half of tile size) so the anchor aligns to the center of the asset mesh
+                let world_x = (x as f32 * TILE_SIZE) - (MAP_WIDTH as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
+                let world_y = (y as f32 * TILE_SIZE) - (MAP_HEIGHT as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
+
+                commands.spawn((
+                    Transform::from_translation(Vec3::new(world_x, world_y, 0.0)),
+                    GlobalTransform::default(),
+                    RigidBody::Static,
+                    Collider::rectangle(TILE_SIZE, TILE_SIZE),
+                    Restitution::new(FLOOR_RESTITUTION).with_combine_rule(CoefficientCombine::Max),
+                ));
+            }
+        }
+    }
 }
 
 fn spawn_net_entities(

@@ -1,6 +1,8 @@
 use bevy::{ prelude::*};
 
 use common::constants::POSITION_DELTA_THRESHOLD;
+use common::map_data::{BitMap, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
+
 use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived, DisconnectReceived};
 use super::{GameSession, GameState};
 
@@ -8,7 +10,7 @@ pub struct InterpolationPlugin;
 
 impl Plugin for InterpolationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::InGame), (spawn_floor, spawn_debug_hud))
+        app.add_systems(OnEnter(GameState::InGame), (spawn_map, spawn_debug_hud))
             .add_systems(
                 Update,
                 (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud, handle_disconnect, delete_entities_outside_of_interest)
@@ -57,20 +59,36 @@ struct DebugUI;
 #[derive(Component)]
 pub struct SelfPlayer;
 
-
 /// Spawn a camera and a visual floor mesh when entering InGame.
-fn spawn_floor(
+fn spawn_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    let mut map = BitMap::new();
+    map.generate_map();
+    map.print_sub_grid(0, 0, 64, 32);
+
+    for y in 0..map.data.len() {
+        for x in 0..map.data[y].len() * 64 {
+            if map.is_wall(x, y) {
+                // 1. Convert tile coordinate to initial world space
+                // 2. Subtract half-map size to center it at (0,0)
+                // 3. Add 4.0 (half of tile size) so the anchor aligns to the center of the asset mesh
+                let world_x = (x as f32 * TILE_SIZE) - (MAP_WIDTH as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
+                let world_y = (y as f32 * TILE_SIZE) - (MAP_HEIGHT as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
+
+                commands.spawn((
+                    Mesh2d(meshes.add(Rectangle::new(TILE_SIZE, TILE_SIZE))),
+                    MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(0.0, 0.0, 0.0)))),
+                    Transform::from_translation(Vec3::new(world_x, world_y, 1.0)),
+                    GameSceneRoot,
+                ));
+            }
+        }
+    }
+
     commands.spawn((Camera2d, FollowCamera, GameSceneRoot));
-    commands.spawn((
-        Mesh2d(meshes.add(Rectangle::new(4000.0, 32.0))),
-        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(0.25, 0.22, 0.18)))),
-        Transform::from_translation(Vec3::new(0.0, -300.0, 0.0)),
-        GameSceneRoot,
-    ));
 }
 
 fn draw_debug_quad_tree(mut commands: Commands,
@@ -235,8 +253,7 @@ fn spawn_remote_players(
                     // 2. Spawn the Transparent Circle Child
                     parent.spawn((
                         Mesh2d(meshes.add(Circle::new(500.0))),
-                        // Alpha is now 0.5, and it will render perfectly!
-                        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgba(1.0, 1.0, 1.0, 0.125)))),
+                        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgba(1.0, 1.0, 1.0, 0.05)))),
                     ));
                 });
             } else {
