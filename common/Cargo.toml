@@ -10,3 +10,8 @@ bitcode = { workspace = true }
 wincode = { workspace = true }
 redis   = { workspace = true }
 uuid   = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+game_sockets = { workspace = true }

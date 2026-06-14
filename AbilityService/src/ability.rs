@@ -4,15 +4,15 @@ use crate::entity::Entity;
 
 #[derive(Eq, PartialEq)]
 pub enum AbilityType {
-    Fireball,
+    Fireball {direction: (i32, i32)},
     Heal,
 }
 
 pub struct Ability {
-    pub ability_type: AbilityType,
     pub cooldown: f32,
     pub mana_cost: f32,
     pub last_cast: SystemTime,
+    pub ability_type: AbilityType,
 }
 
 impl Ability {

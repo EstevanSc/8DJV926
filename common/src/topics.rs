@@ -15,6 +15,15 @@ pub enum TopicDomain {
     ClaimOwnership = 0xFE,
     QuadtreeBoundariesUpdate = 0x06,
     AuthorityDebugPacket = 0x07,
+
+    // Ability & attribute-related topics
+    RequestCastAbility = 0xA0,
+    CastAbility = 0xA1,
+    AbilityHitEntity = 0xA2,
+    AttributeUpdated = 0xA3,
+    EntityKilled = 0xA4,
+    XPEarned = 0xA5,
+    LevelUp = 0xA6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,6 +43,15 @@ pub enum Topic {
     EntityPositionUpdate(Uuid),
     QuadtreeBoundariesUpdate,
     AuthorityDebugPacket(Uuid),
+
+    // Ability & attribute-related topics
+    RequestCastAbility,
+    CastAbility(Uuid),
+    AbilityHitEntity,
+    AttributeUpdated(Uuid),
+    EntityKilled(Uuid),
+    XPEarned(Uuid),
+    LevelUp(Uuid),
 
     Raw([u8; 32]),     // Fallback
 }
@@ -80,6 +98,32 @@ impl Topic {
                 bytes[0] = TopicDomain::AuthorityDebugPacket as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
+            Topic::RequestCastAbility => {
+                bytes[0] = TopicDomain::RequestCastAbility as u8;
+            }
+            Topic::CastAbility(uuid) => {
+                bytes[0] = TopicDomain::CastAbility as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::AbilityHitEntity => {
+                bytes[0] = TopicDomain::AbilityHitEntity as u8;
+            }
+            Topic::AttributeUpdated(uuid) => {
+                bytes[0] = TopicDomain::AttributeUpdated as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::EntityKilled(uuid) => {
+                bytes[0] = TopicDomain::EntityKilled as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::XPEarned(uuid) => {
+                bytes[0] = TopicDomain::XPEarned as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::LevelUp(uuid) => {
+                bytes[0] = TopicDomain::LevelUp as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -120,6 +164,28 @@ impl Topic {
             0x07 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::AuthorityDebugPacket(uuid)
+            }
+            0xA0 => Topic::RequestCastAbility,
+            0xA1 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::CastAbility(uuid)
+            }
+            0xA2 => Topic::AbilityHitEntity,
+            0xA3 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::AttributeUpdated(uuid)
+            }
+            0xA4 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::EntityKilled(uuid)
+            }
+            0xA5 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::XPEarned(uuid)
+            }
+            0xA6 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::LevelUp(uuid)
             }
             _ => Topic::Raw(bytes),
             

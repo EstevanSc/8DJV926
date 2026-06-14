@@ -6,6 +6,10 @@ version = 4
 name = "AbilityService"
 version = "0.1.0"
 dependencies = [
+ "common",
+ "dotenv",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -2314,10 +2318,15 @@ dependencies = [
 name = "common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bitcode",
+ "bytes",
+ "game_sockets",
  "redis",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
  "uuid",
  "wincode",
 ]
