@@ -1,13 +1,15 @@
 use bevy::{prelude::*};
 
 use common::broker_messages::BrokerMessage;
-use common::topics::{serialize_input_payload, InputPayload, Topic};
+use common::topics::{serialize_input_payload, InputPayload, Topic, PathRequestPayload, serialize_path_request_payload};
 
 use super::{ GameState};
 use super::net::{ActivePeer, BrokerConn, BrokerControlStream};
 
 use crate::src::interpolation::RemotePlayer;
 use crate::src::interpolation::SelfPlayer;
+
+use super::net::{PathResponseReceived};
 
 pub struct ClientInputPlugin;
 
@@ -80,18 +82,19 @@ fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
 }
 
 #[derive(Resource, Reflect, Default)]
-struct PathToCursor{
+pub struct PathToCursor{
     path: Vec<Vec2>
 }
 
 fn mouse_button_input(
-    peer_res: Option<ResMut<ActivePeer>>,
+    mut peer_res: Option<ResMut<ActivePeer>>, // Made 'mut' so we can use .as_mut()
     broker_conn: Option<Res<BrokerConn>>,
     broker_stream: Option<Res<BrokerControlStream>>,
     buttons: Res<ButtonInput<MouseButton>>,
     query_player: Query<(Entity, &RemotePlayer, &Transform, &SelfPlayer)>,
     q_window: Query<&Window>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
+    mut event: MessageReader<PathResponseReceived>,
     mut path_to_cursor: ResMut<PathToCursor>
 ) {
     if buttons.just_pressed(MouseButton::Right) {
@@ -100,6 +103,32 @@ fn mouse_button_input(
         let cursor_world_position = get_cursor_world_position(q_window, q_camera);
         info!("Cursor world position: {:?}", cursor_world_position);
         path_to_cursor.path.push(cursor_world_position);
+
+        let player_position = query_player.single().map(|(_, _, transform, _)| transform.translation).unwrap_or_default();
+
+        // 1. FIX HERE: Use .as_mut() and .as_ref() to borrow the options instead of moving them
+        if let (Some(peer), Some(conn), Some(stream)) = (peer_res.as_mut(), broker_conn.as_ref(), broker_stream.as_ref()) {
+            let payload = serialize_path_request_payload(&PathRequestPayload {
+                entity_id: conn.0.connection_id,
+                start: [player_position.x, player_position.y],
+                end: [cursor_world_position.x, cursor_world_position.y],
+            });
+
+            let topic = Topic::PathRequest.to_bytes();
+            let publish = BrokerMessage::serialize_publish(topic, &payload);
+            
+            // Note the extra dereference (*) to get past the Option's reference layer
+            if let Err(e) = peer.0.lock().unwrap().send(&conn.0, &stream.0, publish.into()) {
+                print!("Failed to send path request: {:?}", e);
+            }
+        }
+        
+    }
+
+    for event in event.read() {
+        print!("Received path response event");
+        path_to_cursor.path = event.path.clone();
+        print!("Updated path to cursor: {:?}", path_to_cursor.path);
     }
 
     if path_to_cursor.path.len() >= 1 {
@@ -108,11 +137,15 @@ fn mouse_button_input(
 
         if player_position.truncate().distance(target) < 10.0 {
             path_to_cursor.path.remove(0);
-            return;
+            if path_to_cursor.path.len() >= 1 {
+                let next_target = path_to_cursor.path[0];
+                let direction = (next_target - player_position.truncate()).normalize_or_zero();
+                send_input(peer_res, broker_conn, broker_stream, [direction.x as f64, direction.y as f64]);
+            }
+        }else {
+            let direction = (target - player_position.truncate()).normalize_or_zero();
+            send_input(peer_res, broker_conn, broker_stream, [direction.x as f64, direction.y as f64]);
         }
-
-        let direction = (target - player_position.truncate()).normalize_or_zero();
-        send_input(peer_res, broker_conn, broker_stream, [direction.x as f64, direction.y as f64]);
     }
 }
 

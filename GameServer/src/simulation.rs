@@ -17,8 +17,6 @@ const PLAYER_MOVEMENT_ACCELERATION: f32 = 1250.0;
 const PLAYER_MOVEMENT_DAMPING: f32 = 5.0;
 const PLAYER_COLLIDER_DENSITY: f32 = 2.0;
 const FLOOR_RESTITUTION: f32 = 0.0;
-const ARENA_WIDTH: f32 = 10000.0;
-const ARENA_WALL_THICKNESS: f32 = 10.0;
 
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
