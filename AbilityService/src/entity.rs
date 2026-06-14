@@ -1,11 +1,12 @@
 ﻿use std::collections::HashMap;
 use common::ability_type::AbilityType;
+use common::attribute_type::AttributeType;
 use crate::ability::Ability;
-use crate::attribute::{Attribute, AttributeType};
+use crate::attribute::Attribute;
 
 pub struct Entity {
     pub entity_id: uuid::Uuid,
-    pub experience_points: f32,
+    pub experience_points: i32,
     pub level: i32,
     pub attributes: HashMap<AttributeType, Attribute>,
     pub abilities: HashMap<AbilityType, Ability>,
@@ -24,7 +25,7 @@ impl Entity {
         });
         Self {
             entity_id,
-            experience_points: 0f32,
+            experience_points: 0,
             level: 0,
             attributes,
             abilities: HashMap::new()
@@ -45,11 +46,19 @@ impl Entity {
         false
     }
 
-    pub fn update_attribute(&mut self, attribute_type: AttributeType, value: i32) {
+    pub fn update_attribute(&mut self, attribute_type: AttributeType, value: i32) -> Option<i32> {
         if let Some(attribute) = self.attributes.get_mut(&attribute_type) {
-            if (value >= attribute.min_value && value <= attribute.max_value){
+            if value > attribute.max_value {
+                attribute.current_value = attribute.max_value;
+            }
+            else if value < attribute.min_value {
+                attribute.current_value = attribute.min_value;
+            }
+            else {
                 attribute.current_value = value;
             }
+            return Some(attribute.current_value);
         }
+        None
     }
 }

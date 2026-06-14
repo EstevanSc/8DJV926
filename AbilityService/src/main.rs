@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 use common::broker_api::BrokerClient;
 use common::broker_messages::SendingSystem;
-use common::topics::{deserialize_starting_position_payload, deserialize_use_ability_payload, serialize_use_ability_payload, Topic, UseAbilityPayload};
-use crate::attribute::AttributeType;
+use common::topics::{deserialize_ability_hit_entity_payload, deserialize_starting_position_payload, deserialize_use_ability_payload, serialize_attribute_updated_payload, serialize_entity_killed_payload, serialize_level_up_payload, serialize_use_ability_payload, serialize_xp_earned_payload, AttributeUpdatedPayload, EntityKilledPayload, LevelUpPayload, Topic, UseAbilityPayload, XPEarnedPayload};
+use common::attribute_type::AttributeType;
+use crate::ability::Ability;
 use crate::config::Config;
 use crate::entity::Entity;
 
@@ -51,6 +52,7 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                             entity_registry.entry(entity_id).or_insert(new_entity);
                         }
                     }
+
                     Topic::RequestCastAbility => {
                         if let Some(ability_payload) = deserialize_use_ability_payload(&payload) {
                             let entity_id = ability_payload.entity_id;
@@ -76,13 +78,99 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                     if let Some(mana_attribute) = entity.attributes.get(&AttributeType::ManaPoints) {
                                         let new_mana = mana_attribute.current_value - mana_cost;
                                         entity.update_attribute(AttributeType::ManaPoints, new_mana);
+
+                                        // Send attribute update to entities
+                                        let attribute_updated_payload = AttributeUpdatedPayload {
+                                            entity_id,
+                                            attribute:AttributeType::ManaPoints,
+                                            new_value: new_mana,
+                                        };
+                                        let raw_payload = serialize_attribute_updated_payload(&attribute_updated_payload);
+                                        if let Err(e) = client.publish_raw(Topic::AttributeUpdated(entity_id), raw_payload.as_slice()).await {
+                                            tracing::error!("Failed to publish attribute updated payload: {:?}", e);
+                                        }
                                     }
 
                                 }
                             }
                         }
                     }
-                    Topic::AbilityHitEntity => {}
+
+                    Topic::AbilityHitEntity => {
+                        if let Some(ability_payload) = deserialize_ability_hit_entity_payload(&payload) {
+                            let hit_entity_id = ability_payload.hit_entity_id;
+
+                            let mut entity_was_killed = false;
+
+                            if let Some(hit_entity) = entity_registry.get_mut(&hit_entity_id) {
+                                let ability = Ability::from_type(ability_payload.ability_type);
+                                for effect in ability.effects {
+                                    if let Some(attribute) = hit_entity.attributes.get(&effect.attribute_type) {
+                                        let new_value = attribute.current_value + effect.modifier_value;
+                                        if let Some(updated_value) =hit_entity.update_attribute(effect.attribute_type, new_value) {
+                                            // Send entity attribute update
+                                            let attribute_updated_payload = AttributeUpdatedPayload {
+                                                entity_id: hit_entity_id,
+                                                attribute:effect.attribute_type,
+                                                new_value: updated_value,
+                                            };
+                                            let raw_payload = serialize_attribute_updated_payload(&attribute_updated_payload);
+                                            if let Err(e) = client.publish_raw(Topic::AttributeUpdated(hit_entity_id), raw_payload.as_slice()).await {
+                                                tracing::error!("Failed to publish attribute updated payload: {:?}", e);
+                                            }
+
+                                            // Check if entity has been killed
+                                            entity_was_killed = effect.attribute_type == AttributeType::HealthPoints && updated_value <= 0;
+                                            if entity_was_killed {
+                                                // Send entity killed message
+                                                let entity_killed_payload: EntityKilledPayload = EntityKilledPayload {
+                                                    killer_id: ability_payload.caster_id,
+                                                    victim_id: ability_payload.hit_entity_id,
+                                                };
+                                                let raw_payload = serialize_entity_killed_payload(&entity_killed_payload);
+                                                if let Err(e) = client.publish_raw(Topic::EntityKilled(hit_entity_id), raw_payload.as_slice()).await {
+                                                    tracing::error!("Failed to publish entity killed payload: {:?}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if entity_was_killed {
+                                // Update killed xp
+                                let caster_id = ability_payload.caster_id;
+                                if let Some(caster) = entity_registry.get_mut(&caster_id) {
+                                    caster.experience_points += 5;
+                                    while caster.experience_points >= 100 {
+                                        // Level up
+                                        caster.level += 1;
+                                        caster.experience_points -= 100;
+
+                                        // Send level up message
+                                        let lvl_up_payload = LevelUpPayload {
+                                            entity_id: caster_id,
+                                            new_level: caster.level,
+                                        };
+                                        let raw_payload = serialize_level_up_payload(&lvl_up_payload);
+                                        if let Err(e) = client.publish_raw(Topic::LevelUp(caster_id), raw_payload.as_slice()).await {
+                                            tracing::error!("Failed to publish entity level up payload: {:?}", e);
+                                        }
+                                    }
+
+                                    // Send xp update message
+                                    let xp_update_payload = XPEarnedPayload {
+                                        entity_id: caster_id,
+                                        new_value: caster.experience_points,
+                                    };
+                                    let raw_payload = serialize_xp_earned_payload(&xp_update_payload);
+                                    if let Err(e) = client.publish_raw(Topic::XPEarned(caster_id), raw_payload.as_slice()).await {
+                                        tracing::error!("Failed to publish entity xp update payload: {:?}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }

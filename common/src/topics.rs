@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wincode::{SchemaRead, SchemaWrite};
 use crate::ability_type::AbilityType;
+use crate::attribute_type::AttributeType;
 
 #[repr(u8)]
 pub enum TopicDomain {
@@ -248,6 +249,39 @@ pub struct UseAbilityPayload {
     pub ability: AbilityType,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct AttributeUpdatedPayload {
+    pub entity_id: Uuid,
+    pub attribute: AttributeType,
+    pub new_value: i32,
+}
+
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct AbilityHitEntityPayload {
+    pub caster_id: Uuid,
+    pub hit_entity_id: Uuid,
+    pub ability_type: AbilityType,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct EntityKilledPayload {
+    pub killer_id: Uuid,
+    pub victim_id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct XPEarnedPayload {
+    pub entity_id: Uuid,
+    pub new_value: i32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct LevelUpPayload {
+    pub entity_id: Uuid,
+    pub new_level: i32,
+}
+
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
     wincode::serialize(payload).expect("failed to serialize shard created payload")
 }
@@ -317,5 +351,45 @@ pub fn serialize_use_ability_payload(payload: &UseAbilityPayload) -> Vec<u8> {
 }
 
 pub fn deserialize_use_ability_payload(bytes: &[u8]) -> Option<UseAbilityPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_attribute_updated_payload(payload: &AttributeUpdatedPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize attribute updated payload")
+}
+
+pub fn deserialize_attribute_updated_payload(bytes: &[u8]) -> Option<AttributeUpdatedPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_ability_hit_entity_payload(payload: &AbilityHitEntityPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize ability hit entity payload")
+}
+
+pub fn deserialize_ability_hit_entity_payload(bytes: &[u8]) -> Option<AbilityHitEntityPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_entity_killed_payload(payload: &EntityKilledPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize entity killed payload")
+}
+
+pub fn deserialize_entity_killed_payload(bytes: &[u8]) -> Option<EntityKilledPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_xp_earned_payload(payload: &XPEarnedPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize XP earned payload")
+}
+
+pub fn deserialize_xp_earned_payload(bytes: &[u8]) -> Option<XPEarnedPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_level_up_payload(payload: &LevelUpPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize level up payload")
+}
+
+pub fn deserialize_level_up_payload(bytes: &[u8]) -> Option<LevelUpPayload> {
     wincode::deserialize(bytes).ok()
 }

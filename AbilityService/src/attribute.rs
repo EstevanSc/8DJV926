@@ -1,10 +1,4 @@
-﻿
-
-#[derive(Eq, PartialEq, Debug, Copy, Clone, Hash)]
-pub enum AttributeType {
-    HealthPoints,
-    ManaPoints,
-}
+﻿use common::attribute_type::AttributeType;
 
 #[derive(Eq, PartialEq, Debug, Hash)]
 pub struct Attribute {
