@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wincode::{SchemaRead, SchemaWrite};
+use crate::ability_type::AbilityType;
 
 #[repr(u8)]
 pub enum TopicDomain {
@@ -241,6 +242,12 @@ pub struct ClaimOwnershipPayload {
     pub speed: [f64; 2],
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct UseAbilityPayload {
+    pub entity_id: Uuid,
+    pub ability: AbilityType,
+}
+
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
     wincode::serialize(payload).expect("failed to serialize shard created payload")
 }
@@ -302,5 +309,13 @@ pub fn serialize_claim_ownership_payload(payload: &ClaimOwnershipPayload) -> Vec
 }
 
 pub fn deserialize_claim_ownership_payload(bytes: &[u8]) -> Option<ClaimOwnershipPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_use_ability_payload(payload: &UseAbilityPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize useability payload")
+}
+
+pub fn deserialize_use_ability_payload(bytes: &[u8]) -> Option<UseAbilityPayload> {
     wincode::deserialize(bytes).ok()
 }

@@ -9,6 +9,8 @@ pub mod shard_data;
 pub mod topics;
 pub mod broker_api;
 
+pub mod ability_type;
+
 pub use broker_messages::BrokerMessage;
 pub use heartbeat::Heartbeat;
 pub use redis_client::RedisClient;
