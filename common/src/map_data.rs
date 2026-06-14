@@ -34,16 +34,25 @@ impl BitMap {
         (self.data[y][bucket] & (1 << bit)) != 0
     }
 
-    /// Fills the map with a playable layout
     pub fn generate_map(&mut self) {
+        // Find the fractional center coordinates
+        let center_x = MAP_WIDTH as f32 / 2.0;
+        let center_y = MAP_HEIGHT as f32 / 2.0;
+
         for y in 0..MAP_HEIGHT {
             for x in 0..MAP_WIDTH {
-                // 1. Create Outer Border Walls
                 if x == 0 || x == MAP_WIDTH - 1 || y == 0 || y == MAP_HEIGHT - 1 {
                     self.set_wall(x, y);
+                    continue;
                 }
-                // 2. Create Internal Obstacles (Pillars every 8 tiles)
-                if x % 8 == 0 && y % 8 == 0 {
+                
+                let dist_x = (x as f32 - center_x + 0.5).abs() as i32;
+                let dist_y = (y as f32 - center_y + 0.5).abs() as i32;
+
+                let is_obstacle_x = (dist_x % 8 == 0) || (dist_x % 8 == 1);
+                let is_obstacle_y = (dist_y % 8 == 0) || (dist_y % 8 == 1);
+
+                if is_obstacle_x && is_obstacle_y {
                     self.set_wall(x, y);
                 }
             }

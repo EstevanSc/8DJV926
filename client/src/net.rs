@@ -1,9 +1,8 @@
-use std::path;
 use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, PathResponsePayload, deserialize_path_response_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -131,7 +130,7 @@ fn poll_net_events(
 
                     let payload = serialize_starting_position_payload(&StartingPositionPayload {
                         connection_id: player_id,
-                        position: [-50.0, -50.0],
+                        position: [-150.0, -150.0],
                     });
 
                     let topic = Topic::PlayerStartingPosition.to_bytes();
