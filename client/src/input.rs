@@ -6,7 +6,6 @@ use common::topics::{serialize_input_payload, InputPayload, Topic, PathRequestPa
 use super::{ GameState};
 use super::net::{ActivePeer, BrokerConn, BrokerControlStream};
 
-use crate::src::interpolation::RemotePlayer;
 use crate::src::interpolation::SelfPlayer;
 
 use super::net::{PathResponseReceived};
@@ -91,7 +90,7 @@ fn mouse_button_input(
     broker_conn: Option<Res<BrokerConn>>,
     broker_stream: Option<Res<BrokerControlStream>>,
     buttons: Res<ButtonInput<MouseButton>>,
-    query_player: Query<(Entity, &RemotePlayer, &Transform, &SelfPlayer)>,
+    query_player: Query<&Transform, With<SelfPlayer>>,
     q_window: Query<&Window>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
     mut event: MessageReader<PathResponseReceived>,
@@ -104,7 +103,13 @@ fn mouse_button_input(
         info!("Cursor world position: {:?}", cursor_world_position);
         path_to_cursor.path.push(cursor_world_position);
 
-        let player_position = query_player.single().map(|(_, _, transform, _)| transform.translation).unwrap_or_default();
+        let player_position = query_player
+                    .iter()
+                    .next()
+                    .map(|transform| transform.translation)
+                    .unwrap_or_default();
+
+        info!("Player position: {:?}", player_position);
 
         // 1. FIX HERE: Use .as_mut() and .as_ref() to borrow the options instead of moving them
         if let (Some(peer), Some(conn), Some(stream)) = (peer_res.as_mut(), broker_conn.as_ref(), broker_stream.as_ref()) {
@@ -133,9 +138,13 @@ fn mouse_button_input(
 
     if path_to_cursor.path.len() >= 1 {
         let target = path_to_cursor.path[0];
-        let player_position = query_player.single().map(|(_, _, transform, _)| transform.translation).unwrap_or_default();
+        let player_position = query_player
+                    .iter()
+                    .next()
+                    .map(|transform| transform.translation)
+                    .unwrap_or_default();
 
-        if player_position.truncate().distance(target) < 10.0 {
+        if player_position.truncate().distance(target) < 36.0 {
             path_to_cursor.path.remove(0);
             if path_to_cursor.path.len() >= 1 {
                 let next_target = path_to_cursor.path[0];
