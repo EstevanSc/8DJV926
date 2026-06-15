@@ -13,6 +13,7 @@ COPY game_sockets ./game_sockets
 COPY common ./common
 COPY quadtree ./quadtree
 COPY broker ./broker
+COPY pathing_service ./pathing_service
 COPY AbilityService ./AbilityService
 
 # Build the pathing_service binary

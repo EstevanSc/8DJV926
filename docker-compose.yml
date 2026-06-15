@@ -163,6 +163,9 @@ services:
     image: ability-service:latest
     networks:
       - game-net
+    depends_on:
+      broker:
+        condition: service_started
     environment:
       BROKER_HOST: "broker"
       BROKER_PORT: "7776"
