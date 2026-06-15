@@ -7,6 +7,7 @@ pub mod redis_keys;
 pub mod server_info;
 pub mod shard_data;
 pub mod topics;
+pub mod map_data;
 pub mod broker_api;
 
 pub mod ability_type;
