@@ -113,6 +113,23 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  pathing-service:
+    build:
+      context: .
+      dockerfile: pathing_service/Dockerfile
+    image: pathing-service:latest
+    networks:
+      - game-net
+    environment:
+      PATHING_SERVICE_LISTEN_PORT: "6000"
+      PATHING_SERVICE_BROKER_HOST: "broker"
+      PATHING_SERVICE_BROKER_PORT: "7776"
+      RUST_LOG: info
+    depends_on:
+      broker:
+        condition: service_started
+    restart: unless-stopped
+
 
   # ── Broker ───────────────────────────────────────────────────────────────
   # QUIC/UDP broker on :7776  — relays pub/sub traffic for clients and shards.

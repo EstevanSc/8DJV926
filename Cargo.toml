@@ -9,6 +9,7 @@ members = [
     "quadtree",
     "broker",
     "ai_service",
+    "pathing_service",
 ]
 resolver = "2"
 
