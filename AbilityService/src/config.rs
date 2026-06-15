@@ -10,9 +10,9 @@ impl Config {
         dotenv::dotenv().ok();
 
         Config {
-            broker_host: std::env::var("QUADTREE_BROKER_HOST")
+            broker_host: std::env::var("BROKER_HOST")
                 .unwrap_or_else(|_| "broker".to_string()),
-            broker_port: std::env::var("QUADTREE_BROKER_PORT")
+            broker_port: std::env::var("BROKER_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7776),

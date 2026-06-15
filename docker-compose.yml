@@ -138,3 +138,16 @@ services:
     image: game-server:latest
     deploy:
       replicas: 0
+
+  ability-service:
+    build:
+      context: .
+      dockerfile: AbilityService/Dockerfile
+    image: ability-service:latest
+    networks:
+      - game-net
+    environment:
+      BROKER_HOST: "broker"
+      BROKER_PORT: "7776"
+      ABILITY_SERVICE_TICK_MS: 50
+      RUST_LOG: info

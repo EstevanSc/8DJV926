@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
+use anyhow::Context;
 use common::broker_api::BrokerClient;
 use common::broker_messages::SendingSystem;
 use common::topics::{deserialize_ability_hit_entity_payload, deserialize_starting_position_payload, deserialize_use_ability_payload, serialize_attribute_updated_payload, serialize_entity_killed_payload, serialize_level_up_payload, serialize_use_ability_payload, serialize_xp_earned_payload, AttributeUpdatedPayload, EntityKilledPayload, LevelUpPayload, Topic, UseAbilityPayload, XPEarnedPayload};
@@ -14,27 +15,36 @@ mod ability;
 mod config;
 
 #[tokio::main]
-async fn main()
-{
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let config = Config::from_env();
     let host = config.broker_host.clone();
     let port = config.broker_port;
-    if let Ok(mut client) = BrokerClient::connect(host.as_str(), port, SendingSystem::AbilityService).await
-    {
-        // Client connection
-        if let Err(e) = client.subscribe(Topic::PlayerStartingPosition).await {
-            tracing::error!("Failed to subscribe to ability service: {:?}", e);
-        }
-        if let Err(e) = client.subscribe(Topic::RequestCastAbility).await {
-            tracing::error!("Failed to subscribe to ability service: {:?}", e);
-        }
-        if let Err(e) = client.subscribe(Topic::AbilityHitEntity).await {
-            tracing::error!("Failed to subscribe to ability service: {:?}", e);
-        }
 
-        run_main_loop(&config, &mut client).await;
-    }
+    let mut client = match BrokerClient::connect(host.as_str(), port, SendingSystem::AbilityService).await {
+        Ok(client) => {
+            tracing::info!("Ability Service successfully connected to broker");
+            client
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(e).context(format!("Failed to connect to broker at {}:{}", host, port)));
+        }
+    };
 
+    // 2. Subscribe to topics
+    client.subscribe(Topic::PlayerStartingPosition).await
+        .context("Failed to subscribe to PlayerStartingPosition")?;
+
+    client.subscribe(Topic::RequestCastAbility).await
+        .context("Failed to subscribe to RequestCastAbility")?;
+
+    client.subscribe(Topic::AbilityHitEntity).await
+        .context("Failed to subscribe to AbilityHitEntity")?;
+
+    run_main_loop(&config, &mut client).await;
+
+    Ok(())
 }
 
 async fn run_main_loop(config: &Config, client: &mut BrokerClient) {

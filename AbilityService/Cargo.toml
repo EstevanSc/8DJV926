@@ -9,3 +9,5 @@ common      = { workspace = true }
 dotenv = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
