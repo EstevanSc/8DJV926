@@ -9,10 +9,12 @@ use uuid::Uuid;
 use common::topics::{
     deserialize_position_payload, deserialize_quadtree_boundaries_update_payload,
     serialize_input_payload, InputPayload, Topic,
+    PathRequestPayload, serialize_path_request_payload,
+    deserialize_path_response_payload
 };
 
 use crate::client::{AiClient, ClientPool, InboundMessage, MasterClient};
-use crate::components::{AiEntity, AiIntent, AiPosition, Perception};
+use crate::components::{AiEntity, AiIntent, AiPosition, Perception, AiPath};
 use crate::config::Config;
 
 /// Bevy resource wrapping the tokio runtime.
@@ -121,7 +123,8 @@ fn connect_new_entities(
 
         let (client, rx) = runtime
             .0
-            .block_on(AiClient::connect(id, &host, port, starting_pos))
+            .block_on(AiClient::connect(id, &host, port, 
+                [starting_pos[0] as f64, starting_pos[1] as f64]))
             .unwrap_or_else(|e| panic!("Failed to connect AI {id}: {e}"));
 
         pool.lock().unwrap().clients.insert(id, client);
@@ -134,9 +137,9 @@ fn connect_new_entities(
 /// Drains inbound broker messages and updates AiPosition / Perception components.
 fn drain_inbound(
     mut receivers: ResMut<InboundReceivers>,
-    mut query: Query<(&AiEntity, &mut AiPosition, &mut Perception)>,
+    mut query: Query<(&AiEntity, &mut AiPosition, &mut Perception, &mut AiPath)>,
 ) {
-    for (ai, mut pos, mut perception) in &mut query {
+    for (ai, mut pos, mut perception, mut path) in &mut query {
         let Some(rx) = receivers.0.get_mut(&ai.id) else { continue };
 
         while let Ok(msg) = rx.try_recv() {
@@ -144,10 +147,26 @@ fn drain_inbound(
             if let Topic::EntityPositionUpdate(sender) = Topic::from_bytes(msg.topic) {
                 if let Some(update) = deserialize_position_payload(&msg.payload) {
                     if sender == ai.id {
-                        pos.x = update.position[0];
-                        pos.y = update.position[1];
+                        pos.x = update.position[0] as f32;
+                        pos.y = update.position[1] as f32;
+                        // if the position is near enough of the current path target, pop it from the path
+                        if let Some(target) = path.waypoints.first() {
+                            let dist2 = (target[0] - pos.x).powi(2) + (target[1] - pos.y).powi(2);
+                            if dist2 < 10.0f32.powi(2) {
+                                path.waypoints.remove(0);
+                            }
+                        }
                     } else {
-                        upsert_nearby(&mut perception, sender, update.position);
+                        upsert_nearby(&mut perception, sender, [update.position[0] as f32, update.position[1] as f32]);
+                    }
+                }
+            }
+            if let Topic::PathResponse(id) = Topic::from_bytes(msg.topic) {
+                if id == ai.id {
+                    if let Some(update) = deserialize_path_response_payload(&msg.payload) {
+                        // Handle path response 
+                        tracing::debug!("AI {} received path response: {:?}", ai.id, update.path);
+                        path.waypoints = update.path;
                     }
                 }
             }
@@ -156,7 +175,8 @@ fn drain_inbound(
 }
 
 /// Inserts or updates a nearby entity's position in the Perception list.
-fn upsert_nearby(perception: &mut Perception, id: Uuid, pos: [f64; 2]) {
+fn upsert_nearby(perception: &mut Perception, id: Uuid, pos: [f32; 2]) {
+    tracing::info!("Updating perception of nearby entity {} at position {:?}", id, pos);
     match perception.nearby.iter_mut().find(|(eid, _)| *eid == id) {
         Some(entry) => entry.1 = pos,
         None => perception.nearby.push((id, pos)),
@@ -165,21 +185,29 @@ fn upsert_nearby(perception: &mut Perception, id: Uuid, pos: [f64; 2]) {
 
 /// Reads AiIntent components and publishes the corresponding broker messages.
 fn flush_intents(
-    mut query: Query<(&AiEntity, &mut AiPosition, &mut AiIntent)>,
+    mut query: Query<(&AiEntity, &mut AiPosition, &mut AiIntent, &mut AiPath)>,
     clients: Res<AiClients>,
 ) {
     let pool = clients.0.lock().unwrap();
 
-    for (ai, position, mut intent) in &mut query {
+    for (ai, position, mut intent, path) in &mut query {
         let Some(client) = pool.clients.get(&ai.id) else { continue };
 
         match *intent {
             AiIntent::MoveTo(target) => {
-                let dir = [target[0] - position.x, target[1] - position.y];
+                // Send a payload to the pathfinding service to get a path, then publish Input messages to move along that path.
+                client.publish(Topic::PathRequest.to_bytes(), &serialize_path_request_payload(&PathRequestPayload {
+                    entity_id: ai.id,
+                    start: [position.x as f32, position.y as f32],
+                    end: [target[0] as f32, target[1] as f32],
+                }));
+
+                let current_target = path.waypoints.first().cloned().unwrap_or([target[0] as f32, target[1] as f32]);
+                let dir = [current_target[0] - position.x, current_target[1] - position.y];
                 let mag = (dir[0].powi(2) + dir[1].powi(2)).sqrt();
                 let dir = if mag > 0.0 { [dir[0] / mag, dir[1] / mag] } else { [0.0, 0.0] };
-                tracing::debug!("AI {} moving toward {:?}, dir {:?}", ai.id, target, dir);
-                let payload = serialize_input_payload(&InputPayload { dxdy: dir });
+                tracing::debug!("AI {} moving toward {:?}, dir {:?}", ai.id, current_target, dir);
+                let payload = serialize_input_payload(&InputPayload { dxdy: [dir[0] as f64, dir[1] as f64] });
                 client.publish(Topic::Input(ai.id).to_bytes(), &payload);
                 *intent = AiIntent::Idle;
             }

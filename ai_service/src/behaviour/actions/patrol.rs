@@ -25,7 +25,7 @@ pub fn on_patrol(
     let wp = route.target();
     let dist = ((wp[0] - pos.x).powi(2) + (wp[1] - pos.y).powi(2)).sqrt();
 
-    if dist < 10.0 {
+    if dist < 80.0 {
         tracing::debug!("Entity {:?} reached waypoint {:?}, advancing patrol route", ctx.target_entity(), wp);
         route.advance();
     }

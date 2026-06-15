@@ -8,8 +8,8 @@ pub struct Config {
     pub broker_port: u16,
     pub spawn_frequency_secs: f32,
     pub max_ai: usize,
-    pub spawn_top_shard_percentage: f64,
-    pub spawn_padding: f64,
+    pub spawn_top_shard_percentage: f32,
+    pub spawn_padding: f32,
 }
 
 impl Config {

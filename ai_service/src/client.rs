@@ -62,6 +62,11 @@ impl AiClient {
                 position: starting_position,
             }),
         ));
+        // subscribe to path responses for this entity
+        client.send_raw(BrokerMessage::serialize_subscribe(
+            id,
+            Topic::PathResponse(id).to_bytes(),
+        ));
 
         Ok((client, inbound_rx))
     }

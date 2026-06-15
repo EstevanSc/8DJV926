@@ -3,7 +3,7 @@ use bevy_behave::prelude::*;
 
 use crate::components::{AiIntent, AiPosition, Perception};
 
-const AGGRO_RANGE: f64 = 300.0;
+const AGGRO_RANGE: f32 = 300.0;
 
 /// Trigger payload for the CheckNearby condition node.
 #[derive(Clone, Debug)]
@@ -16,7 +16,7 @@ pub struct Chase;
 /// Observer that checks if any entity is within aggro range.
 pub fn on_check_nearby(
     trigger: On<BehaveTrigger<CheckNearby>>,
-    query: Query<&Perception>,
+    query: Query<(&AiPosition, &Perception)>,
     mut commands: Commands,
 ) {
     tracing::debug!("CheckNearby triggered for entity {:?}", trigger.event().ctx().target_entity());
@@ -25,7 +25,13 @@ pub fn on_check_nearby(
 
     let in_range = query
         .get(ctx.target_entity())
-        .map(|p| p.nearby.iter().any(|(_, pos)| pos[0].powi(2) + pos[1].powi(2) < AGGRO_RANGE.powi(2)))
+        .map(|(pos, perception)| {
+            perception.nearby.iter().any(|(_, target_pos)| {
+                let dx = target_pos[0] - pos.x;
+                let dy = target_pos[1] - pos.y;
+                dx * dx + dy * dy < AGGRO_RANGE * AGGRO_RANGE
+            })
+        })
         .unwrap_or(false);
 
     if in_range {
@@ -65,6 +71,6 @@ pub fn on_chase(
     }
 }
 
-fn dist2(pos: &AiPosition, target: [f64; 2]) -> f64 {
+fn dist2(pos: &AiPosition, target: [f32; 2]) -> f32 {
     (target[0] - pos.x).powi(2) + (target[1] - pos.y).powi(2)
 }
