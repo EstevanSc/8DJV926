@@ -4,16 +4,7 @@ FROM rust:latest AS builder
 WORKDIR /app
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
-COPY client ./client
-COPY gatekeeper ./gatekeeper
-COPY GameServer ./GameServer
-COPY Orchestrator ./Orchestrator
-COPY game_sockets ./game_sockets
-COPY common ./common
-COPY quadtree ./quadtree
-COPY broker ./broker
-COPY pathing_service ./pathing_service
+COPY . .
 
 # Build the pathing_service binary
 RUN cargo build --release -p pathing_service

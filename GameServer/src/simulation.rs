@@ -236,7 +236,7 @@ fn mark_locals_as_ghosts(
 }
 
 fn publish_entity_positions(
-    query: Query<(&Transform, &NetEntity), Without<Ghost>>,
+    query: Query<(&Transform, &NetEntity), (With<NetEntity>, Without<Ghost>)>,
     broker: Option<Res<BrokerPeer>>,
 ) {
     let Some(broker) = broker else {
