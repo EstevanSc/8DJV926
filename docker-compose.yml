@@ -150,6 +150,8 @@ services:
     image: ai_service:latest
     networks:
       - game-net
+    env_file:
+      - .env
     environment:
       RUST_LOG: info
     depends_on:

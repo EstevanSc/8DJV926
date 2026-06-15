@@ -2,14 +2,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use common::Boundary;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use common::topics::{
-    deserialize_position_payload, serialize_input_payload, InputPayload, Topic,
+    deserialize_position_payload, deserialize_quadtree_boundaries_update_payload,
+    serialize_input_payload, InputPayload, Topic,
 };
 
-use crate::client::{AiClient, ClientPool, InboundMessage};
+use crate::client::{AiClient, ClientPool, InboundMessage, MasterClient};
 use crate::components::{AiEntity, AiIntent, AiPosition, Perception};
 use crate::config::Config;
 
@@ -27,6 +29,20 @@ pub struct InboundReceivers(
     pub HashMap<Uuid, tokio::sync::mpsc::UnboundedReceiver<InboundMessage>>,
 );
 
+/// Bevy resource tracking live shard boundaries from the Quadtree.
+#[derive(Resource, Default)]
+pub struct QuadtreeBoundaries(pub Vec<Boundary>);
+
+/// Bevy resource holding the master client dedicated to quadtree topologies.
+#[derive(Resource)]
+pub struct MasterClientResource {
+    pub client: Arc<MasterClient>,
+}
+
+/// Bevy resource holding the receiver for the master client.
+#[derive(Resource)]
+pub struct MasterInbound(pub std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<InboundMessage>>);
+
 /// Bevy plugin that connects new AI entities to the broker and routes messages.
 pub struct BridgePlugin;
 
@@ -34,7 +50,52 @@ impl Plugin for BridgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AiClients>()
             .init_resource::<InboundReceivers>()
-            .add_systems(Update, (poll_clients, connect_new_entities, drain_inbound, flush_intents).chain());
+            .init_resource::<QuadtreeBoundaries>()
+            .add_systems(Startup, setup_master_client)
+            .add_systems(Update, (
+                poll_master_client,
+                poll_clients,
+                connect_new_entities,
+                drain_inbound,
+                flush_intents
+            ).chain());
+    }
+}
+
+/// Initializes the master client dedicated to quadtree monitoring.
+fn setup_master_client(mut commands: Commands, config: Res<Config>, runtime: Res<TokioRuntime>) {
+    let id = Uuid::new_v4();
+    let host = config.broker_host.clone();
+    let port = config.broker_port;
+
+    let (client, rx) = runtime
+        .0
+        .block_on(MasterClient::connect(id, &host, port))
+        .unwrap_or_else(|e| panic!("Failed to connect MasterClient: {e}"));
+
+    commands.insert_resource(MasterClientResource { client: Arc::new(client) });
+    commands.insert_resource(MasterInbound(std::sync::Mutex::new(rx)));
+
+    tracing::info!("MasterClient {id} connected to broker at {host}:{port} for Quadtree updates");
+}
+
+/// Polls the master client and updates the QuadtreeBoundaries resource.
+fn poll_master_client(
+    master: Option<Res<MasterClientResource>>,
+    inbound: Option<Res<MasterInbound>>,
+    mut boundaries: ResMut<QuadtreeBoundaries>,
+) {
+    let (Some(master), Some(inbound)) = (master, inbound) else { return };
+    
+    master.client.poll();
+
+    let mut rx = inbound.0.lock().unwrap();
+    while let Ok(msg) = rx.try_recv() {
+        if let Topic::QuadtreeBoundariesUpdate = Topic::from_bytes(msg.topic) {
+            if let Some(payload) = deserialize_quadtree_boundaries_update_payload(&msg.payload) {
+                boundaries.0 = payload.boundaries;
+            }
+        }
     }
 }
 
@@ -53,20 +114,20 @@ fn connect_new_entities(
 ) {
     for (ai, pos) in &query {
         let id = ai.id;
-        let ip = config.broker_ip.clone();
+        let host = config.broker_host.clone();
         let port = config.broker_port;
         let starting_pos = [pos.x, pos.y];
         let pool = Arc::clone(&clients.0);
 
         let (client, rx) = runtime
             .0
-            .block_on(AiClient::connect(id, &ip, port, starting_pos))
+            .block_on(AiClient::connect(id, &host, port, starting_pos))
             .unwrap_or_else(|e| panic!("Failed to connect AI {id}: {e}"));
 
         pool.lock().unwrap().clients.insert(id, client);
         receivers.0.insert(id, rx);
 
-        tracing::info!("AI {id} connected to broker at {ip}:{port}");
+        tracing::info!("AI {id} connected to broker at {host}:{port}");
     }
 }
 

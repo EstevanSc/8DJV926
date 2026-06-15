@@ -31,18 +31,18 @@ impl AiClient {
     /// Returns the client and the receiver end of the inbound message channel.
     pub async fn connect(
         id: Uuid,
-        broker_ip: &str,
+        broker_host: &str,
         broker_port: u16,
         starting_position: [f64; 2],
     ) -> Result<(Self, mpsc::UnboundedReceiver<InboundMessage>), String> {
         let peer = GamePeer::new(QuicBackend::new());
-        peer.connect(broker_ip, broker_port)
+        peer.connect(broker_host, broker_port)
             .map_err(|e| format!("connect error: {e:?}"))?;
 
         let peer = Arc::new(Mutex::new(peer));
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
 
-        let (conn, stream) = Self::await_handshake(Arc::clone(&peer)).await?;
+        let (conn, stream) = await_handshake(Arc::clone(&peer)).await?;
 
         let client = Self { id, peer, conn, stream, inbound_tx };
 
@@ -91,8 +91,66 @@ impl AiClient {
             tracing::warn!("AiClient {}: send error: {e:?}", self.id);
         }
     }
+}
 
-    async fn await_handshake(
+/// A special system-wide client that listens to quadtree topologies to guide spawning.
+pub struct MasterClient {
+    pub id: Uuid,
+    peer: Arc<Mutex<GamePeer>>,
+    conn: GameConnection,
+    stream: GameStream,
+    pub inbound_tx: mpsc::UnboundedSender<InboundMessage>,
+}
+
+impl MasterClient {
+    pub async fn connect(
+        id: Uuid,
+        broker_host: &str,
+        broker_port: u16,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<InboundMessage>), String> {
+        let peer = GamePeer::new(QuicBackend::new());
+        peer.connect(broker_host, broker_port)
+            .map_err(|e| format!("connect error: {e:?}"))?;
+
+        let peer = Arc::new(Mutex::new(peer));
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+
+        let (conn, stream) = await_handshake(Arc::clone(&peer)).await?;
+
+        let client = Self { id, peer, conn, stream, inbound_tx };
+
+        client.send_raw(BrokerMessage::serialize_connect(id, SendingSystem::AiService));
+        client.send_raw(BrokerMessage::serialize_subscribe(
+            id,
+            Topic::QuadtreeBoundariesUpdate.to_bytes(),
+        ));
+
+        Ok((client, inbound_rx))
+    }
+
+    pub fn poll(&self) {
+        let Ok(mut peer) = self.peer.lock() else { return };
+        while let Ok(Some(event)) = peer.poll() {
+            if let GameNetworkEvent::Message { data, .. } = event {
+                if let Some(BrokerMessage::Broadcast { topic, payload }) =
+                    BrokerMessage::deserialize(&data)
+                {
+                    let _ = self.inbound_tx.send(InboundMessage { topic, payload });
+                }
+            }
+        }
+    }
+
+    fn send_raw(&self, bytes: Vec<u8>) {
+        let Ok(peer) = self.peer.lock() else { return };
+        if let Err(e) = peer.send(&self.conn, &self.stream, bytes.into()) {
+            tracing::warn!("MasterClient {}: send error: {e:?}", self.id);
+        }
+    }
+}
+
+/// Standalone handshake routine utilized by both AiClient and MasterClient.
+pub async fn await_handshake(
         peer: Arc<Mutex<GamePeer>>,
     ) -> Result<(GameConnection, GameStream), String> {
         loop {
@@ -112,7 +170,6 @@ impl AiClient {
                 _ => {}
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
     }
 }
 

@@ -19,8 +19,8 @@ pub fn on_check_nearby(
     query: Query<&Perception>,
     mut commands: Commands,
 ) {
-    tracing::info!("CheckNearby triggered for entity {:?}", trigger.event().ctx().target_entity());
-    tracing::info!("Perception query: {:?}", query.iter().collect::<Vec<_>>());
+    tracing::debug!("CheckNearby triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::debug!("Perception query: {:?}", query.iter().collect::<Vec<_>>());
     let ctx = trigger.event().ctx();
 
     let in_range = query
@@ -42,7 +42,7 @@ pub fn on_chase(
     mut query: Query<(&AiPosition, &Perception, &mut AiIntent)>,
     mut commands: Commands,
 ) {
-    tracing::info!("Chase triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::debug!("Chase triggered for entity {:?}", trigger.event().ctx().target_entity());
     let ctx = trigger.event().ctx();
 
     let Ok((pos, perception, mut intent)) = query.get_mut(ctx.target_entity()) else {

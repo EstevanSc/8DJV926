@@ -17,7 +17,7 @@ use spawn_manager::SpawnPlugin;
 use behaviour::BehaviourPlugin;
 
 fn main() {
-    let config = Config::load();
+    let config = Config::from_env();
     let runtime = Arc::new(Runtime::new().expect("Failed to build tokio runtime"));
 
     App::new()
