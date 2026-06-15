@@ -15,6 +15,8 @@ pub enum TopicDomain {
     ClaimOwnership = 0xFE,
     QuadtreeBoundariesUpdate = 0x06,
     AuthorityDebugPacket = 0x07,
+    PathRequest = 0x08,
+    PathResponse = 0x09,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,7 +37,11 @@ pub enum Topic {
     QuadtreeBoundariesUpdate,
     AuthorityDebugPacket(Uuid),
 
-    Raw([u8; 32]),     // Fallback
+    //pathfinding
+    PathRequest, //payload contains path request data
+    PathResponse(Uuid), // Target entity UUID, payload contains path response data
+
+    Raw([u8; 32]), // Fallback
 }
 
 impl Topic {
@@ -80,6 +86,13 @@ impl Topic {
                 bytes[0] = TopicDomain::AuthorityDebugPacket as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
+            Topic::PathRequest => {
+                bytes[0] = TopicDomain::PathRequest as u8;
+            }
+            Topic::PathResponse(uuid) => {
+                bytes[0] = TopicDomain::PathResponse as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -120,6 +133,11 @@ impl Topic {
             0x07 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::AuthorityDebugPacket(uuid)
+            }
+            0x08 => Topic::PathRequest,
+            0x09 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::PathResponse(uuid)
             }
             _ => Topic::Raw(bytes),
             
@@ -173,6 +191,34 @@ pub struct ClaimOwnershipPayload {
     pub entity_id: Uuid,
     pub entity_position: [f64; 2],
     pub speed: [f64; 2],
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct PathRequestPayload {
+    pub entity_id: Uuid,
+    pub start: [f32; 2],
+    pub end: [f32; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct PathResponsePayload {
+    pub path: Vec<[f32; 2]>,
+}
+
+pub fn serialize_path_request_payload(payload: &PathRequestPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize path request payload")
+}
+
+pub fn deserialize_path_request_payload(bytes: &[u8]) -> Option<PathRequestPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_path_response_payload(payload: &PathResponsePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize path response payload")
+}
+
+pub fn deserialize_path_response_payload(bytes: &[u8]) -> Option<PathResponsePayload> {
+    wincode::deserialize(bytes).ok()
 }
 
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {

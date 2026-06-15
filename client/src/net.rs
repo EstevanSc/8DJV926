@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -16,6 +16,7 @@ impl Plugin for ClientNetPlugin {
             .add_message::<QuadtreeBoundariesUpdateReceived>()
             .add_message::<AuthorityDebugPacketReceived>()
             .add_message::<DisconnectReceived>()
+            .add_message::<PathResponseReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -129,7 +130,7 @@ fn poll_net_events(
 
                     let payload = serialize_starting_position_payload(&StartingPositionPayload {
                         connection_id: player_id,
-                        position: [-50.0, -50.0],
+                        position: [-150.0, -150.0],
                     });
 
                     let topic = Topic::PlayerStartingPosition.to_bytes();
@@ -158,6 +159,16 @@ fn poll_net_events(
                         tracing::error!("Failed to subscribe to AuthorityDebugPacket: {e:?}");
                     } else {
                         tracing::info!("Subscribed to AuthorityDebugPacket for player_id={player_id}");
+                    }
+
+                    let subscribe_path_response = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::PathResponse(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_path_response.into()) {
+                        tracing::error!("Failed to subscribe to PathResponse: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to PathResponse for player_id={player_id}");
                     }
 
                     next_state.set(GameState::InGame);
@@ -224,6 +235,11 @@ pub struct AuthorityDebugPacketReceived {
 }
 
 #[derive(Message)]
+pub struct PathResponseReceived {
+    pub path: Vec<Vec2>,
+}
+
+#[derive(Message)]
 pub struct DisconnectReceived {
     pub entity_id: uuid::Uuid,
 }
@@ -234,6 +250,7 @@ fn receive_packets(
     mut quadtree_update_writer: MessageWriter<QuadtreeBoundariesUpdateReceived>,
     mut authority_debug_writer: MessageWriter<AuthorityDebugPacketReceived>,
     mut disconnect_writer: MessageWriter<DisconnectReceived>,
+    mut path_response_writer: MessageWriter<PathResponseReceived>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -276,6 +293,20 @@ fn receive_packets(
                             disconnect_writer.write(DisconnectReceived {
                                 entity_id: uuid,
                             });
+                        }
+                        Topic::PathResponse(_entity_uuid) => {
+                            tracing::info!("Received path response from server for entity {:?}", _entity_uuid);
+                            if let Some(response) = deserialize_path_response_payload(&payload) {
+                                tracing::trace!("Deserialized path response: {:?}", response);
+                                let mut path = Vec::new();
+                                for point in response.path {
+                                    path.push(Vec2::new(point[0], point[1]));
+                                    print!("Added point {:?} to path", path.last());
+                                }
+                                path_response_writer.write(PathResponseReceived {
+                                    path: path,
+                                });
+                            }
                         }
                         _ => {}
                     },
