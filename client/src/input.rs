@@ -55,6 +55,7 @@ fn send_ability(
     broker_conn: Option<&Res<BrokerConn>>,
     broker_stream: Option<&Res<BrokerControlStream>>,
     ability_type: AbilityType,
+    direction: Option<[f32; 2]>,
 ) {
     let (Some(peer_res), Some(broker_conn), Some(broker_stream)) = (peer_res, broker_conn, broker_stream) else {
         return;
@@ -63,7 +64,8 @@ fn send_ability(
 
     let payload = serialize_use_ability_payload(&UseAbilityPayload {
         entity_id: broker_conn.0.connection_id,
-        ability: ability_type
+        ability: ability_type,
+        direction,
     });
 
     let topic = Topic::RequestCastAbility.to_bytes();
@@ -100,7 +102,8 @@ fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
             peer_res.as_mut(),
             broker_conn.as_ref(),
             broker_stream.as_ref(),
-            AbilityType::Heal
+            AbilityType::Heal,
+            None,
         );
     }
 

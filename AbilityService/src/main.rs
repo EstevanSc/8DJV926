@@ -79,7 +79,7 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
 
                                     // Send cast_ability message
                                     let cast_topic = Topic::CastAbility(entity_id);
-                                    let cast_payload = UseAbilityPayload {entity_id, ability: ability_type};
+                                    let cast_payload = UseAbilityPayload {entity_id, ability: ability_type, direction:ability_payload.direction};
                                     let raw_payload = serialize_use_ability_payload(&cast_payload);
                                     if let Err(e) = client.publish_raw(cast_topic, raw_payload.as_slice()).await {
                                         tracing::error!("Failed to publish raw ability payload: {:?}", e);

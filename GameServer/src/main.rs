@@ -1,4 +1,6 @@
 mod char_controller;
+
+mod abilities;
 mod heartbeat;
 mod net;
 mod server;

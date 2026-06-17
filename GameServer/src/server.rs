@@ -533,9 +533,15 @@ fn handle_broker_message(
                         return;
                     }
                 };
+                let direction = match receive_payload.direction {
+                    Some(dir) => Some(Vec2::new(dir[0], dir[1])),
+                    None => None
+                };
+
                 let _ = sim_tx.0.send(crate::net::SimCommand::CastAbility {
                     entity_id: receive_payload.entity_id,
                     ability_type: receive_payload.ability,
+                    direction,
                 });
             }
             _ => {}

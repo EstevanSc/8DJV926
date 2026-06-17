@@ -19,7 +19,7 @@ pub struct Ability {
 impl Ability {
     pub fn from_type(ability_type: AbilityType) -> Ability {
         match ability_type {
-            AbilityType::Fireball { direction: _ } => {
+            AbilityType::Fireball => {
                 Ability {
                     cooldown: 2f32,
                     mana_cost: 25,

@@ -293,6 +293,7 @@ pub fn deserialize_path_response_payload(bytes: &[u8]) -> Option<PathResponsePay
 pub struct UseAbilityPayload {
     pub entity_id: Uuid,
     pub ability: AbilityType,
+    pub direction: Option<[f32; 2]>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]

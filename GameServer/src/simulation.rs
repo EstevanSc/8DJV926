@@ -98,14 +98,15 @@ pub struct MarkAsGhost {
 
 #[derive(Message)]
 pub struct CastAbility {
-    pub caster_id: uuid::Uuid,
+    pub caster: Entity,
     pub ability_type: AbilityType,
+    pub direction: Option<Vec2>,
 }
 
 #[derive(Message)]
 pub struct AbilityHitEntity {
-    pub caster_id: uuid::Uuid,
-    pub hit_entity_id: uuid::Uuid,
+    pub caster: Entity,
+    pub hit_entity: Entity,
     pub ability_type: AbilityType,
 }
 
@@ -260,14 +261,15 @@ fn cast_ability(
     for ev in events.read() {
         match ev.ability_type {
             AbilityType::Heal => {
-                tracing::info!("Heal ability casted by {}", ev.caster_id);
+                tracing::info!("Heal ability casted by {:?}", ev.caster);
                 hit_writer.write(AbilityHitEntity {
-                    caster_id: ev.caster_id,
-                    hit_entity_id: ev.caster_id,
+                    caster: ev.caster,
+                    hit_entity: ev.caster,
                     ability_type: AbilityType::Heal,
                 });
             }
-            AbilityType::Fireball {direction} => {
+            AbilityType::Fireball => {
+                let direction = ev.direction.unwrap_or_else(|| Vec2::X);
                 tracing::info!("Fireball ability casted! Direction: {:?}", direction);
             }
         }
@@ -299,6 +301,7 @@ fn publish_entity_positions(
 
 fn publish_ability_hits(
     mut events: MessageReader<AbilityHitEntity>,
+    net_query: Query<&NetEntity>,
     broker: Option<Res<BrokerPeer>>,
 ) {
     let Some(broker) = broker else {
@@ -306,9 +309,12 @@ fn publish_ability_hits(
     };
 
     for ev in events.read() {
+        let Ok(caster) = net_query.get(ev.caster) else { continue; };
+        let Ok(hit_entity) = net_query.get(ev.hit_entity) else { continue; };
+
         let payload_bytes = common::topics::serialize_ability_hit_entity_payload(&common::topics::AbilityHitEntityPayload {
-            caster_id: ev.caster_id,
-            hit_entity_id: ev.hit_entity_id,
+            caster_id: caster.connection_id,
+            hit_entity_id: hit_entity.connection_id,
             ability_type: ev.ability_type.clone(),
         });
 
@@ -324,7 +330,7 @@ fn publish_ability_hits(
         );
 
         if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
-            eprintln!("Failed to publish AbilityHit for entity {}: {:?}", ev.hit_entity_id, e);
+            eprintln!("Failed to publish AbilityHit for entity {}: {:?}", ev.hit_entity, e);
         } else {
             tracing::info!("Successfully published AbilityHitEntity to broker.");
         }
@@ -342,6 +348,7 @@ fn process_net_commands(
     mut input_buf: ResMut<InputBuffer>,
     mut query: Query<(Entity, &NetEntity, &mut Transform, Option<&LinearVelocity>)>,
     ghost_query: Query<&NetEntity, With<Ghost>>,
+    net_entities_query: Query<(Entity, &NetEntity)>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -406,12 +413,20 @@ fn process_net_commands(
             SimCommand::Input { connection_id, dx, dy } => {
                 input_buf.0.insert(connection_id, Vec2::new(dx, dy));
             }
-            SimCommand::CastAbility { entity_id, ability_type } => {
+            SimCommand::CastAbility { entity_id, ability_type, direction } => {
                 println!("CastAbility : {:?}", ability_type);
-                cast_ability_writer.write(CastAbility {
-                    caster_id: entity_id,
-                    ability_type,
-                });
+                if let Some((net_entity, _)) = net_entities_query
+                    .iter()
+                    .find(|(_, net)| net.connection_id == entity_id)
+                {
+                    cast_ability_writer.write(CastAbility {
+                        caster: net_entity,
+                        ability_type,
+                        direction
+                    });
+                } else {
+                    eprintln!("Warning: Received CastAbility for unknown network UUID: {}", entity_id);
+                }
             }
         }
     }
