@@ -97,6 +97,7 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                             new_value: new_mana,
                                         };
                                         let raw_payload = serialize_attribute_updated_payload(&attribute_updated_payload);
+                                        tracing::info!("Mana updated for entity {}: {}", entity_id, new_mana);
                                         if let Err(e) = client.publish_raw(Topic::AttributeUpdated(entity_id), raw_payload.as_slice()).await {
                                             tracing::error!("Failed to publish attribute updated payload: {:?}", e);
                                         }
@@ -125,6 +126,8 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                                 attribute:effect.attribute_type,
                                                 new_value: updated_value,
                                             };
+                                            tracing::info!("Attribute updated for entity {}: {:?} = {}", hit_entity_id, effect.attribute_type, updated_value);
+
                                             let raw_payload = serialize_attribute_updated_payload(&attribute_updated_payload);
                                             if let Err(e) = client.publish_raw(Topic::AttributeUpdated(hit_entity_id), raw_payload.as_slice()).await {
                                                 tracing::error!("Failed to publish attribute updated payload: {:?}", e);

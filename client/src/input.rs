@@ -136,18 +136,17 @@ fn mouse_button_input(
     mut event: MessageReader<PathResponseReceived>,
     mut path_to_cursor: ResMut<PathToCursor>
 ) {
+    let player_position = query_player
+        .iter()
+        .next()
+        .map(|transform| transform.translation)
+        .unwrap_or_default();
     if buttons.just_pressed(MouseButton::Right) {
         path_to_cursor.path.clear();
 
         let cursor_world_position = get_cursor_world_position(q_window, q_camera);
         info!("Cursor world position: {:?}", cursor_world_position);
         path_to_cursor.path.push(cursor_world_position);
-
-        let player_position = query_player
-                    .iter()
-                    .next()
-                    .map(|transform| transform.translation)
-                    .unwrap_or_default();
 
         info!("Player position: {:?}", player_position);
 
@@ -168,6 +167,23 @@ fn mouse_button_input(
             }
         }
         
+    }
+
+    if buttons.just_pressed(MouseButton::Left) {
+        // Find mouse direction
+        let cursor_world_position = get_cursor_world_position(q_window, q_camera);
+        let fireball_direction = [
+            cursor_world_position.x - player_position.x,
+            cursor_world_position.y - player_position.y,
+        ];
+        // Cast fireball
+        send_ability(
+            peer_res.as_mut(),
+            broker_conn.as_ref(),
+            broker_stream.as_ref(),
+            AbilityType::Fireball,
+            Some(fireball_direction),
+        );
     }
 
     for event in event.read() {

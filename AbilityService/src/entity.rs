@@ -28,6 +28,7 @@ impl Entity {
 
         // Heal ability by default
         abilities.insert(AbilityType::Heal, Ability::from_type(AbilityType::Heal));
+        abilities.insert(AbilityType::Fireball, Ability::from_type(AbilityType::Fireball));
 
         Self {
             entity_id,

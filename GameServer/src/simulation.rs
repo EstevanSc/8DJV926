@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use common::ability_type::AbilityType;
+use common::ability_type::AbilityType::Fireball;
+use crate::abilities::fireball::FireballBundle;
 use super::net::{SimCommand, SimCommandReceiver};
 use super::server::{publish_player_position, BrokerPeer, send_claim_ownership};
 use super::char_controller::*;
@@ -255,8 +257,10 @@ fn mark_locals_as_ghosts(
 }
 
 fn cast_ability(
+    mut commands: Commands,
     mut events: MessageReader<CastAbility>,
     mut hit_writer: MessageWriter<AbilityHitEntity>,
+    caster_query: Query<&Transform>,
 ) {
     for ev in events.read() {
         match ev.ability_type {
@@ -271,6 +275,18 @@ fn cast_ability(
             AbilityType::Fireball => {
                 let direction = ev.direction.unwrap_or_else(|| Vec2::X);
                 tracing::info!("Fireball ability casted! Direction: {:?}", direction);
+
+                let Ok(spawn_translation) = caster_query
+                    .get(ev.caster)
+                    .map(|t| t.translation)
+                    else { return };
+
+                // Spawn fireball
+                commands.spawn((
+                    FireballBundle::new(ev.caster, direction, 8.0f32),
+                    Transform::from_translation(spawn_translation),
+                    GlobalTransform::default(),
+                ));
             }
         }
     }
