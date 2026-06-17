@@ -5,7 +5,7 @@ use common::map_data::{BitMap, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-
+use common::ability_type::AbilityType;
 use super::net::{SimCommand, SimCommandReceiver};
 use super::server::{publish_player_position, BrokerPeer, send_claim_ownership};
 use super::char_controller::*;
@@ -30,13 +30,18 @@ impl Plugin for SimulationPlugin {
             .add_message::<DespawnNetEntity>()
             .add_message::<ClaimAsLocalPlayer>()
             .add_message::<MarkAsGhost>()
+            .add_message::<CastAbility>()
+            .add_message::<AbilityHitEntity>()
             .add_systems(Startup, spawn_map)
             .add_systems(FixedUpdate, process_net_commands)
             .add_systems(FixedUpdate, (spawn_net_entities).after(process_net_commands))
             .add_systems(FixedUpdate, (claim_ghosts, mark_locals_as_ghosts).after(spawn_net_entities))
             .add_systems(FixedUpdate, despawn_net_entities.after(claim_ghosts))
             .add_systems(FixedUpdate, apply_inputs.after(despawn_net_entities))
-            .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs)
+            .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs))
+            .add_systems(
+                FixedUpdate,
+                publish_ability_hits.after(cast_ability)
             );
     }
 }
@@ -89,6 +94,19 @@ pub struct ClaimAsLocalPlayer {
 pub struct MarkAsGhost {
     pub connection_id: uuid::Uuid,
     pub receiver_shard_id: uuid::Uuid,
+}
+
+#[derive(Message)]
+pub struct CastAbility {
+    pub caster_id: uuid::Uuid,
+    pub ability_type: AbilityType,
+}
+
+#[derive(Message)]
+pub struct AbilityHitEntity {
+    pub caster_id: uuid::Uuid,
+    pub hit_entity_id: uuid::Uuid,
+    pub ability_type: AbilityType,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +253,27 @@ fn mark_locals_as_ghosts(
     }
 }
 
+fn cast_ability(
+    mut events: MessageReader<CastAbility>,
+    mut hit_writer: MessageWriter<AbilityHitEntity>,
+) {
+    for ev in events.read() {
+        match ev.ability_type {
+            AbilityType::Heal => {
+                tracing::info!("Heal ability casted by {}", ev.caster_id);
+                hit_writer.write(AbilityHitEntity {
+                    caster_id: ev.caster_id,
+                    hit_entity_id: ev.caster_id,
+                    ability_type: AbilityType::Heal,
+                });
+            }
+            AbilityType::Fireball {direction} => {
+                tracing::info!("Fireball ability casted! Direction: {:?}", direction);
+            }
+        }
+    }
+}
+
 fn publish_entity_positions(
     query: Query<(&Transform, &NetEntity), Without<Ghost>>,
     broker: Option<Res<BrokerPeer>>,
@@ -258,6 +297,40 @@ fn publish_entity_positions(
     }
 }
 
+fn publish_ability_hits(
+    mut events: MessageReader<AbilityHitEntity>,
+    broker: Option<Res<BrokerPeer>>,
+) {
+    let Some(broker) = broker else {
+        return;
+    };
+
+    for ev in events.read() {
+        let payload_bytes = common::topics::serialize_ability_hit_entity_payload(&common::topics::AbilityHitEntityPayload {
+            caster_id: ev.caster_id,
+            hit_entity_id: ev.hit_entity_id,
+            ability_type: ev.ability_type.clone(),
+        });
+
+        let topic = common::topics::Topic::AbilityHitEntity;
+
+        let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
+            continue;
+        };
+
+        let publish_message = common::broker_messages::BrokerMessage::serialize_publish(
+            topic.to_bytes(),
+            &payload_bytes,
+        );
+
+        if let Err(e) = broker.peer.send(&connection, &control_stream, publish_message.into()) {
+            eprintln!("Failed to publish AbilityHit for entity {}: {:?}", ev.hit_entity_id, e);
+        } else {
+            tracing::info!("Successfully published AbilityHitEntity to broker.");
+        }
+    }
+}
+
 /// Poll the net→sim command channel and translate commands into Bevy messages.
 fn process_net_commands(
     cmd_rx: Res<SimCommandReceiver>,
@@ -265,6 +338,7 @@ fn process_net_commands(
     mut despawn_writer: MessageWriter<DespawnNetEntity>,
     mut claim_as_local_writer: MessageWriter<ClaimAsLocalPlayer>,
     mut mark_as_ghost_writer: MessageWriter<MarkAsGhost>,
+    mut cast_ability_writer: MessageWriter<CastAbility>,
     mut input_buf: ResMut<InputBuffer>,
     mut query: Query<(Entity, &NetEntity, &mut Transform, Option<&LinearVelocity>)>,
     ghost_query: Query<&NetEntity, With<Ghost>>,
@@ -331,6 +405,13 @@ fn process_net_commands(
             }
             SimCommand::Input { connection_id, dx, dy } => {
                 input_buf.0.insert(connection_id, Vec2::new(dx, dy));
+            }
+            SimCommand::CastAbility { entity_id, ability_type } => {
+                println!("CastAbility : {:?}", ability_type);
+                cast_ability_writer.write(CastAbility {
+                    caster_id: entity_id,
+                    ability_type,
+                });
             }
         }
     }

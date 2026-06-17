@@ -1,9 +1,7 @@
 use crate::heartbeat::Heartbeat;
 use crate::net::{ConnectedPlayers, SimCommandSender};
 use common::broker_messages::{BrokerMessage, SendingSystem};
-use common::topics::{
-   PositionPayload, ShardCreatedPayload, Topic, ClaimOwnershipPayload, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload, AuthorityDebugPacketPayload, serialize_authority_debug_packet_payload, deserialize_release_ownership_payload, deserialize_claim_ownership_payload, serialize_claim_ownership_payload
-};
+use common::topics::{PositionPayload, ShardCreatedPayload, Topic, ClaimOwnershipPayload, deserialize_input_payload, deserialize_position_payload, serialize_position_payload, serialize_shard_created_payload, AuthorityDebugPacketPayload, serialize_authority_debug_packet_payload, deserialize_release_ownership_payload, deserialize_claim_ownership_payload, serialize_claim_ownership_payload, deserialize_use_ability_payload};
 use common::{Boundary};
 use bevy::prelude::*;
 use game_sockets::protocols::QuicBackend;
@@ -450,6 +448,14 @@ fn handle_broker_message(
                 let _ = sim_tx.0.send(crate::net::SimCommand::Left {
                     connection_id: client_id,
                 });
+
+                if let Some(b) = broker {
+                    if let Some(conn) = b.connection {
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::Input(client_id));
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::Disconnect(client_id));
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::CastAbility(client_id));
+                    }
+                }
             }
             Topic::ClaimOwnership(shard_id) => {
                 let received_payload = match deserialize_claim_ownership_payload(&payload) {
@@ -485,6 +491,7 @@ fn handle_broker_message(
                 if let Some(broker) = broker {
                     subscribe_to_topic(broker, shard_id, Topic::Input(connection_id));
                     subscribe_to_topic(broker, shard_id, Topic::Disconnect(connection_id));
+                    subscribe_to_topic(broker, shard_id, Topic::CastAbility(connection_id));
                 }
             }
             Topic::ReleaseOwnership(shard_id) => {
@@ -516,6 +523,19 @@ fn handle_broker_message(
                 let _ = sim_tx.0.send(crate::net::SimCommand::LocalIsNowGhost {
                     connection_id,
                     receiver_shard_id,
+                });
+            }
+            Topic::CastAbility(entity_id) => {
+                let receive_payload = match deserialize_use_ability_payload(&payload) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Failed to decode CastAbility payload for entity_id={}", entity_id);
+                        return;
+                    }
+                };
+                let _ = sim_tx.0.send(crate::net::SimCommand::CastAbility {
+                    entity_id: receive_payload.entity_id,
+                    ability_type: receive_payload.ability,
                 });
             }
             _ => {}
@@ -622,6 +642,16 @@ fn handle_receive_new_player(
                     "Failed to subscribe client_id={} to Input topic: {:?}",
                     client_id, e
                 );
+            }
+
+            let ability_topic = Topic::CastAbility(client_id);
+            let subscribe_ability_msg =
+                BrokerMessage::serialize_subscribe(connection.connection_id, ability_topic.to_bytes());
+            if let Err(e) = broker
+                .peer
+                .send(&connection, &control_stream, subscribe_ability_msg.into())
+            {
+                eprintln!("Failed to subscribe client_id={} to CastAbility topic: {:?}", client_id, e);
             }
 
             let unsubscribe_spawn = BrokerMessage::serialize_unsubscribe(
@@ -797,6 +827,7 @@ pub(crate) fn send_claim_ownership(broker: &BrokerPeer, shard_id: Uuid, entity_i
     };
     unsubscribe_from_topic(broker, own_shard_id, Topic::Input(entity_id));
     unsubscribe_from_topic(broker, own_shard_id, Topic::Disconnect(entity_id));
+    unsubscribe_from_topic(broker, own_shard_id, Topic::CastAbility(entity_id));
     let claim_ownership_payload = serialize_claim_ownership_payload(&ClaimOwnershipPayload {
     entity_id: entity_id,
     entity_position: position,

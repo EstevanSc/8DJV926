@@ -1,7 +1,8 @@
 use bevy::{prelude::*};
-
+use serde::__private228::de::borrow_cow_bytes;
+use common::ability_type::AbilityType;
 use common::broker_messages::BrokerMessage;
-use common::topics::{serialize_input_payload, InputPayload, Topic, PathRequestPayload, serialize_path_request_payload};
+use common::topics::{serialize_input_payload, InputPayload, Topic, PathRequestPayload, serialize_path_request_payload, serialize_use_ability_payload, UseAbilityPayload};
 
 use super::{ GameState};
 use super::net::{ActivePeer, BrokerConn, BrokerControlStream};
@@ -22,9 +23,9 @@ impl Plugin for ClientInputPlugin {
 
 fn send_input(
 
-    peer_res: Option<ResMut<ActivePeer>>,
-    broker_conn: Option<Res<BrokerConn>>,
-    broker_stream: Option<Res<BrokerControlStream>>,
+    peer_res: Option<&mut ResMut<ActivePeer>>,
+    broker_conn: Option<&Res<BrokerConn>>,
+    broker_stream: Option<&Res<BrokerControlStream>>,
     input: [f64; 2]
 ) {
     let (Some(peer_res), Some(broker_conn), Some(broker_stream)) = (peer_res, broker_conn, broker_stream) else {
@@ -49,8 +50,31 @@ fn send_input(
     }
 }
 
+fn send_ability(
+    peer_res: Option<&mut ResMut<ActivePeer>>,
+    broker_conn: Option<&Res<BrokerConn>>,
+    broker_stream: Option<&Res<BrokerControlStream>>,
+    ability_type: AbilityType,
+) {
+    let (Some(peer_res), Some(broker_conn), Some(broker_stream)) = (peer_res, broker_conn, broker_stream) else {
+        return;
+    };
+    let Ok(peer) = peer_res.0.lock() else { return };
+
+    let payload = serialize_use_ability_payload(&UseAbilityPayload {
+        entity_id: broker_conn.0.connection_id,
+        ability: ability_type
+    });
+
+    let topic = Topic::RequestCastAbility.to_bytes();
+    let publish = BrokerMessage::serialize_publish(topic, &payload);
+    if let Err(e) = peer.send(&broker_conn.0, &broker_stream.0, publish.into()) {
+        tracing::warn!("send (ability publish): {e:?}");
+    }
+}
+
 fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
-    peer_res: Option<ResMut<ActivePeer>>,
+    mut peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
     broker_stream: Option<Res<BrokerControlStream>>,
     mut path_to_cursor: ResMut<PathToCursor>,
@@ -70,14 +94,27 @@ fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
     if keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS) {
         dy -= 1.0;
     }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        // Cast heal ability
+        send_ability(
+            peer_res.as_mut(),
+            broker_conn.as_ref(),
+            broker_stream.as_ref(),
+            AbilityType::Heal
+        );
+    }
 
     if dx == 0.0 && dy == 0.0 {
         return;
     }
 
     path_to_cursor.path.clear();
-
-    send_input(peer_res, broker_conn, broker_stream, [dx, dy]);
+    send_input(
+        peer_res.as_mut(),
+        broker_conn.as_ref(),
+        broker_stream.as_ref(),
+        [dx, dy]
+    );
 }
 
 #[derive(Resource, Reflect, Default)]
@@ -149,11 +186,21 @@ fn mouse_button_input(
             if path_to_cursor.path.len() >= 1 {
                 let next_target = path_to_cursor.path[0];
                 let direction = (next_target - player_position.truncate()).normalize_or_zero();
-                send_input(peer_res, broker_conn, broker_stream, [direction.x as f64, direction.y as f64]);
+                send_input(
+                    peer_res.as_mut(),
+                    broker_conn.as_ref(),
+                    broker_stream.as_ref(),
+                    [direction.x as f64, direction.y as f64]
+                );
             }
         }else {
             let direction = (target - player_position.truncate()).normalize_or_zero();
-            send_input(peer_res, broker_conn, broker_stream, [direction.x as f64, direction.y as f64]);
+            send_input(
+                peer_res.as_mut(),
+                broker_conn.as_ref(),
+                broker_stream.as_ref(),
+                [direction.x as f64, direction.y as f64]
+            );
         }
     }
 }

@@ -3,7 +3,7 @@ use std::sync::{mpsc, Mutex};
 
 use bevy::prelude::*;
 use uuid::Uuid;
-
+use common::ability_type::AbilityType;
 use game_sockets::GameConnection;
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,7 @@ pub enum SimCommand {
     GhostPositionUpdate { connection_id: Uuid, position: Vec2 },
     GhostIsNowLocal { connection_id: Uuid, speed: [f64; 2], position: [f64; 2] },
     LocalIsNowGhost { connection_id: Uuid, receiver_shard_id: Uuid },
+    CastAbility { entity_id: Uuid, ability_type: AbilityType },
 }
 
 // ---------------------------------------------------------------------------
