@@ -73,7 +73,8 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                         // Copy/Clone the small data pieces we need later
                                         (mut_ability.ability_type, mut_ability.mana_cost)
                                     } else {
-                                        return;
+                                        tracing::warn!("Entity {} tried to cast unregistered ability: {:?}", entity_id, ability_payload.ability);
+                                        continue;
                                     };
 
                                     // Send cast_ability message

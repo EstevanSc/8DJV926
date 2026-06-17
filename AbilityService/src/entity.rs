@@ -15,6 +15,8 @@ pub struct Entity {
 impl Entity {
     pub fn default(entity_id: uuid::Uuid) -> Self {
         let mut attributes = HashMap::new();
+        let mut abilities = HashMap::new();
+
         attributes.insert(
             AttributeType::ManaPoints,
             Attribute {
@@ -23,12 +25,16 @@ impl Entity {
             min_value: 0,
             current_value: 100,
         });
+
+        // Heal ability by default
+        abilities.insert(AbilityType::Heal, Ability::from_type(AbilityType::Heal));
+
         Self {
             entity_id,
             experience_points: 0,
             level: 0,
             attributes,
-            abilities: HashMap::new()
+            abilities
         }
     }
 
