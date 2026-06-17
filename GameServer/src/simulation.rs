@@ -43,7 +43,10 @@ impl Plugin for SimulationPlugin {
             .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs))
             .add_systems(
                 FixedUpdate,
-                publish_ability_hits.after(cast_ability)
+                (
+                    cast_ability,
+                    publish_ability_hits.after(cast_ability)
+                )
             );
     }
 }

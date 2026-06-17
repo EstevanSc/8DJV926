@@ -109,6 +109,7 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                     }
 
                     Topic::AbilityHitEntity => {
+                        tracing::info!("AbilityHitEntity received");
                         if let Some(ability_payload) = deserialize_ability_hit_entity_payload(&payload) {
                             let hit_entity_id = ability_payload.hit_entity_id;
 
