@@ -7,7 +7,7 @@ pub struct FireballPlugin;
 
 impl Plugin for FireballPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, handle_fireball_collisions);
+        app.add_systems(FixedUpdate, handle_fireball_collisions);
     }
 }
 
@@ -56,7 +56,7 @@ impl FireballBundle {
     }
 }
 
-fn handle_fireball_collisions(
+pub fn handle_fireball_collisions(
     mut commands: Commands,
     mut collision_events: MessageReader<CollisionStart>,
     mut hit_writer: MessageWriter<AbilityHitEntity>,
@@ -68,10 +68,10 @@ fn handle_fireball_collisions(
         let fireball_data = fireball_query
             .get(collision.collider1)
             .map(|data| (collision.collider1, data))
-            .or_else(|_| fireball_query.get(collision.collider1).map(|data| (collision.collider2, data)));
+            .or_else(|_| fireball_query.get(collision.collider2).map(|data| (collision.collider2, data)));
 
         if let Ok((fireball_entity, (_fb_ent, caster, _))) = fireball_data {
-            let hit_entity = if fireball_entity == collision.collider1 { collision.collider1 } else { collision.collider1 };
+            let hit_entity = if fireball_entity == collision.collider1 { collision.collider2 } else { collision.collider1 };
 
             // Prevent the fireball from blowing up on the person who cast it
             if hit_entity == caster.0 {

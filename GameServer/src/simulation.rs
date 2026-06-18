@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use common::ability_type::AbilityType;
 use common::ability_type::AbilityType::Fireball;
-use crate::abilities::fireball::FireballBundle;
+use crate::abilities::fireball::{handle_fireball_collisions, FireballBundle};
 use super::net::{SimCommand, SimCommandReceiver};
 use super::server::{publish_player_position, BrokerPeer, send_claim_ownership};
 use super::char_controller::*;
@@ -45,7 +45,8 @@ impl Plugin for SimulationPlugin {
                 FixedUpdate,
                 (
                     cast_ability,
-                    publish_ability_hits.after(cast_ability)
+                    handle_fireball_collisions.after(cast_ability),
+                    publish_ability_hits.after(cast_ability).after(handle_fireball_collisions)
                 )
             );
     }
@@ -284,10 +285,13 @@ fn cast_ability(
                     .map(|t| t.translation)
                     else { return };
 
+                let offset = direction * 26.0;
+                let spawn_pos = spawn_translation + Vec3::new(offset.x, offset.y, 0.0);
+
                 // Spawn fireball
                 commands.spawn((
-                    FireballBundle::new(ev.caster, direction, 8.0f32),
-                    Transform::from_translation(spawn_translation),
+                    FireballBundle::new(ev.caster, direction, 400.0f32),
+                    Transform::from_translation(spawn_pos),
                     GlobalTransform::default(),
                 ));
             }
