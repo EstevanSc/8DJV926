@@ -26,6 +26,15 @@ impl Entity {
             current_value: 100,
         });
 
+        attributes.insert(
+            AttributeType::HealthPoints,
+            Attribute {
+                attribute_type: AttributeType::HealthPoints,
+                max_value: 100,
+                min_value: 0,
+                current_value: 50,
+            });
+
         // Heal ability by default
         abilities.insert(AbilityType::Heal, Ability::from_type(AbilityType::Heal));
         abilities.insert(AbilityType::Fireball, Ability::from_type(AbilityType::Fireball));

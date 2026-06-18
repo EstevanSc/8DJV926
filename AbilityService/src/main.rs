@@ -109,10 +109,10 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                     }
 
                     Topic::AbilityHitEntity => {
-                        tracing::info!("AbilityHitEntity received");
                         if let Some(ability_payload) = deserialize_ability_hit_entity_payload(&payload) {
                             let hit_entity_id = ability_payload.hit_entity_id;
 
+                            tracing::info!("AbilityHitEntity received for entity {:?}", hit_entity_id);
                             let mut entity_was_killed = false;
 
                             if let Some(hit_entity) = entity_registry.get_mut(&hit_entity_id) {
@@ -151,6 +151,9 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                     }
                                 }
                             }
+                            else {
+                                tracing::error!("Couldn't find entity: {:?}", hit_entity_id);
+                            }
 
                             if entity_was_killed {
                                 // Update killed xp
@@ -184,6 +187,9 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                     }
                                 }
                             }
+                        }
+                        else {
+                            tracing::error!("Failed deserialize ability hit entity payload: {:?}", payload);
                         }
                     }
                     _ => {}
