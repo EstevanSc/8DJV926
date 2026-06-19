@@ -49,5 +49,13 @@ impl PatrolRoute {
 #[derive(Component, Debug, Clone)]
 pub enum AiIntent {
     MoveTo([f32; 2]),
+    CastAbility(common::ability_type::AbilityType, Option<[f32; 2]>),
     Idle,
+}
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct AiStats {
+    pub health: i32,
+    pub max_health: i32,
+    pub mana: i32,
 }

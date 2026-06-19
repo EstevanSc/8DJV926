@@ -10,7 +10,8 @@ use common::topics::{
     deserialize_position_payload, deserialize_quadtree_boundaries_update_payload,
     serialize_input_payload, InputPayload, Topic,
     PathRequestPayload, serialize_path_request_payload,
-    deserialize_path_response_payload
+    deserialize_path_response_payload,
+    UseAbilityPayload, serialize_use_ability_payload,
 };
 
 use crate::client::{AiClient, ClientPool, InboundMessage, MasterClient};
@@ -209,6 +210,15 @@ fn flush_intents(
                 tracing::debug!("AI {} moving toward {:?}, dir {:?}", ai.id, current_target, dir);
                 let payload = serialize_input_payload(&InputPayload { dxdy: [dir[0] as f64, dir[1] as f64] });
                 client.publish(Topic::Input(ai.id).to_bytes(), &payload);
+                *intent = AiIntent::Idle;
+            }
+            AiIntent::CastAbility(ability, direction) => {
+                let payload = serialize_use_ability_payload(&UseAbilityPayload {
+                    entity_id: ai.id,
+                    ability,
+                    direction,
+                });
+                client.publish(Topic::CastAbility(ai.id).to_bytes(), &payload);
                 *intent = AiIntent::Idle;
             }
             AiIntent::Idle => {}
