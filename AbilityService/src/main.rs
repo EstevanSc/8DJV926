@@ -50,6 +50,8 @@ async fn main() -> anyhow::Result<()> {
 async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
     let mut tick = tokio::time::interval(Duration::from_millis(config.ability_service_tick_ms));
     let mut entity_registry: HashMap<uuid::Uuid, Entity> = HashMap::new();
+
+    let mut mana_regen_accumulator = 0.0f32; 
     loop {
         if let Ok(messages) =client.poll_broadcasts() {
             for (topic, payload) in messages {
@@ -114,12 +116,14 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
 
                             tracing::info!("AbilityHitEntity received for entity {:?}", hit_entity_id);
                             let mut entity_was_killed = false;
-
+                            let caster_level = entity_registry.get(&ability_payload.caster_id).map(|e| e.level).unwrap_or(1);
                             if let Some(hit_entity) = entity_registry.get_mut(&hit_entity_id) {
                                 let ability = Ability::from_type(ability_payload.ability_type);
                                 for effect in ability.effects {
                                     if let Some(attribute) = hit_entity.attributes.get(&effect.attribute_type) {
-                                        let new_value = attribute.current_value + effect.modifier_value;
+                                        let mut multiplier = 1.0; // Base multiplier, can be adjusted based on various factors
+                                        multiplier = multiplier + (caster_level as f32 * 0.5);
+                                        let new_value = attribute.current_value + (effect.modifier_value as f32 * multiplier) as i32;
                                         if let Some(updated_value) =hit_entity.update_attribute(effect.attribute_type, new_value) {
                                             // Send entity attribute update
                                             let attribute_updated_payload = AttributeUpdatedPayload {
@@ -159,7 +163,7 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                 // Update killed xp
                                 let caster_id = ability_payload.caster_id;
                                 if let Some(caster) = entity_registry.get_mut(&caster_id) {
-                                    caster.experience_points += 5;
+                                    caster.experience_points += 25;
                                     while caster.experience_points >= 100 {
                                         // Level up
                                         caster.level += 1;
@@ -195,6 +199,28 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                     _ => {}
                 }
             }
+        }
+
+        // mana regeneration each second
+        mana_regen_accumulator += config.ability_service_tick_ms as f32 / 1000.0;
+        
+        if mana_regen_accumulator >= 1.0 {
+            for (entity_id, entity) in entity_registry.iter_mut() {
+                if let Some(mana_attr) = entity.attributes.get_mut(&AttributeType::ManaPoints) {
+                    if mana_attr.current_value < mana_attr.max_value {
+                        let new_mana = (mana_attr.current_value + 5).min(mana_attr.max_value);
+                        entity.update_attribute(AttributeType::ManaPoints, new_mana);
+
+                        let payload = serialize_attribute_updated_payload(&AttributeUpdatedPayload {
+                            entity_id: *entity_id,
+                            attribute: AttributeType::ManaPoints,
+                            new_value: new_mana,
+                        });
+                        let _ = client.publish_raw(Topic::AttributeUpdated(*entity_id), payload.as_slice()).await;
+                    }
+                }
+            }
+            mana_regen_accumulator = 0.0;
         }
 
         tick.tick().await;

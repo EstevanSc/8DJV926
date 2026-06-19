@@ -3,7 +3,7 @@ use bevy_behave::prelude::*;
 
 use crate::components::{AiIntent, AiPosition, Perception};
 
-const AGGRO_RANGE: f32 = 300.0;
+const AGGRO_RANGE: f32 = 400.0;
 
 /// Trigger payload for the CheckNearby condition node.
 #[derive(Clone, Debug)]
