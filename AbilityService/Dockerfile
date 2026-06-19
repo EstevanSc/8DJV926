@@ -15,6 +15,7 @@ COPY quadtree ./quadtree
 COPY broker ./broker
 COPY pathing_service ./pathing_service
 COPY AbilityService ./AbilityService
+COPY ai_service ./ai_service
 
 # Build the pathing_service binary
 RUN cargo build --release -p AbilityService

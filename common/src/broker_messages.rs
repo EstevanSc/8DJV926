@@ -17,6 +17,7 @@ pub enum SendingSystem {
     Client,
     Gatekeeper,
     AbilityService,
+    AiService,
     PathingService,
 }
 
@@ -93,8 +94,9 @@ impl BrokerMessage {
                     0x03 => SendingSystem::Orchestrator,
                     0x04 => SendingSystem::Client,
                     0x05 => SendingSystem::Gatekeeper,
-                    0x06 => SendingSystem::PathingService,
-                    0x07 => SendingSystem::AbilityService,
+                    0x06 => SendingSystem::AiService,
+                    0x07 => SendingSystem::PathingService,
+                    0x08 => SendingSystem::AbilityService,
                     _ => return None,
                 };
                 Some(BrokerMessage::Connect { client_id, sending_system })
@@ -138,8 +140,9 @@ impl BrokerMessage {
             SendingSystem::Orchestrator => 0x03,
             SendingSystem::Client => 0x04,
             SendingSystem::Gatekeeper => 0x05,
-            SendingSystem::PathingService => 0x06,
-            SendingSystem::AbilityService => 0x07,
+            SendingSystem::AiService => 0x06,
+            SendingSystem::PathingService => 0x07,
+            SendingSystem::AbilityService => 0x08,
         };
         buffer.push(system_byte);
         buffer

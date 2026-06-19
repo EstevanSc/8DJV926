@@ -4,17 +4,7 @@ FROM rust:latest AS builder
 WORKDIR /app
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
-COPY client ./client
-COPY gatekeeper ./gatekeeper
-COPY GameServer ./GameServer
-COPY Orchestrator ./Orchestrator
-COPY game_sockets ./game_sockets
-COPY common ./common
-COPY AbilityService ./AbilityService
-COPY quadtree ./quadtree
-COPY broker ./broker
-COPY pathing_service ./pathing_service
+COPY . .
 
 # Build the quadtree binary
 RUN cargo build --release -p quadtree
@@ -38,7 +28,7 @@ ENV QUADTREE_NEARBY_MARGIN=5.0
 ENV QUADTREE_LISTEN_PORT=5000
 ENV QUADTREE_ORCHESTRATOR_HOST=localhost
 ENV QUADTREE_ORCHESTRATOR_PORT=5000
-ENV QUADTREE_ENTITY_ADD_INTERVAL_MS=1000
+ENV QUADTREE_TICK_MS=1000
 ENV RUST_LOG=info
 
 ENTRYPOINT ["quadtree"]
