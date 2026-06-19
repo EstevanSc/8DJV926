@@ -545,6 +545,7 @@ async fn spawn_player_on_shard(
 
     //subscribe the client to the player's position updates so it can track its own position for interpolation
     broker.subscribe(player_id, Topic::EntityPositionUpdate(player_id)).await?;
+    broker.subscribe(player_id, Topic::CastAbility(player_id)).await?;
 
     //send the initial position update so the client and quadtree have a baseline position for the player
      let payload = serialize_position_payload(&PositionPayload {
@@ -831,6 +832,13 @@ async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMa
             } else {
                 tracing::info!("Subscribed to disconnect updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
             }
+
+            // Send subscription to CastAbility topic
+            if let Err(e) = broker.subscribe(entity_id, Topic::CastAbility(new_id)).await {
+                tracing::error!("Failed to subscribe to cast ability updates for entity {:?}: {}", new_id, e);
+            } else {
+                tracing::info!("Subscribed to cast ability updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
+            }
         }
 
         for old_id in no_longer_in_interest {
@@ -845,6 +853,13 @@ async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMa
                 tracing::error!("Failed to unsubscribe from disconnect updates for entity {:?}: {}", old_id, e);
             } else {
                 tracing::info!("Unsubscribed from disconnect updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
+            }
+
+            // Send unsubscription to CastAbility topic
+            if let Err(e) = broker.unsubscribe(entity_id, Topic::CastAbility(old_id)).await {
+                tracing::error!("Failed to unsubscribe from cast ability updates for entity {:?}: {}", old_id, e);
+            } else {
+                tracing::info!("Unsubscribed from cast ability updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
             }
         }
     }

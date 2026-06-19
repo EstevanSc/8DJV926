@@ -277,7 +277,8 @@ fn cast_ability(
                 });
             }
             AbilityType::Fireball => {
-                let direction = ev.direction.unwrap_or_else(|| Vec2::X);
+                let raw_direction = ev.direction.unwrap_or_else(|| Vec2::X);
+                let direction = raw_direction.normalize();
                 tracing::info!("Fireball ability casted! Direction: {:?}", direction);
 
                 let Ok(spawn_translation) = caster_query

@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload, deserialize_use_ability_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -17,6 +17,7 @@ impl Plugin for ClientNetPlugin {
             .add_message::<AuthorityDebugPacketReceived>()
             .add_message::<DisconnectReceived>()
             .add_message::<PathResponseReceived>()
+            .add_message::<AbilityCastReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -244,6 +245,13 @@ pub struct DisconnectReceived {
     pub entity_id: uuid::Uuid,
 }
 
+#[derive(Message)]
+pub struct AbilityCastReceived {
+    pub caster_id: uuid::Uuid,
+    pub ability_type: common::ability_type::AbilityType,
+    pub direction: Option<Vec2>,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     mut update_writer: MessageWriter<PositionUpdateReceived>,
@@ -251,6 +259,7 @@ fn receive_packets(
     mut authority_debug_writer: MessageWriter<AuthorityDebugPacketReceived>,
     mut disconnect_writer: MessageWriter<DisconnectReceived>,
     mut path_response_writer: MessageWriter<PathResponseReceived>,
+    mut ability_cast_writer: MessageWriter<AbilityCastReceived>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -306,6 +315,19 @@ fn receive_packets(
                                 path_response_writer.write(PathResponseReceived {
                                     path: path,
                                 });
+                            }
+                        }
+                        Topic::CastAbility(caster_uuid) => {
+                            if let Some(payload) = deserialize_use_ability_payload(&payload) {
+                                let dir = payload.direction.map(|d| Vec2::new(d[0], d[1]));
+                                ability_cast_writer.write(AbilityCastReceived {
+                                    caster_id: caster_uuid,
+                                    ability_type: payload.ability,
+                                    direction: dir,
+                                });
+                            }
+                            else {
+                                tracing::error!("Couldn't deserialize CastABility payload.");
                             }
                         }
                         _ => {}

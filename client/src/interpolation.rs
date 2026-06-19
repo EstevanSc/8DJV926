@@ -13,8 +13,18 @@ impl Plugin for InterpolationPlugin {
         app.add_systems(OnEnter(GameState::InGame), (spawn_map, spawn_debug_hud))
             .add_systems(
                 Update,
-                (spawn_remote_players, interpolate_remote_players, update_remote_player_labels, follow_local_player, draw_debug_quad_tree, spawn_debug_hud, handle_disconnect, delete_entities_outside_of_interest)
-                    .run_if(in_state(GameState::InGame)),
+                (
+                    spawn_remote_players,
+                    interpolate_remote_players,
+                    update_remote_player_labels,
+                    follow_local_player,
+                    draw_debug_quad_tree,
+                    spawn_debug_hud,
+                    handle_disconnect,
+                    delete_entities_outside_of_interest,
+                    spawn_remote_fireballs,
+                    update_projectiles,
+                ).run_if(in_state(GameState::InGame)),
             );
     }
 }
@@ -36,6 +46,12 @@ pub struct RemotePlayer {
 pub struct RemotePlayerLabel {
     pub connection_id: uuid::Uuid,
     pub display_name: String,
+}
+
+#[derive(Component)]
+pub struct ClientProjectile {
+    pub direction: Vec2,
+    pub speed: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -433,5 +449,67 @@ fn delete_entities_outside_of_interest(
         if (pos - player_position).length() > 500.0 {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+fn spawn_remote_fireballs(
+    mut commands: Commands,
+    mut events: MessageReader<super::net::AbilityCastReceived>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    player_query: Query<(&RemotePlayer, &Transform)>,
+    self_query: Query<&Transform, With<SelfPlayer>>,
+    broker_conn: Option<Res<BrokerConn>>,
+) {
+    let my_id = broker_conn.map(|b| b.0.connection_id);
+
+    for ev in events.read() {
+        if ev.ability_type == common::ability_type::AbilityType::Fireball {
+            let raw_direction = ev.direction.unwrap_or(Vec2::X);
+            let direction = raw_direction.normalize();
+
+            let mut spawn_pos = player_query
+                .iter()
+                .find(|(p, _)| p.connection_id == ev.caster_id)
+                .map(|(_, t)| t.translation.truncate());
+
+            // If it's your own fireball and the query missed you, fall back to the explicit SelfPlayer transform
+            if spawn_pos.is_none() && my_id == Some(ev.caster_id) {
+                if let Ok(self_transform) = self_query.single() {
+                    spawn_pos = Some(self_transform.translation.truncate());
+                }
+            }
+
+            let final_base_pos = spawn_pos.unwrap_or(Vec2::ZERO);
+
+            // Offset the fireball slightly in the direction of travel so it doesn't overlap
+            let offset = direction * 26.0;
+            let final_spawn_pos = final_base_pos + offset;
+
+            commands.spawn((
+                ClientProjectile {
+                    direction,
+                    speed: 400.0,
+                },
+                Mesh2d(meshes.add(Circle::new(8.0))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(1.0, 0.3, 0.0)))), // Bright Orange tint
+                Transform::from_translation(final_spawn_pos.extend(7.0)),
+                GameSceneRoot,
+            ));
+
+            tracing::info!("Fireball spawned at {:?}", final_spawn_pos);
+        }
+    }
+}
+
+fn update_projectiles(
+    mut query: Query<(&ClientProjectile, &mut Transform)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    for (proj, mut transform) in &mut query {
+        let movement = proj.direction * proj.speed * dt;
+        transform.translation.x += movement.x;
+        transform.translation.y += movement.y;
     }
 }
