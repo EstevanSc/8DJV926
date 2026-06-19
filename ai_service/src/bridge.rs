@@ -15,7 +15,7 @@ use common::topics::{
 };
 
 use crate::client::{AiClient, ClientPool, InboundMessage, MasterClient};
-use crate::components::{AiEntity, AiIntent, AiPosition, Perception, AiPath};
+use crate::components::{AiEntity, AiIntent, AiPosition, Perception, AiPath, AiStats};
 use crate::config::Config;
 
 /// Bevy resource wrapping the tokio runtime.
@@ -137,10 +137,14 @@ fn connect_new_entities(
 
 /// Drains inbound broker messages and updates AiPosition / Perception components.
 fn drain_inbound(
+    mut commands: Commands,
     mut receivers: ResMut<InboundReceivers>,
-    mut query: Query<(&AiEntity, &mut AiPosition, &mut Perception, &mut AiPath)>,
+    mut query: Query<(Entity, &AiEntity, &mut AiPosition, &mut Perception, &mut AiPath, &mut AiStats)>,
+    clients: Res<AiClients>,
 ) {
-    for (ai, mut pos, mut perception, mut path) in &mut query {
+    let mut to_cleanup = Vec::new();
+
+    for (entity, ai, mut pos, mut perception, mut path, mut stats) in &mut query {
         let Some(rx) = receivers.0.get_mut(&ai.id) else { continue };
 
         while let Ok(msg) = rx.try_recv() {
@@ -171,13 +175,42 @@ fn drain_inbound(
                     }
                 }
             }
+            if let Topic::AttributeUpdated(id) = Topic::from_bytes(msg.topic) {
+                if id == ai.id {
+                    if let Some(update) = common::topics::deserialize_attribute_updated_payload(&msg.payload) {
+                        match update.attribute {
+                            common::attribute_type::AttributeType::HealthPoints => {
+                                stats.health = update.new_value;
+                            }
+                            common::attribute_type::AttributeType::ManaPoints => {
+                                stats.mana = update.new_value;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Topic::EntityKilled(id) = Topic::from_bytes(msg.topic) {
+                if id == ai.id {
+                    to_cleanup.push((entity, ai.id));
+                    break;
+                }
+            }
+        }
+    }
+
+    for (entity, ai_id) in to_cleanup {
+        tracing::info!("Cleaning up AI {} after death", ai_id);
+        receivers.0.remove(&ai_id);
+        commands.entity(entity).despawn();
+        if let Some(client) = clients.0.lock().unwrap().clients.remove(&ai_id) {
+            client.publish(Topic::Disconnect(ai_id).to_bytes(), &[]);
         }
     }
 }
 
 /// Inserts or updates a nearby entity's position in the Perception list.
 fn upsert_nearby(perception: &mut Perception, id: Uuid, pos: [f32; 2]) {
-    tracing::info!("Updating perception of nearby entity {} at position {:?}", id, pos);
+    tracing::debug!("Updating perception of nearby entity {} at position {:?}", id, pos);
     match perception.nearby.iter_mut().find(|(eid, _)| *eid == id) {
         Some(entry) => entry.1 = pos,
         None => perception.nearby.push((id, pos)),
@@ -213,12 +246,14 @@ fn flush_intents(
                 *intent = AiIntent::Idle;
             }
             AiIntent::CastAbility(ability, direction) => {
-                let payload = serialize_use_ability_payload(&UseAbilityPayload {
+                tracing::debug!("AI {} casting ability {:?} in direction {:?}", ai.id, ability, direction);
+                let payload: Vec<u8> = serialize_use_ability_payload(&UseAbilityPayload {
                     entity_id: ai.id,
                     ability,
                     direction,
                 });
-                client.publish(Topic::CastAbility(ai.id).to_bytes(), &payload);
+                let topic = Topic::RequestCastAbility.to_bytes();
+                client.publish(topic, &payload);
                 *intent = AiIntent::Idle;
             }
             AiIntent::Idle => {}

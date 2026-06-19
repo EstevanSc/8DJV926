@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_behave::prelude::*;
-use crate::components::{AiPosition, Perception, AiIntent};
+use crate::components::{AiPosition, Perception, AiIntent, AiStats};
 use common::ability_type::AbilityType;
 
 const FIREBALL_RANGE_SQ: f32 = 100.0 * 100.0;
@@ -33,11 +33,15 @@ pub fn on_check_aggro_distance(
 /// Cast Fireball on the first nearby target
 pub fn on_cast_fireball(
     trigger: On<BehaveTrigger<CastFireball>>,
-    mut query: Query<(&AiPosition, &Perception, &mut AiIntent)>,
+    mut query: Query<(&AiPosition, &Perception, &mut AiIntent, &AiStats)>,
     mut commands: Commands,
 ) {
     let ctx = trigger.event().ctx();
-    if let Ok((pos, perception, mut intent)) = query.get_mut(ctx.target_entity()) {
+    if let Ok((pos, perception, mut intent, stats)) = query.get_mut(ctx.target_entity()) {
+        if stats.mana < 25 {
+            commands.trigger(ctx.failure());
+            return;
+        }
         // Vise le premier ennemi proche
         if let Some((_, target_pos)) = perception.nearby.first() {
             let dir = [target_pos[0] - pos.x, target_pos[1] - pos.y];

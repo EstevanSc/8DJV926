@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::behaviour::trees::build_tree;
 use crate::bridge::QuadtreeBoundaries;
-use crate::components::{AiEntity, AiIntent, AiPosition, PatrolRoute, Perception, AiPath};
+use crate::components::{AiEntity, AiIntent, AiPosition, PatrolRoute, Perception, AiPath, AiStats};
 use crate::config::Config;
 
 /// Bevy plugin that manages dynamic AI spawns based on Quadtree limits.
@@ -113,6 +113,7 @@ fn tick_respawns(
         .insert(AiPath { waypoints: Vec::new()})
         .insert(PatrolRoute { waypoints, current: 0 })
         .insert(AiIntent::Idle)
+        .insert(AiStats { health: 100, max_health: 100, mana: 50 })
         .id();
 
     let tree = build_tree(id);

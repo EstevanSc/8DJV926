@@ -67,6 +67,16 @@ impl AiClient {
             id,
             Topic::PathResponse(id).to_bytes(),
         ));
+        // subscribe to the attribute updates for this entity
+        client.send_raw(BrokerMessage::serialize_subscribe(
+            id,
+            Topic::AttributeUpdated(id).to_bytes(),
+        ));
+        // subscribe to entity killed so can react to ia death
+        client.send_raw(BrokerMessage::serialize_subscribe(
+            id,
+            Topic::EntityKilled(id).to_bytes(),
+        ));
 
         Ok((client, inbound_rx))
     }
