@@ -3,7 +3,9 @@ use std::time::Duration;
 use anyhow::Context;
 use common::broker_api::BrokerClient;
 use common::broker_messages::SendingSystem;
-use common::topics::{deserialize_ability_hit_entity_payload, deserialize_starting_position_payload, deserialize_use_ability_payload, serialize_attribute_updated_payload, serialize_entity_killed_payload, serialize_level_up_payload, serialize_use_ability_payload, serialize_xp_earned_payload, AttributeUpdatedPayload, EntityKilledPayload, LevelUpPayload, Topic, UseAbilityPayload, XPEarnedPayload};
+use common::topics::{deserialize_ability_hit_entity_payload, deserialize_starting_position_payload, deserialize_use_ability_payload, serialize_attribute_updated_payload, serialize_entity_killed_payload, serialize_level_up_payload, serialize_use_ability_payload, serialize_xp_earned_payload, AttributeUpdatedPayload, EntityKilledPayload, LevelUpPayload, Topic, UseAbilityPayload, XPEarnedPayload,
+    serialize_starting_position_payload, StartingPositionPayload
+};
 use common::attribute_type::AttributeType;
 use crate::ability::Ability;
 use crate::config::Config;
@@ -51,7 +53,7 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
     let mut tick = tokio::time::interval(Duration::from_millis(config.ability_service_tick_ms));
     let mut entity_registry: HashMap<uuid::Uuid, Entity> = HashMap::new();
 
-    let mut mana_regen_accumulator = 0.0f32; 
+    let mut mana_regen_accumulator = 0.0f32;
     loop {
         if let Ok(messages) =client.poll_broadcasts() {
             for (topic, payload) in messages {
@@ -61,7 +63,12 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                         {
                             let entity_id = position_payload.connection_id;
                             let new_entity = Entity::default(entity_id);
-                            entity_registry.entry(entity_id).or_insert(new_entity);
+                            if let Some(_existing_entity) = entity_registry.get(&entity_id) {
+                                tracing::debug!("Entity with ID {} already exists. Overwriting with new entity.", entity_id);
+                                entity_registry.insert(entity_id, new_entity);
+                            } else {
+                                entity_registry.entry(entity_id).or_insert(new_entity);
+                            }
                         }
                     }
 
@@ -104,7 +111,6 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                             tracing::error!("Failed to publish attribute updated payload: {:?}", e);
                                         }
                                     }
-
                                 }
                             }
                         }

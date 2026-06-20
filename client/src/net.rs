@@ -172,6 +172,15 @@ fn poll_net_events(
                         tracing::info!("Subscribed to PathResponse for player_id={player_id}");
                     }
 
+                    let subscribe_entity_killed = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::EntityKilled(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_entity_killed.into()) {
+                        tracing::error!("Failed to subscribe to EntityKilled: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to EntityKilled for player_id={player_id}");
+                    }
                     next_state.set(GameState::InGame);
                 } 
                 else {
@@ -254,6 +263,8 @@ pub struct AbilityCastReceived {
 
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
+    broker_conn: Option<Res<BrokerConn>>,
+    broker_stream: Option<Res<BrokerControlStream>>,
     mut update_writer: MessageWriter<PositionUpdateReceived>,
     mut quadtree_update_writer: MessageWriter<QuadtreeBoundariesUpdateReceived>,
     mut authority_debug_writer: MessageWriter<AuthorityDebugPacketReceived>,
@@ -263,7 +274,9 @@ fn receive_packets(
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
-
+    let mut killed = false;
+    let Some(conn) = broker_conn.as_ref() else { return };
+    let self_id = conn.0.connection_id;
     while let Ok(Some(event)) = peer.poll() {
         if let GameNetworkEvent::Message { data, .. } = event {
             if let Some(message) = BrokerMessage::deserialize(&data) {
@@ -303,6 +316,12 @@ fn receive_packets(
                                 entity_id: uuid,
                             });
                         }
+                        Topic::EntityKilled(uuid) => {
+                            if uuid == self_id {
+                                tracing::info!("Received EntityKilled for our own entity {:?} — we were killed!", uuid);
+                                killed = true;
+                            }
+                        }
                         Topic::PathResponse(_entity_uuid) => {
                             tracing::info!("Received path response from server for entity {:?}", _entity_uuid);
                             if let Some(response) = deserialize_path_response_payload(&payload) {
@@ -335,6 +354,23 @@ fn receive_packets(
                     _ => {}
                 }
                 continue;
+            }
+        }
+    }
+
+    if killed {
+        if let (Some(conn), Some(stream)) = (broker_conn, broker_stream) {
+            let respawn_entity_id = conn.0.connection_id;
+            let payload = serialize_starting_position_payload(&StartingPositionPayload {
+                connection_id: respawn_entity_id,
+                position: [150.0, 150.0],
+            });
+            let topic = Topic::PlayerStartingPosition.to_bytes();
+            let publish = BrokerMessage::serialize_publish(topic, &payload);
+            
+            // Utilise maintenant 'stream.0'
+            if let Ok(peer) = peer_res.0.lock() {
+                let _ = peer.send(&conn.0, &stream.0, publish.into());
             }
         }
     }

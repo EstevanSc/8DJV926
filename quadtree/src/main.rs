@@ -542,10 +542,13 @@ async fn spawn_player_on_shard(
     broker.subscribe(shard_uuid, Topic::PlayerStartingPositionInShard(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Input(player_id)).await?;
     broker.subscribe(shard_uuid, Topic::Disconnect(player_id)).await?;
-
+    broker.subscribe(shard_uuid, Topic::CastAbility(player_id)).await?;
+    broker.subscribe(shard_uuid, Topic::EntityKilled(player_id)).await?;
+    
     //subscribe the client to the player's position updates so it can track its own position for interpolation
     broker.subscribe(player_id, Topic::EntityPositionUpdate(player_id)).await?;
     broker.subscribe(player_id, Topic::CastAbility(player_id)).await?;
+    
 
     //send the initial position update so the client and quadtree have a baseline position for the player
      let payload = serialize_position_payload(&PositionPayload {
@@ -1090,6 +1093,8 @@ async fn handle_shard_destruction(
                 });
                 let _ = broker.publish(Topic::ReleaseOwnership(destroyed_shard_uuid), &payload).await;
                 entity_owners.write().unwrap().insert(entity_id, new_shard_uuid);
+                // unsubscribe the new shard from the player's position updates to trigger the claim ownership flow to ensure one authority at a time
+                let _ = broker.unsubscribe(new_shard_uuid, Topic::EntityPositionUpdate(entity_id)).await;
             } else {
                 let _ = broker.subscribe(new_shard_uuid, Topic::EntityPositionUpdate(entity_id)).await;
             }

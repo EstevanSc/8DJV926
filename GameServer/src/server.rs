@@ -454,6 +454,22 @@ fn handle_broker_message(
                         unsubscribe_from_topic(b, conn.connection_id, Topic::Input(client_id));
                         unsubscribe_from_topic(b, conn.connection_id, Topic::Disconnect(client_id));
                         unsubscribe_from_topic(b, conn.connection_id, Topic::CastAbility(client_id));
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::EntityKilled(client_id));
+                    }
+                }
+            }
+            Topic::EntityKilled(client_id) => {
+                trace!("Received EntityKilled broadcast for client_id={}", client_id);
+                client_registry.registry.remove(&client_id);
+                let _ = sim_tx.0.send(crate::net::SimCommand::Left {
+                    connection_id: client_id,
+                });
+                if let Some(b) = broker {
+                    if let Some(conn) = b.connection {
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::Input(client_id));
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::Disconnect(client_id));
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::CastAbility(client_id));
+                        unsubscribe_from_topic(b, conn.connection_id, Topic::EntityKilled(client_id));
                     }
                 }
             }
@@ -492,6 +508,7 @@ fn handle_broker_message(
                     subscribe_to_topic(broker, shard_id, Topic::Input(connection_id));
                     subscribe_to_topic(broker, shard_id, Topic::Disconnect(connection_id));
                     subscribe_to_topic(broker, shard_id, Topic::CastAbility(connection_id));
+                    subscribe_to_topic(broker, shard_id, Topic::EntityKilled(connection_id));
                 }
             }
             Topic::ReleaseOwnership(shard_id) => {
@@ -834,6 +851,7 @@ pub(crate) fn send_claim_ownership(broker: &BrokerPeer, shard_id: Uuid, entity_i
     unsubscribe_from_topic(broker, own_shard_id, Topic::Input(entity_id));
     unsubscribe_from_topic(broker, own_shard_id, Topic::Disconnect(entity_id));
     unsubscribe_from_topic(broker, own_shard_id, Topic::CastAbility(entity_id));
+    unsubscribe_from_topic(broker, own_shard_id, Topic::EntityKilled(entity_id));
     let claim_ownership_payload = serialize_claim_ownership_payload(&ClaimOwnershipPayload {
     entity_id: entity_id,
     entity_position: position,
