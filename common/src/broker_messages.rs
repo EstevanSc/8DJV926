@@ -19,6 +19,7 @@ pub enum SendingSystem {
     AbilityService,
     AiService,
     PathingService,
+    DatabaseService,
 }
 
 impl BrokerMessage {
@@ -97,6 +98,7 @@ impl BrokerMessage {
                     0x06 => SendingSystem::AiService,
                     0x07 => SendingSystem::PathingService,
                     0x08 => SendingSystem::AbilityService,
+                    0x09 => SendingSystem::DatabaseService,
                     _ => return None,
                 };
                 Some(BrokerMessage::Connect { client_id, sending_system })
@@ -143,6 +145,7 @@ impl BrokerMessage {
             SendingSystem::AiService => 0x06,
             SendingSystem::PathingService => 0x07,
             SendingSystem::AbilityService => 0x08,
+            SendingSystem::DatabaseService => 0x09,
         };
         buffer.push(system_byte);
         buffer

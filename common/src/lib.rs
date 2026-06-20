@@ -12,9 +12,11 @@ pub mod broker_api;
 
 pub mod ability_type;
 pub mod attribute_type;
+pub mod supabase;
 
 pub use broker_messages::BrokerMessage;
 pub use heartbeat::Heartbeat;
 pub use redis_client::RedisClient;
 pub use server_info::ServerInfo;
 pub use shard_data::{Boundary, Quadrant};
+pub use supabase::{SupabaseClient, PlayerRow};

@@ -823,7 +823,7 @@ fn subscribe_to_topic(broker: &BrokerPeer, connection_id: Uuid, topic: Topic) {
 }
 
 /// Method to publish a message to a topic
-fn publish_to_topic(broker: &BrokerPeer, topic: Topic, payload: Vec<u8>) {
+pub(crate) fn publish_to_topic(broker: &BrokerPeer, topic: Topic, payload: Vec<u8>) {
     let (Some(connection), Some(control_stream)) = (broker.connection, broker.control_stream.clone()) else {
         return;
     };

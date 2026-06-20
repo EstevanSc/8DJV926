@@ -9,7 +9,7 @@ use common::ability_type::AbilityType;
 use common::ability_type::AbilityType::Fireball;
 use crate::abilities::fireball::{handle_fireball_collisions, FireballBundle};
 use super::net::{SimCommand, SimCommandReceiver};
-use super::server::{publish_player_position, BrokerPeer, send_claim_ownership};
+use super::server::{publish_player_position, BrokerPeer, send_claim_ownership, publish_to_topic};
 use super::char_controller::*;
 
 pub struct SimulationPlugin;
@@ -373,6 +373,7 @@ fn process_net_commands(
     mut query: Query<(Entity, &NetEntity, &mut Transform, Option<&LinearVelocity>)>,
     ghost_query: Query<&NetEntity, With<Ghost>>,
     net_entities_query: Query<(Entity, &NetEntity)>,
+    broker: Option<Res<BrokerPeer>>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -406,6 +407,24 @@ fn process_net_commands(
                 }
             }
             SimCommand::Left { connection_id } => {
+                let mut last_position = None;
+                for (_, net_entity, transform, _) in &query {
+                    if net_entity.connection_id == connection_id {
+                        last_position = Some(transform.translation);
+                        break;
+                    }
+                }
+                if let Some(pos) = last_position {
+                    if let Some(broker_peer) = &broker {
+                        let payload = common::topics::serialize_db_query_payload(&common::topics::DbQueryPayload {
+                            player_id: connection_id,
+                            x: pos.x,
+                            y: pos.y,
+                        });
+                        publish_to_topic(broker_peer.as_ref(), common::topics::Topic::DbQuery, payload);
+                        tracing::info!("Sent UpdatePosition for player_id={} on disconnect to DB service (pos: {:?})", connection_id, pos);
+                    }
+                }
                 despawn_writer.write(DespawnNetEntity { connection_id });
                 input_buf.0.remove(&connection_id);
             }

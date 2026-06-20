@@ -1,0 +1,17 @@
+[package]
+name = "database_service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common         = { workspace = true }
+tokio          = { workspace = true }
+game_sockets   = { workspace = true }
+serde          = { workspace = true }
+wincode        = { workspace = true }
+tracing        = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenv         = { workspace = true }
+anyhow         = { workspace = true }
+uuid           = { workspace = true }
+bytes          = { workspace = true }

@@ -70,7 +70,7 @@ fn start_connect(mut commands: Commands, session: Res<GameSession>) {
 }
 fn poll_net_events(
     mut commands: Commands,
-    _session: Res<GameSession>,
+    session: Res<GameSession>,
     peer_res: Option<ResMut<ActivePeer>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
@@ -119,6 +119,21 @@ fn poll_net_events(
                         tracing::error!("Failed to send broker Connect: {e:?}");
                     }
 
+                    // Send database username correlation registration
+                    let register_payload = common::topics::serialize_db_register_username_payload(&common::topics::DbRegisterUsernamePayload {
+                        player_id,
+                        username: session.username.clone(),
+                    });
+                    let register_publish = BrokerMessage::serialize_publish(
+                        Topic::DbRegisterUsername.to_bytes(),
+                        &register_payload,
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, register_publish.into()) {
+                        tracing::error!("Failed to send DbRegisterUsername: {e:?}");
+                    } else {
+                        tracing::info!("Sent DbRegisterUsername mapping for player_id={player_id}, username={}", session.username);
+                    }
+
                     let subscribe_updates = BrokerMessage::serialize_subscribe(
                         player_id,
                         Topic::EntityPositionUpdate(player_id).to_bytes(),
@@ -131,7 +146,7 @@ fn poll_net_events(
 
                     let payload = serialize_starting_position_payload(&StartingPositionPayload {
                         connection_id: player_id,
-                        position: [_session.player_spawn_position[0] as f64, _session.player_spawn_position[1] as f64],
+                        position: [session.player_spawn_position[0] as f64, session.player_spawn_position[1] as f64],
                     });
 
                     let topic = Topic::PlayerStartingPosition.to_bytes();
