@@ -4,7 +4,6 @@
 use anyhow::Context;
 use reqwest::header;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Client
@@ -26,14 +25,16 @@ pub struct PlayerRow {
     pub id: i64,
     pub player_name: String,
     pub password: String,
-    pub unique_id: Uuid, // UUID stored as a string for easier handling in Rust and JS
+    pub log_out_position_x: f32,
+    pub log_out_position_y: f32,
 }
 
 #[derive(Serialize)]
 struct CreatePlayerBody<'a> {
     player_name: &'a str,
     password: &'a str,
-    unique_id: Uuid,
+    log_out_position_x: f32,
+    log_out_position_y: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ impl SupabaseClient {
             .headers(self.auth_headers())
             .query(&[
                 ("player_name", format!("eq.{name}")),
-                ("select", "id,player_name,password,unique_id".to_string()),
+                ("select", "id,player_name,password,log_out_position_x,log_out_position_y".to_string()),
             ])
             .send()
             .await
@@ -96,7 +97,8 @@ impl SupabaseClient {
             .json(&CreatePlayerBody {
                 player_name: name,
                 password,
-                unique_id: Uuid::new_v4(), // Generate a random UUID for the new player.
+                log_out_position_x: 0.0, // Default logout position X
+                log_out_position_y: 0.0, // Default logout position Y
             })
             .send()
             .await

@@ -15,10 +15,10 @@ use self::net::ClientNetPlugin;
 #[derive(Resource, Clone)]
 #[allow(dead_code)] // server_ip / server_port used when real QUIC connection is implemented
 pub struct GameSession {
-    pub player_id: String,
     pub username: String,
     pub broker_ip: String,
     pub broker_port: u16,
+    pub player_spawn_position: [f32; 2],
 }
 
 /// Top-level app states.

@@ -131,7 +131,7 @@ fn poll_net_events(
 
                     let payload = serialize_starting_position_payload(&StartingPositionPayload {
                         connection_id: player_id,
-                        position: [-150.0, -150.0],
+                        position: [_session.player_spawn_position[0] as f64, _session.player_spawn_position[1] as f64],
                     });
 
                     let topic = Topic::PlayerStartingPosition.to_bytes();
@@ -271,6 +271,7 @@ fn receive_packets(
     mut disconnect_writer: MessageWriter<DisconnectReceived>,
     mut path_response_writer: MessageWriter<PathResponseReceived>,
     mut ability_cast_writer: MessageWriter<AbilityCastReceived>,
+    _session: Res<GameSession>,
 ) {
     let Some(peer_res) = peer_res else { return };
     let Ok(mut peer) = peer_res.0.lock() else { return };
@@ -363,7 +364,7 @@ fn receive_packets(
             let respawn_entity_id = conn.0.connection_id;
             let payload = serialize_starting_position_payload(&StartingPositionPayload {
                 connection_id: respawn_entity_id,
-                position: [150.0, 150.0],
+                position: [0.0, 0.0],
             });
             let topic = Topic::PlayerStartingPosition.to_bytes();
             let publish = BrokerMessage::serialize_publish(topic, &payload);

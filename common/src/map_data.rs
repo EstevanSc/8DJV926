@@ -57,6 +57,19 @@ impl BitMap {
                 }
             }
         }
+
+        // Clear a small area around the center for player spawn
+        let spawn_radius = 2;
+        for y in (center_y as i32 - spawn_radius)..=(center_y as i32 + spawn_radius) {
+            for x in (center_x as i32 - spawn_radius)..=(center_x as i32 + spawn_radius) {
+                if x > 0 && x < MAP_WIDTH as i32 - 1 && y > 0 && y < MAP_HEIGHT as i32 - 1 {
+                    // Clear the wall bit to create an empty space
+                    let bucket = (x as usize) / 64;
+                    let bit = (x as usize) % 64;
+                    self.data[y as usize][bucket] &= !(1 << bit);
+                }
+            }
+        }
     }
 
     /// Prints a specific window of the map to the console for inspection
