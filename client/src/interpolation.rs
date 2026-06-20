@@ -2,18 +2,21 @@ use bevy::{ prelude::*};
 
 use common::constants::POSITION_DELTA_THRESHOLD;
 use common::map_data::{BitMap, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
+use common::topics::Topic;
 
-use super::net::{BrokerConn, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived, DisconnectReceived};
+use super::net::{ActivePeer, BrokerConn, BrokerControlStream, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived, DisconnectReceived};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
 
 impl Plugin for InterpolationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::InGame), (spawn_map, spawn_debug_hud))
+        app.init_resource::<DiscoveredEntities>()
+            .add_systems(OnEnter(GameState::InGame), (spawn_map, spawn_debug_hud))
             .add_systems(
                 Update,
                 (
+                    handle_name_responses,
                     spawn_remote_players,
                     interpolate_remote_players,
                     update_remote_player_labels,
@@ -52,6 +55,19 @@ pub struct RemotePlayerLabel {
 pub struct ClientProjectile {
     pub direction: Vec2,
     pub speed: f32,
+}
+
+#[derive(Resource, Default)]
+pub struct DiscoveredEntities(pub std::collections::HashMap<uuid::Uuid, String>);
+
+fn handle_name_responses(
+    mut events: MessageReader<super::net::DbNameResponseReceived>,
+    mut discovered: ResMut<DiscoveredEntities>,
+) {
+    for ev in events.read() {
+        discovered.0.insert(ev.player_id, ev.username.clone());
+        tracing::info!("Resolved player name: {} -> {}", ev.player_id, ev.username);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,12 +242,19 @@ fn spawn_remote_players(
     mut materials: ResMut<Assets<ColorMaterial>>,
     existing: Query<&RemotePlayer>,
     broker_conn: Option<Res<BrokerConn>>,
+    mut peer_res: Option<ResMut<ActivePeer>>,
+    broker_stream: Option<Res<BrokerControlStream>>,
+    mut discovered: ResMut<DiscoveredEntities>,
+    session: Res<GameSession>,
 ) {
-    let my_connection_id = broker_conn.map(|r| r.0.connection_id);
+    let my_connection_id = broker_conn.as_ref().map(|r| r.0.connection_id);
+    let mut spawned_this_frame = std::collections::HashSet::new();
     for update in events.read() {
         let connection_id = update.connection_id;
-        let already_exists = existing.iter().any(|r| r.connection_id == connection_id);
+        let already_exists = existing.iter().any(|r| r.connection_id == connection_id)
+            || spawned_this_frame.contains(&connection_id);
         if !already_exists {
+            spawned_this_frame.insert(connection_id);
             let pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
             let is_me = my_connection_id == Some(connection_id);
             let color = if is_me {
@@ -239,7 +262,56 @@ fn spawn_remote_players(
             } else {
                 Color::srgb(0.2, 0.6, 1.0) // blue = other players
             };
-            let name = format!("{}", connection_id);
+            
+            // Get or request name
+            let name = if is_me {
+                let my_name = session.username.clone();
+                discovered.0.insert(connection_id, my_name.clone());
+                my_name
+            } else {
+                if !discovered.0.contains_key(&connection_id) {
+                    // Send DbNameRequest to database_service via broker
+                    if let Some(my_id) = my_connection_id {
+                        let request_payload = common::topics::serialize_db_name_request_payload(
+                            &common::topics::DbNameRequestPayload {
+                                requestor_id: my_id,
+                                player_id: connection_id,
+                            }
+                        );
+                        if let (Some(peer_res), Some(conn), Some(stream)) = (peer_res.as_mut(), broker_conn.as_ref(), broker_stream.as_ref()) {
+                            if let Ok(peer) = peer_res.0.lock() {
+                                // First subscribe to the topic for the resolved player's name response
+                                let subscribe_name = common::broker_messages::BrokerMessage::serialize_subscribe(
+                                    conn.0.connection_id,
+                                    Topic::DbNameResponse(connection_id).to_bytes(),
+                                );
+                                if let Err(e) = peer.send(&conn.0, &stream.0, subscribe_name.into()) {
+                                    tracing::error!("Failed to subscribe to DbNameResponse for player {}: {:?}", connection_id, e);
+                                } else {
+                                    tracing::info!("Subscribed to DbNameResponse for player: {}", connection_id);
+                                }
+
+                                // Then publish the name request
+                                let publish = common::broker_messages::BrokerMessage::serialize_publish(
+                                    Topic::DbNameRequest.to_bytes(),
+                                    &request_payload,
+                                );
+                                if let Err(e) = peer.send(&conn.0, &stream.0, publish.into()) {
+                                    tracing::warn!("Failed to send DbNameRequest: {:?}", e);
+                                } else {
+                                    tracing::info!("Sent DbNameRequest for remote player: {}", connection_id);
+                                }
+                            }
+                        }
+                    }
+                    let placeholder = format!("Loading...");
+                    discovered.0.insert(connection_id, placeholder.clone());
+                    placeholder
+                } else {
+                    discovered.0.get(&connection_id).cloned().unwrap_or_else(|| "Unknown".to_string())
+                }
+            };
+
             if is_me {
                 commands.spawn((
                     RemotePlayer {
@@ -252,7 +324,7 @@ fn spawn_remote_players(
                     MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                     Transform::from_translation(pos.extend(0.0)),
                 )).with_children(|parent| {
-                    let label_text = format_remote_player_label(&name, pos);
+                    let label_text = format_remote_player_label(&name);
                     // 1. Spawn the Text Label Child
                     parent.spawn((
                         Text2d::new(label_text),
@@ -283,7 +355,7 @@ fn spawn_remote_players(
                     MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                     Transform::from_translation(pos.extend(0.0)),
                 )).with_children(|parent| {
-                    let label_text = format_remote_player_label(&name, pos);
+                    let label_text = format_remote_player_label(&name);
                     parent.spawn((
                         Text2d::new(label_text),
                         TextFont { font_size: 12.0, ..default() },
@@ -328,25 +400,30 @@ fn interpolate_remote_players(
     }
 }
 
-/// Update the text shown under each remote player to include its rounded position.
+/// Update the text shown under each remote player to include its resolved name.
 fn update_remote_player_labels(
     query: Query<(&RemotePlayer, &Transform, &Children)>,
-    mut labels: Query<(&RemotePlayerLabel, &mut Text2d)>,
+    mut labels: Query<(&mut RemotePlayerLabel, &mut Text2d)>,
+    discovered: Res<DiscoveredEntities>,
 ) {
-    for (remote, transform, children) in &query {
-        let position = transform.translation.truncate();
+    for (remote, _transform, children) in &query {
         for child in children.iter() {
-            if let Ok((tag, mut text)) = labels.get_mut(child) {
+            if let Ok((mut tag, mut text)) = labels.get_mut(child) {
                 if tag.connection_id == remote.connection_id {
-                    text.0 = format_remote_player_label(&tag.display_name, position);
+                    if let Some(resolved_name) = discovered.0.get(&remote.connection_id) {
+                        if tag.display_name != *resolved_name {
+                            tag.display_name = resolved_name.clone();
+                        }
+                    }
+                    text.0 = format_remote_player_label(&tag.display_name);
                 }
             }
         }
     }
 }
 
-fn format_remote_player_label(name: &str, position: Vec2) -> String {
-    format!("{}\n({:03.0}, {:03.0})", name, position.x, position.y)
+fn format_remote_player_label(name: &str) -> String {
+    name.to_string()
 }
 
 /// Spawn a top-left debug overlay showing session info. Cleared with the rest
@@ -357,6 +434,7 @@ fn spawn_debug_hud(
     broker_conn: Option<Res<BrokerConn>>,
     mut events: MessageReader<AuthorityDebugPacketReceived>,
     query: Query<Entity, With<DebugUI>>,
+    player_query: Query<&Transform, With<SelfPlayer>>,
 ) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
@@ -365,6 +443,13 @@ fn spawn_debug_hud(
     let connection_id = broker_conn
         .map(|r| r.0.connection_id.to_string())
         .unwrap_or_else(|| "—".to_string());
+
+    let pos_str = if let Some(transform) = player_query.iter().next() {
+        let p = transform.translation.truncate();
+        format!("({:0.1}, {:0.1})", p.x, p.y)
+    } else {
+        "—".to_string()
+    };
 
     // 1. Initialize as an owned, mutable String
     let mut debug_info = String::new(); 
@@ -379,14 +464,11 @@ fn spawn_debug_hud(
     }
     
     let info = format!(
-        "Player    : {}\nConnection ID : {}\n{}",
+        "Player    : {}\nConnection ID : {}\nCoordinates : {}\n{}",
         session.username,
-        //session.player_id,
         connection_id,
+        pos_str,
         debug_info,
-        /*session.server_ip,
-        session.server_port,
-        session.server_zone,*/
     );
 
 

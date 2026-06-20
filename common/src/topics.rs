@@ -32,6 +32,8 @@ pub enum TopicDomain {
     // Database-related topics
     DbQuery = 0xB0,
     DbRegisterUsername = 0xB2,
+    DbNameRequest = 0xB3,
+    DbNameResponse = 0xB4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +70,8 @@ pub enum Topic {
     // Database
     DbQuery,
     DbRegisterUsername,
+    DbNameRequest,
+    DbNameResponse(Uuid),
 
     Raw([u8; 32]), // Fallback
 }
@@ -153,6 +157,13 @@ impl Topic {
             Topic::DbRegisterUsername => {
                 bytes[0] = TopicDomain::DbRegisterUsername as u8;
             }
+            Topic::DbNameRequest => {
+                bytes[0] = TopicDomain::DbNameRequest as u8;
+            }
+            Topic::DbNameResponse(uuid) => {
+                bytes[0] = TopicDomain::DbNameResponse as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -221,6 +232,11 @@ impl Topic {
             }
             0xB0 => Topic::DbQuery,
             0xB2 => Topic::DbRegisterUsername,
+            0xB3 => Topic::DbNameRequest,
+            0xB4 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::DbNameResponse(uuid)
+            }
             _ => Topic::Raw(bytes),
         }
     }
@@ -485,6 +501,33 @@ pub fn serialize_db_register_username_payload(payload: &DbRegisterUsernamePayloa
 }
 
 pub fn deserialize_db_register_username_payload(bytes: &[u8]) -> Option<DbRegisterUsernamePayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DbNameRequestPayload {
+    pub requestor_id: Uuid,
+    pub player_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DbNameResponsePayload {
+    pub username: String,
+}
+
+pub fn serialize_db_name_request_payload(payload: &DbNameRequestPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize db name request payload")
+}
+
+pub fn deserialize_db_name_request_payload(bytes: &[u8]) -> Option<DbNameRequestPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_db_name_response_payload(payload: &DbNameResponsePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize db name response payload")
+}
+
+pub fn deserialize_db_name_response_payload(bytes: &[u8]) -> Option<DbNameResponsePayload> {
     wincode::deserialize(bytes).ok()
 }
 

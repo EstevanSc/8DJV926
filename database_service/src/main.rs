@@ -4,6 +4,7 @@ use common::broker_messages::SendingSystem;
 use common::supabase::SupabaseClient;
 use common::topics::{
     Topic, deserialize_db_query_payload, deserialize_db_register_username_payload,
+    deserialize_db_name_request_payload, serialize_db_name_response_payload, DbNameResponsePayload,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -50,7 +51,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to subscribe to Topic::DbRegisterUsername")?;
 
-    tracing::info!("Database Service listening for registrations and updates...");
+    client
+        .subscribe(Topic::DbNameRequest)
+        .await
+        .context("Failed to subscribe to Topic::DbNameRequest")?;
+
+    tracing::info!("Database Service listening for registrations, updates, and name requests...");
 
     run_main_loop(supabase, client).await;
 
@@ -77,6 +83,28 @@ async fn run_main_loop(supabase: SupabaseClient, mut client: BrokerClient) {
                             player_map.insert(reg_payload.player_id, reg_payload.username);
                         } else {
                             tracing::error!("Failed to deserialize DbRegisterUsernamePayload");
+                        }
+                    }
+                    Topic::DbNameRequest => {
+                        if let Some(req_payload) = deserialize_db_name_request_payload(&payload) {
+                            if let Some(player_name) = player_map.get(&req_payload.player_id) {
+                                let response_payload = serialize_db_name_response_payload(&DbNameResponsePayload {
+                                    username: player_name.clone(),
+                                });
+                                let target_topic = Topic::DbNameResponse(req_payload.player_id);
+                                if let Err(e) = client.publish_raw(target_topic, &response_payload).await {
+                                    tracing::error!("Failed to publish DbNameResponse: {:?}", e);
+                                } else {
+                                    tracing::info!(
+                                        "Sent DbNameResponse for player_id={} to response topic",
+                                        req_payload.player_id
+                                    );
+                                }
+                            } else {
+                                tracing::warn!("Name requested for unknown player_id={}", req_payload.player_id);
+                            }
+                        } else {
+                            tracing::error!("Failed to deserialize DbNameRequestPayload");
                         }
                     }
                     Topic::DbQuery => {

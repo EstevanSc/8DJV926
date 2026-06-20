@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload, deserialize_use_ability_payload};
+use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload, deserialize_use_ability_payload, deserialize_db_name_response_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -18,6 +18,7 @@ impl Plugin for ClientNetPlugin {
             .add_message::<DisconnectReceived>()
             .add_message::<PathResponseReceived>()
             .add_message::<AbilityCastReceived>()
+            .add_message::<DbNameResponseReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -196,6 +197,7 @@ fn poll_net_events(
                     } else {
                         tracing::info!("Subscribed to EntityKilled for player_id={player_id}");
                     }
+
                     next_state.set(GameState::InGame);
                 } 
                 else {
@@ -276,6 +278,12 @@ pub struct AbilityCastReceived {
     pub direction: Option<Vec2>,
 }
 
+#[derive(Message)]
+pub struct DbNameResponseReceived {
+    pub player_id: uuid::Uuid,
+    pub username: String,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
@@ -286,6 +294,7 @@ fn receive_packets(
     mut disconnect_writer: MessageWriter<DisconnectReceived>,
     mut path_response_writer: MessageWriter<PathResponseReceived>,
     mut ability_cast_writer: MessageWriter<AbilityCastReceived>,
+    mut name_response_writer: MessageWriter<DbNameResponseReceived>,
     _session: Res<GameSession>,
 ) {
     let Some(peer_res) = peer_res else { return };
@@ -363,6 +372,14 @@ fn receive_packets(
                             }
                             else {
                                 tracing::error!("Couldn't deserialize CastABility payload.");
+                            }
+                        }
+                        Topic::DbNameResponse(uuid) => {
+                            if let Some(payload) = deserialize_db_name_response_payload(&payload) {
+                                name_response_writer.write(DbNameResponseReceived {
+                                    player_id: uuid,
+                                    username: payload.username,
+                                });
                             }
                         }
                         _ => {}
