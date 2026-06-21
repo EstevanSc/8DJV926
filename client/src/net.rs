@@ -8,7 +8,9 @@ use common::topics::{
     deserialize_db_name_response_payload, deserialize_path_response_payload,
     deserialize_position_payload, deserialize_quadtree_boundaries_update_payload,
     deserialize_use_ability_payload, serialize_starting_position_payload,
+    deserialize_attribute_updated_payload,
 };
+use common::attribute_type::AttributeType;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -26,6 +28,7 @@ impl Plugin for ClientNetPlugin {
             .add_message::<AbilityCastReceived>()
             .add_message::<DbNameResponseReceived>()
             .add_message::<LocalPlayerKilled>()
+            .add_message::<AttributeUpdatedReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -231,6 +234,16 @@ fn poll_net_events(
                         tracing::info!("Subscribed to EntityKilled for player_id={player_id}");
                     }
 
+                    let subscribe_attribute_updated = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::AttributeUpdated(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_attribute_updated.into()) {
+                        tracing::error!("Failed to subscribe to AttributeUpdated: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to AttributeUpdated for player_id={player_id}");
+                    }
+
                     next_state.set(GameState::InGame);
                 } else {
                 }
@@ -318,6 +331,13 @@ pub struct DbNameResponseReceived {
 #[derive(Message)]
 pub struct LocalPlayerKilled;
 
+#[derive(Message)]
+pub struct AttributeUpdatedReceived {
+    pub entity_id: uuid::Uuid,
+    pub attribute: AttributeType,
+    pub new_value: i32,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
@@ -330,6 +350,7 @@ fn receive_packets(
     mut ability_cast_writer: MessageWriter<AbilityCastReceived>,
     mut name_response_writer: MessageWriter<DbNameResponseReceived>,
     mut local_player_killed_writer: MessageWriter<LocalPlayerKilled>,
+    mut attribute_updated_writer: MessageWriter<AttributeUpdatedReceived>,
     _session: Res<GameSession>,
 ) {
     let Some(peer_res) = peer_res else { return };
@@ -387,6 +408,21 @@ fn receive_packets(
                                     uuid
                                 );
                                 local_player_killed_writer.write(LocalPlayerKilled);
+                            }
+                        }
+                        Topic::AttributeUpdated(uuid) => {
+                            if let Some(payload) = deserialize_attribute_updated_payload(&payload) {
+                                tracing::info!(
+                                    "Received AttributeUpdated for entity {:?}: {:?} = {}",
+                                    uuid,
+                                    payload.attribute,
+                                    payload.new_value
+                                );
+                                attribute_updated_writer.write(AttributeUpdatedReceived {
+                                    entity_id: uuid,
+                                    attribute: payload.attribute,
+                                    new_value: payload.new_value,
+                                });
                             }
                         }
                         Topic::PathResponse(_entity_uuid) => {

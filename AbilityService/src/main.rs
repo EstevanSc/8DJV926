@@ -6,11 +6,11 @@ use common::attribute_type::AttributeType;
 use common::broker_api::BrokerClient;
 use common::broker_messages::SendingSystem;
 use common::topics::{
-    AttributeUpdatedPayload, EntityKilledPayload, LevelUpPayload, StartingPositionPayload, Topic,
+    AttributeUpdatedPayload, EntityKilledPayload, LevelUpPayload, Topic,
     UseAbilityPayload, XPEarnedPayload, deserialize_ability_hit_entity_payload,
     deserialize_starting_position_payload, deserialize_use_ability_payload,
     serialize_attribute_updated_payload, serialize_entity_killed_payload,
-    serialize_level_up_payload, serialize_starting_position_payload, serialize_use_ability_payload,
+    serialize_level_up_payload, serialize_use_ability_payload,
     serialize_xp_earned_payload,
 };
 use std::collections::HashMap;
@@ -77,6 +77,8 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                         {
                             let entity_id = position_payload.connection_id;
                             let new_entity = Entity::default(entity_id);
+                            let hp = new_entity.attributes.get(&AttributeType::HealthPoints).map(|a| a.current_value).unwrap_or(50);
+                            let mp = new_entity.attributes.get(&AttributeType::ManaPoints).map(|a| a.current_value).unwrap_or(100);
                             if let Some(_existing_entity) = entity_registry.get(&entity_id) {
                                 tracing::debug!(
                                     "Entity with ID {} already exists. Overwriting with new entity.",
@@ -84,8 +86,23 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                 );
                                 entity_registry.insert(entity_id, new_entity);
                             } else {
-                                entity_registry.entry(entity_id).or_insert(new_entity);
+                                entity_registry.insert(entity_id, new_entity);
                             }
+
+                            // Publish initial attributes
+                            let payload_hp = serialize_attribute_updated_payload(&AttributeUpdatedPayload {
+                                entity_id,
+                                attribute: AttributeType::HealthPoints,
+                                new_value: hp,
+                            });
+                            let _ = client.publish_raw(Topic::AttributeUpdated(entity_id), payload_hp.as_slice()).await;
+
+                            let payload_mp = serialize_attribute_updated_payload(&AttributeUpdatedPayload {
+                                entity_id,
+                                attribute: AttributeType::ManaPoints,
+                                new_value: mp,
+                            });
+                            let _ = client.publish_raw(Topic::AttributeUpdated(entity_id), payload_mp.as_slice()).await;
                         }
                     }
 
@@ -251,6 +268,24 @@ async fn run_main_loop(config: &Config, client: &mut BrokerClient) {
                                                     );
                                                 }
                                                 *hit_entity = Entity::default(hit_entity_id);
+
+                                                // Publish reset attributes
+                                                let hp = hit_entity.attributes.get(&AttributeType::HealthPoints).map(|a| a.current_value).unwrap_or(50);
+                                                let mp = hit_entity.attributes.get(&AttributeType::ManaPoints).map(|a| a.current_value).unwrap_or(100);
+
+                                                let payload_hp = serialize_attribute_updated_payload(&AttributeUpdatedPayload {
+                                                    entity_id: hit_entity_id,
+                                                    attribute: AttributeType::HealthPoints,
+                                                    new_value: hp,
+                                                });
+                                                let _ = client.publish_raw(Topic::AttributeUpdated(hit_entity_id), payload_hp.as_slice()).await;
+
+                                                let payload_mp = serialize_attribute_updated_payload(&AttributeUpdatedPayload {
+                                                    entity_id: hit_entity_id,
+                                                    attribute: AttributeType::ManaPoints,
+                                                    new_value: mp,
+                                                });
+                                                let _ = client.publish_raw(Topic::AttributeUpdated(hit_entity_id), payload_mp.as_slice()).await;
                                             }
                                         }
                                     }

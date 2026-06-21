@@ -1,10 +1,14 @@
-use bevy::{ prelude::*};
+use bevy::prelude::*;
 
 use common::constants::POSITION_DELTA_THRESHOLD;
 use common::map_data::{BitMap, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 use common::topics::Topic;
 
-use super::net::{ActivePeer, BrokerConn, BrokerControlStream, PositionUpdateReceived, QuadtreeBoundariesUpdateReceived, AuthorityDebugPacketReceived, DisconnectReceived};
+use super::net::{
+    ActivePeer, AttributeUpdatedReceived, AuthorityDebugPacketReceived, BrokerConn,
+    BrokerControlStream, DisconnectReceived, PositionUpdateReceived,
+    QuadtreeBoundariesUpdateReceived,
+};
 use super::{GameSession, GameState};
 
 pub struct InterpolationPlugin;
@@ -27,7 +31,10 @@ impl Plugin for InterpolationPlugin {
                     delete_entities_outside_of_interest,
                     spawn_remote_fireballs,
                     update_projectiles,
-                ).run_if(in_state(GameState::InGame)),
+                    handle_attribute_updates,
+                    update_player_stats_labels,
+                )
+                    .run_if(in_state(GameState::InGame)),
             );
     }
 }
@@ -57,6 +64,17 @@ pub struct ClientProjectile {
     pub speed: f32,
 }
 
+#[derive(Component)]
+pub struct PlayerStats {
+    pub hp: i32,
+    pub mp: i32,
+}
+
+#[derive(Component)]
+pub struct RemotePlayerStatsLabel {
+    pub connection_id: uuid::Uuid,
+}
+
 #[derive(Resource, Default)]
 pub struct DiscoveredEntities(pub std::collections::HashMap<uuid::Uuid, String>);
 
@@ -80,7 +98,6 @@ pub struct GameSceneRoot;
 
 #[derive(Component)]
 pub struct FollowCamera;
-
 
 #[derive(Component)]
 struct DebugQuadTree;
@@ -107,12 +124,16 @@ fn spawn_map(
                 // 1. Convert tile coordinate to initial world space
                 // 2. Subtract half-map size to center it at (0,0)
                 // 3. Add 4.0 (half of tile size) so the anchor aligns to the center of the asset mesh
-                let world_x = (x as f32 * TILE_SIZE) - (MAP_WIDTH as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
-                let world_y = (y as f32 * TILE_SIZE) - (MAP_HEIGHT as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
+                let world_x = (x as f32 * TILE_SIZE) - (MAP_WIDTH as f32 * TILE_SIZE / 2.0)
+                    + (TILE_SIZE / 2.0);
+                let world_y = (y as f32 * TILE_SIZE) - (MAP_HEIGHT as f32 * TILE_SIZE / 2.0)
+                    + (TILE_SIZE / 2.0);
 
                 commands.spawn((
                     Mesh2d(meshes.add(Rectangle::new(TILE_SIZE, TILE_SIZE))),
-                    MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(0.0, 0.0, 0.0)))),
+                    MeshMaterial2d(
+                        materials.add(ColorMaterial::from_color(Color::srgb(0.0, 0.0, 0.0))),
+                    ),
                     Transform::from_translation(Vec3::new(world_x, world_y, 1.0)),
                     GameSceneRoot,
                 ));
@@ -123,25 +144,26 @@ fn spawn_map(
     commands.spawn((Camera2d, FollowCamera, GameSceneRoot));
 }
 
-fn draw_debug_quad_tree(mut commands: Commands,
+fn draw_debug_quad_tree(
+    mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut events: MessageReader<QuadtreeBoundariesUpdateReceived>,
     query: Query<Entity, With<DebugQuadTree>>,
 ) {
     let color_array = [
-        Color::srgba(1.0, 0.0, 0.0, 0.125),   // 1. Red (Primary)
-        Color::srgba(1.0, 0.5, 0.0, 0.125),   // 2. Orange (Tertiary)
-        Color::srgba(1.0, 1.0, 0.0, 0.125),   // 3. Yellow (Secondary)
-        Color::srgba(0.5, 1.0, 0.0, 0.125),   // 4. Lime / Chartreuse (Tertiary)
-        Color::srgba(0.0, 1.0, 0.0, 0.125),   // 5. Green (Primary)
-        Color::srgba(0.0, 1.0, 0.5, 0.125),   // 6. Spring Green (Tertiary)
-        Color::srgba(0.0, 1.0, 1.0, 0.125),   // 7. Cyan / Aqua (Secondary)
-        Color::srgba(0.0, 0.5, 1.0, 0.125),   // 8. Azure / Sky Blue (Tertiary)
-        Color::srgba(0.0, 0.0, 1.0, 0.125),   // 9. Blue (Primary)
-        Color::srgba(0.5, 0.0, 1.0, 0.125),   // 10. Violet / Purple (Tertiary)
-        Color::srgba(1.0, 0.0, 1.0, 0.125),   // 11. Magenta / Fuchsia (Secondary)
-        Color::srgba(1.0, 0.0, 0.5, 0.125),   // 12. Rose (Tertiary)
+        Color::srgba(1.0, 0.0, 0.0, 0.125), // 1. Red (Primary)
+        Color::srgba(1.0, 0.5, 0.0, 0.125), // 2. Orange (Tertiary)
+        Color::srgba(1.0, 1.0, 0.0, 0.125), // 3. Yellow (Secondary)
+        Color::srgba(0.5, 1.0, 0.0, 0.125), // 4. Lime / Chartreuse (Tertiary)
+        Color::srgba(0.0, 1.0, 0.0, 0.125), // 5. Green (Primary)
+        Color::srgba(0.0, 1.0, 0.5, 0.125), // 6. Spring Green (Tertiary)
+        Color::srgba(0.0, 1.0, 1.0, 0.125), // 7. Cyan / Aqua (Secondary)
+        Color::srgba(0.0, 0.5, 1.0, 0.125), // 8. Azure / Sky Blue (Tertiary)
+        Color::srgba(0.0, 0.0, 1.0, 0.125), // 9. Blue (Primary)
+        Color::srgba(0.5, 0.0, 1.0, 0.125), // 10. Violet / Purple (Tertiary)
+        Color::srgba(1.0, 0.0, 1.0, 0.125), // 11. Magenta / Fuchsia (Secondary)
+        Color::srgba(1.0, 0.0, 0.5, 0.125), // 12. Rose (Tertiary)
     ];
 
     //let margin_color_array  = [Color::srgba(1.0, 0.0, 0.0, 0.125), Color::srgba(0.0, 1.0, 0.0, 0.125), Color::srgba(0.0, 0.0, 1.0, 0.125), Color::srgba(1.0, 1.0, 0.0, 0.125)];
@@ -152,66 +174,85 @@ fn draw_debug_quad_tree(mut commands: Commands,
         let margin = update.payload.margin;
         for (i, boundary) in update.payload.boundaries.iter().enumerate() {
             let center = Vec2::new(boundary.x as f32, boundary.y as f32);
-            let size = Vec2::new((boundary.half_size * 2.0 - margin as f64 * 2.0) as f32, (boundary.half_size * 2.0 - margin as f64 * 2.0) as f32);
+            let size = Vec2::new(
+                (boundary.half_size * 2.0 - margin as f64 * 2.0) as f32,
+                (boundary.half_size * 2.0 - margin as f64 * 2.0) as f32,
+            );
             let color = color_array[i % color_array.len()];
             commands.spawn((
                 Mesh2d(meshes.add(Rectangle::new(size.x, size.y))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                 Transform::from_translation(center.extend(0.0)),
                 GameSceneRoot,
-                DebugQuadTree
+                DebugQuadTree,
             ));
 
             let margin_color = color_array[i % color_array.len()];
             //top margin
             let outer_size = Vec2::new(size.x + margin * 2.0, margin);
-            let top_center = Vec2::new(center.x, center.y + boundary.half_size as f32 + margin / 2.0);
+            let top_center = Vec2::new(
+                center.x,
+                center.y + boundary.half_size as f32 + margin / 2.0,
+            );
             commands.spawn((
                 Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
                 Transform::from_translation(top_center.extend(0.0)),
                 GameSceneRoot,
-                DebugQuadTree
+                DebugQuadTree,
             ));
             //bottom margin
-            let bottom_center = Vec2::new(center.x, center.y - boundary.half_size as f32 - margin / 2.0);
+            let bottom_center = Vec2::new(
+                center.x,
+                center.y - boundary.half_size as f32 - margin / 2.0,
+            );
             commands.spawn((
                 Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
                 Transform::from_translation(bottom_center.extend(0.0)),
                 GameSceneRoot,
-                DebugQuadTree
+                DebugQuadTree,
             ));
             //left margin
             let outer_size = Vec2::new(margin, size.y + margin * 2.0);
-            let left_center = Vec2::new(center.x - boundary.half_size as f32 - margin / 2.0, center.y);
+            let left_center = Vec2::new(
+                center.x - boundary.half_size as f32 - margin / 2.0,
+                center.y,
+            );
             commands.spawn((
                 Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
                 Transform::from_translation(left_center.extend(0.0)),
                 GameSceneRoot,
-                DebugQuadTree
+                DebugQuadTree,
             ));
             //right margin
-            let right_center = Vec2::new(center.x + boundary.half_size as f32 + margin / 2.0, center.y);
+            let right_center = Vec2::new(
+                center.x + boundary.half_size as f32 + margin / 2.0,
+                center.y,
+            );
             commands.spawn((
                 Mesh2d(meshes.add(Rectangle::new(outer_size.x, outer_size.y))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(margin_color))),
                 Transform::from_translation(right_center.extend(0.0)),
                 GameSceneRoot,
-                DebugQuadTree
+                DebugQuadTree,
             ));
         }
     }
 }
 
-
 fn follow_local_player(
     broker_conn: Option<Res<BrokerConn>>,
     player_query: Query<(&RemotePlayer, &Transform), Without<FollowCamera>>,
-    mut camera_query: Query<&mut Transform, (With<Camera>, With<FollowCamera>, Without<RemotePlayer>)>,
+    mut camera_query: Query<
+        &mut Transform,
+        (With<Camera>, With<FollowCamera>, Without<RemotePlayer>),
+    >,
 ) {
-    let Some(broker_conn) = broker_conn else { return };
+    let Some(broker_conn) = broker_conn else {
+        return;
+    };
     let my_id = broker_conn.0.connection_id;
 
     let Some((_, player_transform)) = player_query
@@ -221,7 +262,9 @@ fn follow_local_player(
         return;
     };
 
-    let Ok(mut camera_transform) = camera_query.single_mut() else { return };
+    let Ok(mut camera_transform) = camera_query.single_mut() else {
+        return;
+    };
 
     let target = Vec3::new(
         player_transform.translation.x,
@@ -255,14 +298,17 @@ fn spawn_remote_players(
             || spawned_this_frame.contains(&connection_id);
         if !already_exists {
             spawned_this_frame.insert(connection_id);
-            let pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
+            let pos = Vec2::new(
+                update.payload.position[0] as f32,
+                update.payload.position[1] as f32,
+            );
             let is_me = my_connection_id == Some(connection_id);
             let color = if is_me {
                 Color::srgb(0.2, 1.0, 0.2) // green = local player
             } else {
                 Color::srgb(0.2, 0.6, 1.0) // blue = other players
             };
-            
+
             // Get or request name
             let name = if is_me {
                 let my_name = session.username.clone();
@@ -276,30 +322,47 @@ fn spawn_remote_players(
                             &common::topics::DbNameRequestPayload {
                                 requestor_id: my_id,
                                 player_id: connection_id,
-                            }
+                            },
                         );
-                        if let (Some(peer_res), Some(conn), Some(stream)) = (peer_res.as_mut(), broker_conn.as_ref(), broker_stream.as_ref()) {
+                        if let (Some(peer_res), Some(conn), Some(stream)) = (
+                            peer_res.as_mut(),
+                            broker_conn.as_ref(),
+                            broker_stream.as_ref(),
+                        ) {
                             if let Ok(peer) = peer_res.0.lock() {
                                 // First subscribe to the topic for the resolved player's name response
-                                let subscribe_name = common::broker_messages::BrokerMessage::serialize_subscribe(
-                                    conn.0.connection_id,
-                                    Topic::DbNameResponse(connection_id).to_bytes(),
-                                );
-                                if let Err(e) = peer.send(&conn.0, &stream.0, subscribe_name.into()) {
-                                    tracing::error!("Failed to subscribe to DbNameResponse for player {}: {:?}", connection_id, e);
+                                let subscribe_name =
+                                    common::broker_messages::BrokerMessage::serialize_subscribe(
+                                        conn.0.connection_id,
+                                        Topic::DbNameResponse(connection_id).to_bytes(),
+                                    );
+                                if let Err(e) = peer.send(&conn.0, &stream.0, subscribe_name.into())
+                                {
+                                    tracing::error!(
+                                        "Failed to subscribe to DbNameResponse for player {}: {:?}",
+                                        connection_id,
+                                        e
+                                    );
                                 } else {
-                                    tracing::info!("Subscribed to DbNameResponse for player: {}", connection_id);
+                                    tracing::info!(
+                                        "Subscribed to DbNameResponse for player: {}",
+                                        connection_id
+                                    );
                                 }
 
                                 // Then publish the name request
-                                let publish = common::broker_messages::BrokerMessage::serialize_publish(
-                                    Topic::DbNameRequest.to_bytes(),
-                                    &request_payload,
-                                );
+                                let publish =
+                                    common::broker_messages::BrokerMessage::serialize_publish(
+                                        Topic::DbNameRequest.to_bytes(),
+                                        &request_payload,
+                                    );
                                 if let Err(e) = peer.send(&conn.0, &stream.0, publish.into()) {
                                     tracing::warn!("Failed to send DbNameRequest: {:?}", e);
                                 } else {
-                                    tracing::info!("Sent DbNameRequest for remote player: {}", connection_id);
+                                    tracing::info!(
+                                        "Sent DbNameRequest for remote player: {}",
+                                        connection_id
+                                    );
                                 }
                             }
                         }
@@ -308,65 +371,113 @@ fn spawn_remote_players(
                     discovered.0.insert(connection_id, placeholder.clone());
                     placeholder
                 } else {
-                    discovered.0.get(&connection_id).cloned().unwrap_or_else(|| "Unknown".to_string())
+                    discovered
+                        .0
+                        .get(&connection_id)
+                        .cloned()
+                        .unwrap_or_else(|| "Unknown".to_string())
                 }
             };
 
             if is_me {
-                commands.spawn((
-                    RemotePlayer {
-                        connection_id: update.connection_id,
-                        target: pos,
-                        prev: pos,
-                    },
-                    SelfPlayer,
-                    Mesh2d(meshes.add(Circle::new(16.0))),
-                    MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-                    Transform::from_translation(pos.extend(0.0)),
-                )).with_children(|parent| {
-                    let label_text = format_remote_player_label(&name);
-                    // 1. Spawn the Text Label Child
-                    parent.spawn((
-                        Text2d::new(label_text),
-                        TextFont { font_size: 12.0, ..default() },
-                        TextColor(Color::WHITE),
-                        // Position it slightly higher in Z-space than the circle so text is on top
-                        Transform::from_translation(Vec3::new(0.0, 28.0, 2.0)), 
-                        RemotePlayerLabel {
+                commands
+                    .spawn((
+                        RemotePlayer {
                             connection_id: update.connection_id,
-                            display_name: name,
+                            target: pos,
+                            prev: pos,
                         },
-                    ));
+                        PlayerStats { hp: 50, mp: 100 },
+                        SelfPlayer,
+                        Mesh2d(meshes.add(Circle::new(16.0))),
+                        MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+                        Transform::from_translation(pos.extend(0.0)),
+                    ))
+                    .with_children(|parent| {
+                        let label_text = format_remote_player_label(&name);
+                        // 1. Spawn the Text Label Child
+                        parent.spawn((
+                            Text2d::new(label_text),
+                            TextFont {
+                                font_size: 12.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                            // Position it slightly higher in Z-space than the circle so text is on top
+                            Transform::from_translation(Vec3::new(0.0, 32.0, 2.0)),
+                            RemotePlayerLabel {
+                                connection_id: update.connection_id,
+                                display_name: name,
+                            },
+                        ));
 
-                    // 2. Spawn the Transparent Circle Child
-                    parent.spawn((
-                        Mesh2d(meshes.add(Circle::new(500.0))),
-                        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgba(1.0, 1.0, 1.0, 0.05)))),
-                    ));
-                });
+                        // Spawn HP/Mana stats text below the name
+                        parent.spawn((
+                            Text2d::new("HP: 50/100 | MP: 100/100"),
+                            TextFont {
+                                font_size: 10.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                            Transform::from_translation(Vec3::new(0.0, 20.0, 2.0)),
+                            RemotePlayerStatsLabel {
+                                connection_id: update.connection_id,
+                            },
+                        ));
+
+                        // 2. Spawn the Transparent Circle Child
+                        parent.spawn((
+                            Mesh2d(meshes.add(Circle::new(500.0))),
+                            MeshMaterial2d(
+                                materials.add(ColorMaterial::from_color(Color::srgba(
+                                    1.0, 1.0, 1.0, 0.05,
+                                ))),
+                            ),
+                        ));
+                    });
             } else {
-                commands.spawn((
-                    RemotePlayer {
-                        connection_id: update.connection_id,
-                        target: pos,
-                        prev: pos,
-                    },
-                    Mesh2d(meshes.add(Circle::new(16.0))),
-                    MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-                    Transform::from_translation(pos.extend(0.0)),
-                )).with_children(|parent| {
-                    let label_text = format_remote_player_label(&name);
-                    parent.spawn((
-                        Text2d::new(label_text),
-                        TextFont { font_size: 12.0, ..default() },
-                        TextColor(Color::WHITE),
-                        Transform::from_translation(Vec3::new(0.0, 28.0, 1.0)),
-                        RemotePlayerLabel {
+                commands
+                    .spawn((
+                        RemotePlayer {
                             connection_id: update.connection_id,
-                            display_name: name,
+                            target: pos,
+                            prev: pos,
                         },
-                    ));
-                });
+                        PlayerStats { hp: 50, mp: 100 },
+                        Mesh2d(meshes.add(Circle::new(16.0))),
+                        MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+                        Transform::from_translation(pos.extend(0.0)),
+                    ))
+                    .with_children(|parent| {
+                        let label_text = format_remote_player_label(&name);
+                        parent.spawn((
+                            Text2d::new(label_text),
+                            TextFont {
+                                font_size: 12.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                            Transform::from_translation(Vec3::new(0.0, 32.0, 1.0)),
+                            RemotePlayerLabel {
+                                connection_id: update.connection_id,
+                                display_name: name,
+                            },
+                        ));
+
+                        // Spawn HP/Mana stats text below the name
+                        parent.spawn((
+                            Text2d::new("HP: 50/100 | MP: 100/100"),
+                            TextFont {
+                                font_size: 10.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                            Transform::from_translation(Vec3::new(0.0, 20.0, 1.0)),
+                            RemotePlayerStatsLabel {
+                                connection_id: update.connection_id,
+                            },
+                        ));
+                    });
             }
         }
     }
@@ -380,7 +491,10 @@ fn interpolate_remote_players(
 ) {
     // Apply latest update target for each incoming entity position.
     for update in events.read() {
-        let new_pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
+        let new_pos = Vec2::new(
+            update.payload.position[0] as f32,
+            update.payload.position[1] as f32,
+        );
         for (mut remote, mut transform) in &mut query {
             if remote.connection_id == update.connection_id {
                 let dist = (new_pos - remote.target).length();
@@ -460,25 +574,25 @@ fn spawn_debug_hud(
     };
 
     // 1. Initialize as an owned, mutable String
-    let mut debug_info = String::new(); 
+    let mut debug_info = String::new();
 
     // Append all ids in authority debug packets to debug_info
     for event in events.read() {
         let sender_id = event.payload.sender_id;
-        
+
         // 2. Use the write! macro to efficiently append to the String
         use std::fmt::Write;
-        let _ = write!(debug_info, "Authority Debug Packets from connections {}\n", sender_id);
+        let _ = write!(
+            debug_info,
+            "Authority Debug Packets from connections {}\n",
+            sender_id
+        );
     }
-    
+
     let info = format!(
         "Player    : {}\nConnection ID : {}\nCoordinates : {}\n{}",
-        session.username,
-        connection_id,
-        pos_str,
-        debug_info,
+        session.username, connection_id, pos_str, debug_info,
     );
-
 
     commands
         .spawn((
@@ -582,7 +696,9 @@ fn spawn_remote_fireballs(
                     speed: 400.0,
                 },
                 Mesh2d(meshes.add(Circle::new(8.0))),
-                MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(1.0, 0.3, 0.0)))), // Bright Orange tint
+                MeshMaterial2d(
+                    materials.add(ColorMaterial::from_color(Color::srgb(1.0, 0.3, 0.0))),
+                ), // Bright Orange tint
                 Transform::from_translation(final_spawn_pos.extend(7.0)),
                 GameSceneRoot,
             ));
@@ -592,14 +708,49 @@ fn spawn_remote_fireballs(
     }
 }
 
-fn update_projectiles(
-    mut query: Query<(&ClientProjectile, &mut Transform)>,
-    time: Res<Time>,
-) {
+fn update_projectiles(mut query: Query<(&ClientProjectile, &mut Transform)>, time: Res<Time>) {
     let dt = time.delta_secs();
     for (proj, mut transform) in &mut query {
         let movement = proj.direction * proj.speed * dt;
         transform.translation.x += movement.x;
         transform.translation.y += movement.y;
+    }
+}
+
+fn handle_attribute_updates(
+    mut events: MessageReader<AttributeUpdatedReceived>,
+    mut query: Query<(&mut PlayerStats, &RemotePlayer)>,
+) {
+    for ev in events.read() {
+        for (mut stats, player) in &mut query {
+            if player.connection_id == ev.entity_id {
+                match ev.attribute {
+                    common::attribute_type::AttributeType::HealthPoints => {
+                        stats.hp = ev.new_value;
+                    }
+                    common::attribute_type::AttributeType::ManaPoints => {
+                        stats.mp = ev.new_value;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn update_player_stats_labels(
+    players: Query<(&RemotePlayer, &PlayerStats, &Children)>,
+    mut labels: Query<(&RemotePlayerStatsLabel, &mut Text2d)>,
+) {
+    for (remote, stats, children) in &players {
+        for child in children.iter() {
+            if let Ok((tag, mut text)) = labels.get_mut(child) {
+                if tag.connection_id == remote.connection_id {
+                    let new_text = format!("HP: {}/100 | MP: {}/100", stats.hp, stats.mp);
+                    if text.0 != new_text {
+                        text.0 = new_text;
+                    }
+                }
+            }
+        }
     }
 }

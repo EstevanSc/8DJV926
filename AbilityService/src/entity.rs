@@ -1,8 +1,8 @@
-﻿use std::collections::HashMap;
+﻿use crate::ability::Ability;
+use crate::attribute::Attribute;
 use common::ability_type::AbilityType;
 use common::attribute_type::AttributeType;
-use crate::ability::Ability;
-use crate::attribute::Attribute;
+use std::collections::HashMap;
 
 pub struct Entity {
     pub entity_id: uuid::Uuid,
@@ -20,11 +20,12 @@ impl Entity {
         attributes.insert(
             AttributeType::ManaPoints,
             Attribute {
-            attribute_type: AttributeType::ManaPoints,
-            max_value: 100,
-            min_value: 0,
-            current_value: 100,
-        });
+                attribute_type: AttributeType::ManaPoints,
+                max_value: 100,
+                min_value: 0,
+                current_value: 100,
+            },
+        );
 
         attributes.insert(
             AttributeType::HealthPoints,
@@ -32,19 +33,23 @@ impl Entity {
                 attribute_type: AttributeType::HealthPoints,
                 max_value: 100,
                 min_value: 0,
-                current_value: 50,
-            });
+                current_value: 100,
+            },
+        );
 
         // Heal ability by default
         abilities.insert(AbilityType::Heal, Ability::from_type(AbilityType::Heal));
-        abilities.insert(AbilityType::Fireball, Ability::from_type(AbilityType::Fireball));
+        abilities.insert(
+            AbilityType::Fireball,
+            Ability::from_type(AbilityType::Fireball),
+        );
 
         Self {
             entity_id,
             experience_points: 0,
             level: 0,
             attributes,
-            abilities
+            abilities,
         }
     }
 
@@ -66,11 +71,9 @@ impl Entity {
         if let Some(attribute) = self.attributes.get_mut(&attribute_type) {
             if value > attribute.max_value {
                 attribute.current_value = attribute.max_value;
-            }
-            else if value < attribute.min_value {
+            } else if value < attribute.min_value {
                 attribute.current_value = attribute.min_value;
-            }
-            else {
+            } else {
                 attribute.current_value = value;
             }
             return Some(attribute.current_value);
