@@ -855,6 +855,13 @@ async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMa
             } else {
                 tracing::info!("Subscribed to attribute updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
             }
+
+            // Send subscription to LevelUp topic
+            if let Err(e) = broker.subscribe(entity_id, Topic::LevelUp(new_id)).await {
+                tracing::error!("Failed to subscribe to level up updates for entity {:?}: {}", new_id, e);
+            } else {
+                tracing::info!("Subscribed to level up updates for entity {:?} as it entered the area of interest of entity {:?}", new_id, entity_id);
+            }
         }
 
         for old_id in no_longer_in_interest {
@@ -883,6 +890,13 @@ async fn apply_area_of_interest(broker: &QuicClient, entity_map: &SharedEntityMa
                 tracing::error!("Failed to unsubscribe from attribute updates for entity {:?}: {}", old_id, e);
             } else {
                 tracing::info!("Unsubscribed from attribute updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
+            }
+
+            // Send unsubscription from LevelUp topic
+            if let Err(e) = broker.unsubscribe(entity_id, Topic::LevelUp(old_id)).await {
+                tracing::error!("Failed to unsubscribe from level up updates for entity {:?}: {}", old_id, e);
+            } else {
+                tracing::info!("Unsubscribed from level up updates for entity {:?} as it left the area of interest of entity {:?}", old_id, entity_id);
             }
         }
     }

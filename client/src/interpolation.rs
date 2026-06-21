@@ -7,7 +7,7 @@ use common::topics::Topic;
 use super::net::{
     ActivePeer, AttributeUpdatedReceived, AuthorityDebugPacketReceived, BrokerConn,
     BrokerControlStream, DisconnectReceived, PositionUpdateReceived,
-    QuadtreeBoundariesUpdateReceived,
+    QuadtreeBoundariesUpdateReceived, LevelUpReceived, XPEarnedReceived,
 };
 use super::{GameSession, GameState};
 
@@ -32,6 +32,7 @@ impl Plugin for InterpolationPlugin {
                     spawn_remote_fireballs,
                     update_projectiles,
                     handle_attribute_updates,
+                    handle_xp_and_level_updates,
                     update_player_stats_labels,
                 )
                     .run_if(in_state(GameState::InGame)),
@@ -68,6 +69,8 @@ pub struct ClientProjectile {
 pub struct PlayerStats {
     pub hp: i32,
     pub mp: i32,
+    pub level: i32,
+    pub xp: i32,
 }
 
 #[derive(Component)]
@@ -350,6 +353,8 @@ fn spawn_remote_players(
                                     );
                                 }
 
+
+
                                 // Then publish the name request
                                 let publish =
                                     common::broker_messages::BrokerMessage::serialize_publish(
@@ -387,14 +392,14 @@ fn spawn_remote_players(
                             target: pos,
                             prev: pos,
                         },
-                        PlayerStats { hp: 50, mp: 100 },
+                        PlayerStats { hp: 50, mp: 100, level: 0, xp: 0 },
                         SelfPlayer,
                         Mesh2d(meshes.add(Circle::new(16.0))),
                         MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                         Transform::from_translation(pos.extend(0.0)),
                     ))
                     .with_children(|parent| {
-                        let label_text = format_remote_player_label(&name);
+                        let label_text = format_remote_player_label(&name, 0);
                         // 1. Spawn the Text Label Child
                         parent.spawn((
                             Text2d::new(label_text),
@@ -443,13 +448,13 @@ fn spawn_remote_players(
                             target: pos,
                             prev: pos,
                         },
-                        PlayerStats { hp: 50, mp: 100 },
+                        PlayerStats { hp: 50, mp: 100, level: 0, xp: 0 },
                         Mesh2d(meshes.add(Circle::new(16.0))),
                         MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                         Transform::from_translation(pos.extend(0.0)),
                     ))
                     .with_children(|parent| {
-                        let label_text = format_remote_player_label(&name);
+                        let label_text = format_remote_player_label(&name, 0);
                         parent.spawn((
                             Text2d::new(label_text),
                             TextFont {
@@ -524,11 +529,11 @@ fn interpolate_remote_players(
 
 /// Update the text shown under each remote player to include its resolved name.
 fn update_remote_player_labels(
-    query: Query<(&RemotePlayer, &Transform, &Children)>,
+    query: Query<(&RemotePlayer, &PlayerStats, &Children)>,
     mut labels: Query<(&mut RemotePlayerLabel, &mut Text2d)>,
     discovered: Res<DiscoveredEntities>,
 ) {
-    for (remote, _transform, children) in &query {
+    for (remote, stats, children) in &query {
         for child in children.iter() {
             if let Ok((mut tag, mut text)) = labels.get_mut(child) {
                 if tag.connection_id == remote.connection_id {
@@ -537,15 +542,15 @@ fn update_remote_player_labels(
                             tag.display_name = resolved_name.clone();
                         }
                     }
-                    text.0 = format_remote_player_label(&tag.display_name);
+                    text.0 = format_remote_player_label(&tag.display_name, stats.level);
                 }
             }
         }
     }
 }
 
-fn format_remote_player_label(name: &str) -> String {
-    name.to_string()
+fn format_remote_player_label(name: &str, level: i32) -> String {
+    format!("[Lvl {}] {}", level, name)
 }
 
 /// Spawn a top-left debug overlay showing session info. Cleared with the rest
@@ -556,7 +561,7 @@ fn spawn_debug_hud(
     broker_conn: Option<Res<BrokerConn>>,
     mut events: MessageReader<AuthorityDebugPacketReceived>,
     query: Query<Entity, With<DebugUI>>,
-    player_query: Query<&Transform, With<SelfPlayer>>,
+    player_query: Query<(&Transform, &PlayerStats), With<SelfPlayer>>,
 ) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
@@ -566,11 +571,11 @@ fn spawn_debug_hud(
         .map(|r| r.0.connection_id.to_string())
         .unwrap_or_else(|| "—".to_string());
 
-    let pos_str = if let Some(transform) = player_query.iter().next() {
+    let (pos_str, lvl, xp) = if let Some((transform, stats)) = player_query.iter().next() {
         let p = transform.translation.truncate();
-        format!("({:0.1}, {:0.1})", p.x, p.y)
+        (format!("({:0.1}, {:0.1})", p.x, p.y), stats.level, stats.xp)
     } else {
-        "—".to_string()
+        ("—".to_string(), 0, 0)
     };
 
     // 1. Initialize as an owned, mutable String
@@ -590,8 +595,8 @@ fn spawn_debug_hud(
     }
 
     let info = format!(
-        "Player    : {}\nConnection ID : {}\nCoordinates : {}\n{}",
-        session.username, connection_id, pos_str, debug_info,
+        "Player    : [Lvl {}] {}\nXP        : {}\nConnection ID : {}\nCoordinates : {}\n{}",
+        lvl, session.username, xp, connection_id, pos_str, debug_info,
     );
 
     commands
@@ -732,6 +737,27 @@ fn handle_attribute_updates(
                         stats.mp = ev.new_value;
                     }
                 }
+            }
+        }
+    }
+}
+
+fn handle_xp_and_level_updates(
+    mut events_xp: MessageReader<XPEarnedReceived>,
+    mut events_lvl: MessageReader<LevelUpReceived>,
+    mut query: Query<(&mut PlayerStats, &RemotePlayer)>,
+) {
+    for ev in events_xp.read() {
+        for (mut stats, player) in &mut query {
+            if player.connection_id == ev.entity_id {
+                stats.xp = ev.xp_gained as i32;
+            }
+        }
+    }
+    for ev in events_lvl.read() {
+        for (mut stats, player) in &mut query {
+            if player.connection_id == ev.entity_id {
+                stats.level = ev.new_level as i32;
             }
         }
     }

@@ -1,16 +1,16 @@
 use std::sync::Mutex;
 
 use bevy::prelude::*;
+use common::attribute_type::AttributeType;
 use common::broker_messages::BrokerMessage;
 use common::topics::{
     AuthorityDebugPacketPayload, PositionPayload, QuadtreeBoundariesUpdatePayload,
-    StartingPositionPayload, Topic, deserialize_authority_debug_packet_payload,
-    deserialize_db_name_response_payload, deserialize_path_response_payload,
-    deserialize_position_payload, deserialize_quadtree_boundaries_update_payload,
-    deserialize_use_ability_payload, serialize_starting_position_payload,
-    deserialize_attribute_updated_payload,
+    StartingPositionPayload, Topic, deserialize_attribute_updated_payload,
+    deserialize_authority_debug_packet_payload, deserialize_db_name_response_payload,
+    deserialize_level_up_payload, deserialize_path_response_payload, deserialize_position_payload,
+    deserialize_quadtree_boundaries_update_payload, deserialize_use_ability_payload,
+    deserialize_xp_earned_payload, serialize_starting_position_payload,
 };
-use common::attribute_type::AttributeType;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -29,6 +29,8 @@ impl Plugin for ClientNetPlugin {
             .add_message::<DbNameResponseReceived>()
             .add_message::<LocalPlayerKilled>()
             .add_message::<AttributeUpdatedReceived>()
+            .add_message::<XPEarnedReceived>()
+            .add_message::<LevelUpReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -244,6 +246,26 @@ fn poll_net_events(
                         tracing::info!("Subscribed to AttributeUpdated for player_id={player_id}");
                     }
 
+                    let subscribe_level_up = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::LevelUp(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_level_up.into()) {
+                        tracing::error!("Failed to subscribe to LevelUp: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to LevelUp for player_id={player_id}");
+                    }
+
+                    let subscribe_xp_earned = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::XPEarned(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_xp_earned.into()) {
+                        tracing::error!("Failed to subscribe to XPEarned: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to XPEarned for player_id={player_id}");
+                    }
+
                     next_state.set(GameState::InGame);
                 } else {
                 }
@@ -338,6 +360,18 @@ pub struct AttributeUpdatedReceived {
     pub new_value: i32,
 }
 
+#[derive(Message)]
+pub struct XPEarnedReceived {
+    pub entity_id: uuid::Uuid,
+    pub xp_gained: u32,
+}
+
+#[derive(Message)]
+pub struct LevelUpReceived {
+    pub entity_id: uuid::Uuid,
+    pub new_level: u32,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
@@ -351,6 +385,8 @@ fn receive_packets(
     mut name_response_writer: MessageWriter<DbNameResponseReceived>,
     mut local_player_killed_writer: MessageWriter<LocalPlayerKilled>,
     mut attribute_updated_writer: MessageWriter<AttributeUpdatedReceived>,
+    mut xp_earned_writer: MessageWriter<XPEarnedReceived>,
+    mut level_up_writer: MessageWriter<LevelUpReceived>,
     _session: Res<GameSession>,
 ) {
     let Some(peer_res) = peer_res else { return };
@@ -457,6 +493,22 @@ fn receive_packets(
                                 name_response_writer.write(DbNameResponseReceived {
                                     player_id: uuid,
                                     username: payload.username,
+                                });
+                            }
+                        }
+                        Topic::XPEarned(uuid) => {
+                            if let Some(payload) = deserialize_xp_earned_payload(&payload) {
+                                xp_earned_writer.write(XPEarnedReceived {
+                                    entity_id: uuid,
+                                    xp_gained: payload.new_value as u32,
+                                });
+                            }
+                        }
+                        Topic::LevelUp(uuid) => {
+                            if let Some(payload) = deserialize_level_up_payload(&payload) {
+                                level_up_writer.write(LevelUpReceived {
+                                    entity_id: uuid,
+                                    new_level: payload.new_level as u32,
                                 });
                             }
                         }
