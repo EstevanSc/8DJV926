@@ -380,12 +380,20 @@ fn interpolate_remote_players(
 ) {
     // Apply latest update target for each incoming entity position.
     for update in events.read() {
-        for (mut remote, _) in &mut query {
+        let new_pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
+        for (mut remote, mut transform) in &mut query {
             if remote.connection_id == update.connection_id {
-                let new_pos = Vec2::new(update.payload.position[0] as f32, update.payload.position[1] as f32);
-                if (new_pos - remote.target).length() > POSITION_DELTA_THRESHOLD {
-                    remote.prev = remote.target;
-                    remote.target = new_pos;
+                let dist = (new_pos - remote.target).length();
+                if dist > POSITION_DELTA_THRESHOLD {
+                    if dist > 150.0 || new_pos == Vec2::ZERO {
+                        // Instant teleport
+                        transform.translation = new_pos.extend(transform.translation.z);
+                        remote.prev = new_pos;
+                        remote.target = new_pos;
+                    } else {
+                        remote.prev = remote.target;
+                        remote.target = new_pos;
+                    }
                 }
             }
         }
