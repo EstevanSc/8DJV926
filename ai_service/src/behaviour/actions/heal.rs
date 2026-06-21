@@ -1,6 +1,6 @@
+use crate::components::{AiIntent, AiStats};
 use bevy::prelude::*;
 use bevy_behave::prelude::*;
-use crate::components::{AiStats, AiIntent};
 use common::ability_type::AbilityType;
 
 #[derive(Clone, Debug)]

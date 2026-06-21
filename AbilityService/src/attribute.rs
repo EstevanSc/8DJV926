@@ -1,4 +1,4 @@
-﻿use common::attribute_type::AttributeType;
+use common::attribute_type::AttributeType;
 
 #[derive(Eq, PartialEq, Debug, Hash)]
 pub struct Attribute {

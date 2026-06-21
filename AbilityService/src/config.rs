@@ -1,4 +1,3 @@
-﻿
 pub struct Config {
     pub broker_host: String,
     pub broker_port: u16,
@@ -10,8 +9,7 @@ impl Config {
         dotenv::dotenv().ok();
 
         Config {
-            broker_host: std::env::var("BROKER_HOST")
-                .unwrap_or_else(|_| "broker".to_string()),
+            broker_host: std::env::var("BROKER_HOST").unwrap_or_else(|_| "broker".to_string()),
             broker_port: std::env::var("BROKER_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())

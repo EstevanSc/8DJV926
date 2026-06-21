@@ -1,8 +1,16 @@
 use std::sync::Mutex;
 
 use bevy::prelude::*;
+use common::attribute_type::AttributeType;
 use common::broker_messages::BrokerMessage;
-use common::topics::{PositionPayload, StartingPositionPayload, Topic, deserialize_position_payload, serialize_starting_position_payload, QuadtreeBoundariesUpdatePayload, deserialize_quadtree_boundaries_update_payload, AuthorityDebugPacketPayload, deserialize_authority_debug_packet_payload, deserialize_path_response_payload, deserialize_use_ability_payload};
+use common::topics::{
+    AuthorityDebugPacketPayload, PositionPayload, QuadtreeBoundariesUpdatePayload,
+    StartingPositionPayload, Topic, deserialize_attribute_updated_payload,
+    deserialize_authority_debug_packet_payload, deserialize_db_name_response_payload,
+    deserialize_level_up_payload, deserialize_path_response_payload, deserialize_position_payload,
+    deserialize_quadtree_boundaries_update_payload, deserialize_use_ability_payload,
+    deserialize_xp_earned_payload, serialize_starting_position_payload,
+};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStreamReliability};
 
@@ -18,6 +26,11 @@ impl Plugin for ClientNetPlugin {
             .add_message::<DisconnectReceived>()
             .add_message::<PathResponseReceived>()
             .add_message::<AbilityCastReceived>()
+            .add_message::<DbNameResponseReceived>()
+            .add_message::<LocalPlayerKilled>()
+            .add_message::<AttributeUpdatedReceived>()
+            .add_message::<XPEarnedReceived>()
+            .add_message::<LevelUpReceived>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -70,12 +83,14 @@ fn start_connect(mut commands: Commands, session: Res<GameSession>) {
 }
 fn poll_net_events(
     mut commands: Commands,
-    _session: Res<GameSession>,
+    session: Res<GameSession>,
     peer_res: Option<ResMut<ActivePeer>>,
     mut next_state: ResMut<NextState<GameState>>,
 ) {
     let Some(peer_res) = peer_res else { return };
-    let Ok(mut peer) = peer_res.0.lock() else { return };
+    let Ok(mut peer) = peer_res.0.lock() else {
+        return;
+    };
 
     loop {
         let event = match peer.poll() {
@@ -89,7 +104,10 @@ fn poll_net_events(
         };
         match event {
             GameNetworkEvent::Connected(conn) => {
-                tracing::info!("QUIC connected (id={:?}); opening streams...", conn.connection_id);
+                tracing::info!(
+                    "QUIC connected (id={:?}); opening streams...",
+                    conn.connection_id
+                );
                 commands.insert_resource(BrokerConn(conn));
 
                 if let Err(e) = peer.create_stream(conn, GameStreamReliability::Reliable) {
@@ -98,25 +116,50 @@ fn poll_net_events(
                 if let Err(e) = peer.create_stream(conn, GameStreamReliability::Unreliable) {
                     tracing::error!("Failed to initiate unreliable stream: {e:?}");
                 }
-                
+
                 commands.remove_resource::<ConnectTimeout>();
             }
 
             GameNetworkEvent::StreamCreated(conn, stream) => {
-                /* 
+                /*
                 let Ok(player_id) = Uuid::parse_str(&session.player_id) else {
                     tracing::error!("Invalid player_id in session: '{}'", session.player_id);
                     continue;
                 };
                 */
                 let player_id = conn.connection_id;
-                if stream.is_reliable() { 
-                    tracing::info!("Reliable stream is ready! Registering client_id={player_id} with broker...");
+                if stream.is_reliable() {
+                    tracing::info!(
+                        "Reliable stream is ready! Registering client_id={player_id} with broker..."
+                    );
                     commands.insert_resource(BrokerControlStream(stream.clone()));
-                    
-                    let connect_message = BrokerMessage::serialize_connect(player_id, common::broker_messages::SendingSystem::Client);
+
+                    let connect_message = BrokerMessage::serialize_connect(
+                        player_id,
+                        common::broker_messages::SendingSystem::Client,
+                    );
                     if let Err(e) = peer.send(&conn, &stream, connect_message.into()) {
                         tracing::error!("Failed to send broker Connect: {e:?}");
+                    }
+
+                    // Send database username correlation registration
+                    let register_payload = common::topics::serialize_db_register_username_payload(
+                        &common::topics::DbRegisterUsernamePayload {
+                            player_id,
+                            username: session.username.clone(),
+                        },
+                    );
+                    let register_publish = BrokerMessage::serialize_publish(
+                        Topic::DbRegisterUsername.to_bytes(),
+                        &register_payload,
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, register_publish.into()) {
+                        tracing::error!("Failed to send DbRegisterUsername: {e:?}");
+                    } else {
+                        tracing::info!(
+                            "Sent DbRegisterUsername mapping for player_id={player_id}, username={}",
+                            session.username
+                        );
                     }
 
                     let subscribe_updates = BrokerMessage::serialize_subscribe(
@@ -126,12 +169,17 @@ fn poll_net_events(
                     if let Err(e) = peer.send(&conn, &stream, subscribe_updates.into()) {
                         tracing::error!("Failed to subscribe to EntityPositionUpdate: {e:?}");
                     } else {
-                        tracing::info!("Subscribed to EntityPositionUpdate for player_id={player_id}");
+                        tracing::info!(
+                            "Subscribed to EntityPositionUpdate for player_id={player_id}"
+                        );
                     }
 
                     let payload = serialize_starting_position_payload(&StartingPositionPayload {
                         connection_id: player_id,
-                        position: [-150.0, -150.0],
+                        position: [
+                            session.player_spawn_position[0] as f64,
+                            session.player_spawn_position[1] as f64,
+                        ],
                     });
 
                     let topic = Topic::PlayerStartingPosition.to_bytes();
@@ -139,7 +187,9 @@ fn poll_net_events(
                     if let Err(e) = peer.send(&conn, &stream, publish.into()) {
                         tracing::error!("Failed to send initial Publish: {e:?}");
                     } else {
-                        tracing::info!("Sent initial baseline StartingPosition Publish for player_id={player_id}");
+                        tracing::info!(
+                            "Sent initial baseline StartingPosition Publish for player_id={player_id}"
+                        );
                     }
 
                     let subscribe_quadtree = BrokerMessage::serialize_subscribe(
@@ -149,7 +199,9 @@ fn poll_net_events(
                     if let Err(e) = peer.send(&conn, &stream, subscribe_quadtree.into()) {
                         tracing::error!("Failed to subscribe to QuadtreeBoundariesUpdate: {e:?}");
                     } else {
-                        tracing::info!("Subscribed to QuadtreeBoundariesUpdate for player_id={player_id}");
+                        tracing::info!(
+                            "Subscribed to QuadtreeBoundariesUpdate for player_id={player_id}"
+                        );
                     }
 
                     let subscribe_debug = BrokerMessage::serialize_subscribe(
@@ -159,7 +211,9 @@ fn poll_net_events(
                     if let Err(e) = peer.send(&conn, &stream, subscribe_debug.into()) {
                         tracing::error!("Failed to subscribe to AuthorityDebugPacket: {e:?}");
                     } else {
-                        tracing::info!("Subscribed to AuthorityDebugPacket for player_id={player_id}");
+                        tracing::info!(
+                            "Subscribed to AuthorityDebugPacket for player_id={player_id}"
+                        );
                     }
 
                     let subscribe_path_response = BrokerMessage::serialize_subscribe(
@@ -172,10 +226,48 @@ fn poll_net_events(
                         tracing::info!("Subscribed to PathResponse for player_id={player_id}");
                     }
 
-                    next_state.set(GameState::InGame);
-                } 
-                else {
+                    let subscribe_entity_killed = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::EntityKilled(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_entity_killed.into()) {
+                        tracing::error!("Failed to subscribe to EntityKilled: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to EntityKilled for player_id={player_id}");
+                    }
 
+                    let subscribe_attribute_updated = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::AttributeUpdated(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_attribute_updated.into()) {
+                        tracing::error!("Failed to subscribe to AttributeUpdated: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to AttributeUpdated for player_id={player_id}");
+                    }
+
+                    let subscribe_level_up = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::LevelUp(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_level_up.into()) {
+                        tracing::error!("Failed to subscribe to LevelUp: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to LevelUp for player_id={player_id}");
+                    }
+
+                    let subscribe_xp_earned = BrokerMessage::serialize_subscribe(
+                        player_id,
+                        Topic::XPEarned(player_id).to_bytes(),
+                    );
+                    if let Err(e) = peer.send(&conn, &stream, subscribe_xp_earned.into()) {
+                        tracing::error!("Failed to subscribe to XPEarned: {e:?}");
+                    } else {
+                        tracing::info!("Subscribed to XPEarned for player_id={player_id}");
+                    }
+
+                    next_state.set(GameState::InGame);
+                } else {
                 }
             }
 
@@ -223,7 +315,7 @@ pub struct PositionUpdateReceived {
     pub connection_id: uuid::Uuid,
     pub payload: PositionPayload,
 }
-    
+
 /// Message emitted when a quadtree boundaries update arrives from the server.
 #[derive(Message)]
 pub struct QuadtreeBoundariesUpdateReceived {
@@ -252,24 +344,66 @@ pub struct AbilityCastReceived {
     pub direction: Option<Vec2>,
 }
 
+#[derive(Message)]
+pub struct DbNameResponseReceived {
+    pub player_id: uuid::Uuid,
+    pub username: String,
+}
+
+#[derive(Message)]
+pub struct LocalPlayerKilled;
+
+#[derive(Message)]
+pub struct AttributeUpdatedReceived {
+    pub entity_id: uuid::Uuid,
+    pub attribute: AttributeType,
+    pub new_value: i32,
+}
+
+#[derive(Message)]
+pub struct XPEarnedReceived {
+    pub entity_id: uuid::Uuid,
+    pub xp_gained: u32,
+}
+
+#[derive(Message)]
+pub struct LevelUpReceived {
+    pub entity_id: uuid::Uuid,
+    pub new_level: u32,
+}
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
+    broker_conn: Option<Res<BrokerConn>>,
+    //broker_stream: Option<Res<BrokerControlStream>>,
     mut update_writer: MessageWriter<PositionUpdateReceived>,
     mut quadtree_update_writer: MessageWriter<QuadtreeBoundariesUpdateReceived>,
     mut authority_debug_writer: MessageWriter<AuthorityDebugPacketReceived>,
     mut disconnect_writer: MessageWriter<DisconnectReceived>,
     mut path_response_writer: MessageWriter<PathResponseReceived>,
     mut ability_cast_writer: MessageWriter<AbilityCastReceived>,
+    mut name_response_writer: MessageWriter<DbNameResponseReceived>,
+    mut local_player_killed_writer: MessageWriter<LocalPlayerKilled>,
+    mut attribute_updated_writer: MessageWriter<AttributeUpdatedReceived>,
+    mut xp_earned_writer: MessageWriter<XPEarnedReceived>,
+    mut level_up_writer: MessageWriter<LevelUpReceived>,
+    _session: Res<GameSession>,
 ) {
     let Some(peer_res) = peer_res else { return };
-    let Ok(mut peer) = peer_res.0.lock() else { return };
-
+    let Ok(mut peer) = peer_res.0.lock() else {
+        return;
+    };
+    //let mut killed = false;
+    let Some(conn) = broker_conn.as_ref() else {
+        return;
+    };
+    let self_id = conn.0.connection_id;
     while let Ok(Some(event)) = peer.poll() {
         if let GameNetworkEvent::Message { data, .. } = event {
             if let Some(message) = BrokerMessage::deserialize(&data) {
                 match message {
                     BrokerMessage::Broadcast { topic, payload } => match Topic::from_bytes(topic) {
-                        Topic::EntityPositionUpdate( entity_uuid) => {
+                        Topic::EntityPositionUpdate(entity_uuid) => {
                             //tracing::debug!("Received position update for entity {:?}", entity_uuid);
                             if let Some(update) = deserialize_position_payload(&payload) {
                                 //tracing::trace!("Deserialized position update: {:?}", update);
@@ -281,30 +415,57 @@ fn receive_packets(
                         }
                         Topic::QuadtreeBoundariesUpdate => {
                             //tracing::info!("Received quadtree boundaries update from server");
-                            if let Some(update) = deserialize_quadtree_boundaries_update_payload(&payload) {
+                            if let Some(update) =
+                                deserialize_quadtree_boundaries_update_payload(&payload)
+                            {
                                 //tracing::trace!("Deserialized quadtree boundaries update: {:?}", update);
-                                quadtree_update_writer.write(QuadtreeBoundariesUpdateReceived {
-                                    payload: update,
-                                });
+                                quadtree_update_writer
+                                    .write(QuadtreeBoundariesUpdateReceived { payload: update });
                             }
                         }
                         Topic::AuthorityDebugPacket(_entity_uuid) => {
                             //tracing::info!("Received authority debug packet from server for entity {:?}", entity_uuid);
-                            if let Some(update) = deserialize_authority_debug_packet_payload(&payload) {
+                            if let Some(update) =
+                                deserialize_authority_debug_packet_payload(&payload)
+                            {
                                 //tracing::trace!("Deserialized authority debug packet: {:?}", update);
-                                authority_debug_writer.write(AuthorityDebugPacketReceived {
-                                    payload: update,
-                                });
+                                authority_debug_writer
+                                    .write(AuthorityDebugPacketReceived { payload: update });
                             }
                         }
                         Topic::Disconnect(uuid) => {
                             tracing::info!("Received disconnect message for entity {:?}", uuid);
-                            disconnect_writer.write(DisconnectReceived {
-                                entity_id: uuid,
-                            });
+                            disconnect_writer.write(DisconnectReceived { entity_id: uuid });
+                        }
+                        Topic::EntityKilled(uuid) => {
+                            if uuid == self_id {
+                                tracing::info!(
+                                    "Received EntityKilled for our own entity {:?} — we were killed!",
+                                    uuid
+                                );
+                                local_player_killed_writer.write(LocalPlayerKilled);
+                            }
+                        }
+                        Topic::AttributeUpdated(uuid) => {
+                            if let Some(payload) = deserialize_attribute_updated_payload(&payload) {
+                                tracing::info!(
+                                    "Received AttributeUpdated for entity {:?}: {:?} = {}",
+                                    uuid,
+                                    payload.attribute,
+                                    payload.new_value
+                                );
+                                attribute_updated_writer.write(AttributeUpdatedReceived {
+                                    entity_id: uuid,
+                                    attribute: payload.attribute,
+                                    new_value: payload.new_value,
+                                });
+                            }
                         }
                         Topic::PathResponse(_entity_uuid) => {
-                            tracing::info!("Received path response from server for entity {:?}", _entity_uuid);
+                            tracing::info!(
+                                "Received path response from server for entity {:?}",
+                                _entity_uuid
+                            );
                             if let Some(response) = deserialize_path_response_payload(&payload) {
                                 tracing::trace!("Deserialized path response: {:?}", response);
                                 let mut path = Vec::new();
@@ -312,9 +473,7 @@ fn receive_packets(
                                     path.push(Vec2::new(point[0], point[1]));
                                     print!("Added point {:?} to path", path.last());
                                 }
-                                path_response_writer.write(PathResponseReceived {
-                                    path: path,
-                                });
+                                path_response_writer.write(PathResponseReceived { path: path });
                             }
                         }
                         Topic::CastAbility(caster_uuid) => {
@@ -325,9 +484,32 @@ fn receive_packets(
                                     ability_type: payload.ability,
                                     direction: dir,
                                 });
-                            }
-                            else {
+                            } else {
                                 tracing::error!("Couldn't deserialize CastABility payload.");
+                            }
+                        }
+                        Topic::DbNameResponse(uuid) => {
+                            if let Some(payload) = deserialize_db_name_response_payload(&payload) {
+                                name_response_writer.write(DbNameResponseReceived {
+                                    player_id: uuid,
+                                    username: payload.username,
+                                });
+                            }
+                        }
+                        Topic::XPEarned(uuid) => {
+                            if let Some(payload) = deserialize_xp_earned_payload(&payload) {
+                                xp_earned_writer.write(XPEarnedReceived {
+                                    entity_id: uuid,
+                                    xp_gained: payload.new_value as u32,
+                                });
+                            }
+                        }
+                        Topic::LevelUp(uuid) => {
+                            if let Some(payload) = deserialize_level_up_payload(&payload) {
+                                level_up_writer.write(LevelUpReceived {
+                                    entity_id: uuid,
+                                    new_level: payload.new_level as u32,
+                                });
                             }
                         }
                         _ => {}
@@ -338,4 +520,21 @@ fn receive_packets(
             }
         }
     }
+
+    /*if killed {
+        if let (Some(conn), Some(stream)) = (broker_conn, broker_stream) {
+            let respawn_entity_id = conn.0.connection_id;
+            let payload = serialize_starting_position_payload(&StartingPositionPayload {
+                connection_id: respawn_entity_id,
+                position: [0.0, 0.0],
+            });
+            let topic = Topic::PlayerStartingPosition.to_bytes();
+            let publish = BrokerMessage::serialize_publish(topic, &payload);
+
+            // Utilise maintenant 'stream.0'
+            if let Ok(peer) = peer_res.0.lock() {
+                let _ = peer.send(&conn.0, &stream.0, publish.into());
+            }
+        }
+    }*/
 }

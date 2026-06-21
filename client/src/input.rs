@@ -1,34 +1,80 @@
-use bevy::{prelude::*};
-use serde::__private228::de::borrow_cow_bytes;
+use bevy::prelude::*;
 use common::ability_type::AbilityType;
 use common::broker_messages::BrokerMessage;
-use common::topics::{serialize_input_payload, InputPayload, Topic, PathRequestPayload, serialize_path_request_payload, serialize_use_ability_payload, UseAbilityPayload};
+use common::topics::{
+    InputPayload, PathRequestPayload, Topic, UseAbilityPayload, serialize_input_payload,
+    serialize_path_request_payload, serialize_use_ability_payload,
+};
 
-use super::{ GameState};
+use super::GameState;
 use super::net::{ActivePeer, BrokerConn, BrokerControlStream};
 
 use crate::src::interpolation::SelfPlayer;
 
-use super::net::{PathResponseReceived};
+use super::net::PathResponseReceived;
 
 pub struct ClientInputPlugin;
 
 impl Plugin for ClientInputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, keyboard_input.run_if(in_state(GameState::InGame)))
-            .add_systems(Update, mouse_button_input.run_if(in_state(GameState::InGame)))
-            .init_resource::<PathToCursor>();
+        app.init_resource::<DeathState>()
+            .init_resource::<PathToCursor>()
+            .add_systems(
+                Update,
+                (
+                    keyboard_input.run_if(in_state(GameState::InGame)),
+                    mouse_button_input.run_if(in_state(GameState::InGame)),
+                    update_death_state.run_if(in_state(GameState::InGame)),
+                ),
+            );
+    }
+}
+
+#[derive(Resource)]
+pub struct DeathState {
+    pub is_dead: bool,
+    pub timer: Timer,
+}
+
+impl Default for DeathState {
+    fn default() -> Self {
+        let mut timer = Timer::from_seconds(5.0, TimerMode::Once);
+        timer.set_elapsed(std::time::Duration::from_secs(5));
+        Self {
+            is_dead: false,
+            timer,
+        }
+    }
+}
+
+fn update_death_state(
+    time: Res<Time>,
+    mut death_state: ResMut<DeathState>,
+    mut killed_events: MessageReader<super::net::LocalPlayerKilled>,
+) {
+    for _ in killed_events.read() {
+        death_state.is_dead = true;
+        death_state.timer.reset();
+        tracing::info!("Local player death state activated for 5 seconds.");
+    }
+
+    if death_state.is_dead {
+        if death_state.timer.tick(time.delta()).just_finished() {
+            death_state.is_dead = false;
+            tracing::info!("Local player death state deactivated.");
+        }
     }
 }
 
 fn send_input(
-
     peer_res: Option<&mut ResMut<ActivePeer>>,
     broker_conn: Option<&Res<BrokerConn>>,
     broker_stream: Option<&Res<BrokerControlStream>>,
-    input: [f64; 2]
+    input: [f64; 2],
 ) {
-    let (Some(peer_res), Some(broker_conn), Some(broker_stream)) = (peer_res, broker_conn, broker_stream) else {
+    let (Some(peer_res), Some(broker_conn), Some(broker_stream)) =
+        (peer_res, broker_conn, broker_stream)
+    else {
         return;
     };
     let Ok(peer) = peer_res.0.lock() else { return };
@@ -38,10 +84,8 @@ fn send_input(
     if dx == 0.0 && dy == 0.0 {
         return;
     }
-    
-    let payload = serialize_input_payload(&InputPayload {
-        dxdy: [dx, dy],
-    });
+
+    let payload = serialize_input_payload(&InputPayload { dxdy: [dx, dy] });
 
     let topic = Topic::Input(broker_conn.0.connection_id).to_bytes();
     let publish = BrokerMessage::serialize_publish(topic, &payload);
@@ -56,8 +100,17 @@ fn send_ability(
     broker_stream: Option<&Res<BrokerControlStream>>,
     ability_type: AbilityType,
     direction: Option<[f32; 2]>,
+    death_state: Option<&Res<DeathState>>,
 ) {
-    let (Some(peer_res), Some(broker_conn), Some(broker_stream)) = (peer_res, broker_conn, broker_stream) else {
+    if let Some(ds) = death_state {
+        if ds.is_dead {
+            tracing::info!("Blocked sending ability because local player is dead.");
+            return;
+        }
+    }
+    let (Some(peer_res), Some(broker_conn), Some(broker_stream)) =
+        (peer_res, broker_conn, broker_stream)
+    else {
         return;
     };
     let Ok(peer) = peer_res.0.lock() else { return };
@@ -75,13 +128,14 @@ fn send_ability(
     }
 }
 
-fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
+fn keyboard_input(
+    keys: Res<ButtonInput<KeyCode>>,
     mut peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
     broker_stream: Option<Res<BrokerControlStream>>,
     mut path_to_cursor: ResMut<PathToCursor>,
+    death_state: Option<Res<DeathState>>,
 ) {
-
     let mut dx = 0.0_f64;
     let mut dy = 0.0_f64;
     if keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA) {
@@ -104,6 +158,7 @@ fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
             broker_stream.as_ref(),
             AbilityType::Heal,
             None,
+            death_state.as_ref(),
         );
     }
 
@@ -116,13 +171,13 @@ fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
         peer_res.as_mut(),
         broker_conn.as_ref(),
         broker_stream.as_ref(),
-        [dx, dy]
+        [dx, dy],
     );
 }
 
 #[derive(Resource, Reflect, Default)]
-pub struct PathToCursor{
-    path: Vec<Vec2>
+pub struct PathToCursor {
+    path: Vec<Vec2>,
 }
 
 fn mouse_button_input(
@@ -134,7 +189,8 @@ fn mouse_button_input(
     q_window: Query<&Window>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
     mut event: MessageReader<PathResponseReceived>,
-    mut path_to_cursor: ResMut<PathToCursor>
+    mut path_to_cursor: ResMut<PathToCursor>,
+    death_state: Option<Res<DeathState>>,
 ) {
     let player_position = query_player
         .iter()
@@ -151,7 +207,11 @@ fn mouse_button_input(
         info!("Player position: {:?}", player_position);
 
         // 1. FIX HERE: Use .as_mut() and .as_ref() to borrow the options instead of moving them
-        if let (Some(peer), Some(conn), Some(stream)) = (peer_res.as_mut(), broker_conn.as_ref(), broker_stream.as_ref()) {
+        if let (Some(peer), Some(conn), Some(stream)) = (
+            peer_res.as_mut(),
+            broker_conn.as_ref(),
+            broker_stream.as_ref(),
+        ) {
             let payload = serialize_path_request_payload(&PathRequestPayload {
                 entity_id: conn.0.connection_id,
                 start: [player_position.x, player_position.y],
@@ -160,13 +220,17 @@ fn mouse_button_input(
 
             let topic = Topic::PathRequest.to_bytes();
             let publish = BrokerMessage::serialize_publish(topic, &payload);
-            
+
             // Note the extra dereference (*) to get past the Option's reference layer
-            if let Err(e) = peer.0.lock().unwrap().send(&conn.0, &stream.0, publish.into()) {
+            if let Err(e) = peer
+                .0
+                .lock()
+                .unwrap()
+                .send(&conn.0, &stream.0, publish.into())
+            {
                 print!("Failed to send path request: {:?}", e);
             }
         }
-        
     }
 
     if buttons.just_pressed(MouseButton::Left) {
@@ -183,6 +247,7 @@ fn mouse_button_input(
             broker_stream.as_ref(),
             AbilityType::Fireball,
             Some(fireball_direction),
+            death_state.as_ref(),
         );
     }
 
@@ -195,10 +260,10 @@ fn mouse_button_input(
     if path_to_cursor.path.len() >= 1 {
         let target = path_to_cursor.path[0];
         let player_position = query_player
-                    .iter()
-                    .next()
-                    .map(|transform| transform.translation)
-                    .unwrap_or_default();
+            .iter()
+            .next()
+            .map(|transform| transform.translation)
+            .unwrap_or_default();
 
         if player_position.truncate().distance(target) < 36.0 {
             path_to_cursor.path.remove(0);
@@ -209,16 +274,16 @@ fn mouse_button_input(
                     peer_res.as_mut(),
                     broker_conn.as_ref(),
                     broker_stream.as_ref(),
-                    [direction.x as f64, direction.y as f64]
+                    [direction.x as f64, direction.y as f64],
                 );
             }
-        }else {
+        } else {
             let direction = (target - player_position.truncate()).normalize_or_zero();
             send_input(
                 peer_res.as_mut(),
                 broker_conn.as_ref(),
                 broker_stream.as_ref(),
-                [direction.x as f64, direction.y as f64]
+                [direction.x as f64, direction.y as f64],
             );
         }
     }
@@ -232,18 +297,21 @@ fn get_cursor_world_position(
 ) -> Vec2 {
     // Get the primary window
     let window = q_window.single().unwrap();
-    
+
     // Get the camera and its global transform
     let (camera, camera_transform) = q_camera.single().unwrap();
 
     // 1. Check if the cursor is inside the window and get its position
     if let Some(cursor_screen_pos) = window.cursor_position() {
-        
         // 2. Convert the screen position to world coordinates (Now returns a Result!)
-        if let Ok(cursor_world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_screen_pos) {
-            
+        if let Ok(cursor_world_pos) =
+            camera.viewport_to_world_2d(camera_transform, cursor_screen_pos)
+        {
             // cursor_world_pos is a Vec2 containing the exact world coordinates
-            info!("Cursor World Position: X: {}, Y: {}", cursor_world_pos.x, cursor_world_pos.y);
+            info!(
+                "Cursor World Position: X: {}, Y: {}",
+                cursor_world_pos.x, cursor_world_pos.y
+            );
             return cursor_world_pos;
         }
     }

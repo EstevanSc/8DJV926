@@ -2,12 +2,27 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub enum BrokerMessage {
-    Subscribe { client_id: Uuid, topic: [u8; 32] },         // 0x01
-    Unsubscribe { client_id: Uuid, topic: [u8; 32] },       // 0x02
-    Publish { topic: [u8; 32], payload: Vec<u8> },          // 0x03
-    Broadcast { topic: [u8; 32], payload: Vec<u8> },        // 0x04
-    Connect { client_id: Uuid , sending_system: SendingSystem },                            // 0x05
-}   
+    Subscribe {
+        client_id: Uuid,
+        topic: [u8; 32],
+    }, // 0x01
+    Unsubscribe {
+        client_id: Uuid,
+        topic: [u8; 32],
+    }, // 0x02
+    Publish {
+        topic: [u8; 32],
+        payload: Vec<u8>,
+    }, // 0x03
+    Broadcast {
+        topic: [u8; 32],
+        payload: Vec<u8>,
+    }, // 0x04
+    Connect {
+        client_id: Uuid,
+        sending_system: SendingSystem,
+    }, // 0x05
+}
 
 #[derive(Debug, Clone)]
 pub enum SendingSystem {
@@ -19,6 +34,7 @@ pub enum SendingSystem {
     AbilityService,
     AiService,
     PathingService,
+    DatabaseService,
 }
 
 impl BrokerMessage {
@@ -31,7 +47,8 @@ impl BrokerMessage {
         let body = &data[1..];
 
         match tag {
-            0x01 => { // Subscribe: client_id (16B) + topic (32B)
+            0x01 => {
+                // Subscribe: client_id (16B) + topic (32B)
                 if body.len() < 48 {
                     return None;
                 }
@@ -41,7 +58,8 @@ impl BrokerMessage {
                 topic.copy_from_slice(&body[16..48]);
                 Some(BrokerMessage::Subscribe { client_id, topic })
             }
-            0x02 => { // Unsubscribe: client_id (16B) + topic (32B)
+            0x02 => {
+                // Unsubscribe: client_id (16B) + topic (32B)
                 if body.len() < 48 {
                     return None;
                 }
@@ -51,7 +69,8 @@ impl BrokerMessage {
                 topic.copy_from_slice(&body[16..48]);
                 Some(BrokerMessage::Unsubscribe { client_id, topic })
             }
-            0x03 => { // Publish: topic (32B) + payload_len (2B) + payload
+            0x03 => {
+                // Publish: topic (32B) + payload_len (2B) + payload
                 if body.len() < 34 {
                     return None;
                 }
@@ -67,7 +86,8 @@ impl BrokerMessage {
                 let payload = body[34..34 + payload_len].to_vec();
                 Some(BrokerMessage::Publish { topic, payload })
             }
-            0x04 => { // Broadcast: topic (32B) + payload_len (2B) + payload // Note: This message type is only sent by the broker, the other parts use this deserialization.
+            0x04 => {
+                // Broadcast: topic (32B) + payload_len (2B) + payload // Note: This message type is only sent by the broker, the other parts use this deserialization.
                 if body.len() < 34 {
                     return None;
                 }
@@ -83,7 +103,8 @@ impl BrokerMessage {
                 let payload = body[34..34 + payload_len].to_vec();
                 Some(BrokerMessage::Broadcast { topic, payload })
             }
-                        0x05 => { // Connect: client_id (16B)
+            0x05 => {
+                // Connect: client_id (16B)
                 if body.len() < 16 {
                     return None;
                 }
@@ -97,9 +118,13 @@ impl BrokerMessage {
                     0x06 => SendingSystem::AiService,
                     0x07 => SendingSystem::PathingService,
                     0x08 => SendingSystem::AbilityService,
+                    0x09 => SendingSystem::DatabaseService,
                     _ => return None,
                 };
-                Some(BrokerMessage::Connect { client_id, sending_system })
+                Some(BrokerMessage::Connect {
+                    client_id,
+                    sending_system,
+                })
             }
             _ => None,
         }
@@ -143,6 +168,7 @@ impl BrokerMessage {
             SendingSystem::AiService => 0x06,
             SendingSystem::PathingService => 0x07,
             SendingSystem::AbilityService => 0x08,
+            SendingSystem::DatabaseService => 0x09,
         };
         buffer.push(system_byte);
         buffer

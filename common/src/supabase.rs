@@ -4,7 +4,6 @@
 use anyhow::Context;
 use reqwest::header;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Client
@@ -21,19 +20,27 @@ pub struct SupabaseClient {
 // Row types
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct PlayerRow {
     pub id: i64,
     pub player_name: String,
     pub password: String,
-    pub unique_id: Uuid, // UUID stored as a string for easier handling in Rust and JS
+    pub log_out_position_x: f32,
+    pub log_out_position_y: f32,
 }
 
 #[derive(Serialize)]
 struct CreatePlayerBody<'a> {
     player_name: &'a str,
     password: &'a str,
-    unique_id: Uuid,
+    log_out_position_x: f32,
+    log_out_position_y: f32,
+}
+
+#[derive(Serialize)]
+struct UpdatePlayerPositionBody {
+    log_out_position_x: f32,
+    log_out_position_y: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +78,10 @@ impl SupabaseClient {
             .headers(self.auth_headers())
             .query(&[
                 ("player_name", format!("eq.{name}")),
-                ("select", "id,player_name,password,unique_id".to_string()),
+                (
+                    "select",
+                    "id,player_name,password,log_out_position_x,log_out_position_y".to_string(),
+                ),
             ])
             .send()
             .await
@@ -96,7 +106,8 @@ impl SupabaseClient {
             .json(&CreatePlayerBody {
                 player_name: name,
                 password,
-                unique_id: Uuid::new_v4(), // Generate a random UUID for the new player.
+                log_out_position_x: 0.0, // Default logout position X
+                log_out_position_y: 0.0, // Default logout position Y
             })
             .send()
             .await
@@ -109,5 +120,36 @@ impl SupabaseClient {
 
         rows.pop()
             .context("Supabase create_player: response was empty")
+    }
+
+    /// Update a player's logout coordinates.
+    pub async fn update_player_position(
+        &self,
+        name: &str,
+        x: f32,
+        y: f32,
+    ) -> anyhow::Result<PlayerRow> {
+        let mut rows: Vec<PlayerRow> = self
+            .http
+            .patch(format!("{}/PlayerInformation", self.base_url))
+            .headers(self.auth_headers())
+            .query(&[("player_name", format!("eq.{name}"))])
+            // Ask PostgREST to return the updated row.
+            .header("Prefer", "return=representation")
+            .json(&UpdatePlayerPositionBody {
+                log_out_position_x: x,
+                log_out_position_y: y,
+            })
+            .send()
+            .await
+            .context("Supabase update_player_position: request failed")?
+            .error_for_status()
+            .context("Supabase update_player_position: non-2xx response")?
+            .json()
+            .await
+            .context("Supabase update_player_position: JSON parse error")?;
+
+        rows.pop()
+            .context("Supabase update_player_position: response was empty")
     }
 }

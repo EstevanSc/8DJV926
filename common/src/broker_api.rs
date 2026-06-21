@@ -1,5 +1,4 @@
-﻿
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use std::time::Duration;
 use uuid::Uuid;
@@ -21,12 +20,13 @@ pub struct BrokerClient {
 
 impl BrokerClient {
     /// Connects to the broker, sets up streams, and registers the system instance.
-    pub async fn connect(
-        host: &str,
-        port: u16,
-        system_type: SendingSystem,
-    ) -> Result<Self> {
-        tracing::info!("Connecting to broker at {}:{} as {:?}", host, port, system_type);
+    pub async fn connect(host: &str, port: u16, system_type: SendingSystem) -> Result<Self> {
+        tracing::info!(
+            "Connecting to broker at {}:{} as {:?}",
+            host,
+            port,
+            system_type
+        );
 
         let mut peer = GamePeer::new(QuicBackend::new());
         peer.connect(host, port)
@@ -131,7 +131,10 @@ impl BrokerClient {
         }
     }
 
-    async fn wait_for_stream(peer: &mut GamePeer, target_conn: GameConnection) -> Result<GameStream> {
+    async fn wait_for_stream(
+        peer: &mut GamePeer,
+        target_conn: GameConnection,
+    ) -> Result<GameStream> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             while let Ok(Some(event)) = GamePeer::poll(peer) {

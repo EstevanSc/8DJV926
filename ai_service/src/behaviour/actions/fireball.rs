@@ -1,6 +1,6 @@
+use crate::components::{AiIntent, AiPosition, AiStats, Perception};
 use bevy::prelude::*;
 use bevy_behave::prelude::*;
-use crate::components::{AiPosition, Perception, AiIntent, AiStats};
 use common::ability_type::AbilityType;
 
 const FIREBALL_RANGE_SQ: f32 = 200.0 * 200.0;

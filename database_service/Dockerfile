@@ -18,8 +18,8 @@ COPY AbilityService ./AbilityService
 COPY ai_service ./ai_service
 COPY database_service ./database_service
 
-# Build the pathing_service binary
-RUN cargo build --release -p AbilityService
+# Build the database_service binary
+RUN cargo build --release -p database_service
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -28,11 +28,11 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/AbilityService /usr/local/bin/AbilityService
+COPY --from=builder /app/target/release/database_service /usr/local/bin/database_service
 
 WORKDIR /app
 
 # Set default environment variables
 ENV RUST_LOG=info
 
-ENTRYPOINT ["AbilityService"]
+ENTRYPOINT ["database_service"]

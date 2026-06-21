@@ -171,6 +171,23 @@ services:
       ABILITY_SERVICE_TICK_MS: 50
       RUST_LOG: info
 
+  database-service:
+    build:
+      context: .
+      dockerfile: database_service/Dockerfile
+    image: database-service:latest
+    networks:
+      - game-net
+    depends_on:
+      broker:
+        condition: service_started
+    environment:
+      BROKER_HOST: "broker"
+      BROKER_PORT: "7776"
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      RUST_LOG: info
+
   # ── AI Service ───────────────────────────────────────────────────────────
   # Headless Bevy service that spawns AI entities and manages their behaviour trees.
   # Connects to the broker as regular clients (one QUIC connection per AI entity).

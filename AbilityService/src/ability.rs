@@ -1,11 +1,11 @@
-﻿use std::time::SystemTime;
+use crate::entity::Entity;
 use common::ability_type::AbilityType;
 use common::attribute_type::AttributeType;
-use crate::entity::Entity;
+use std::time::SystemTime;
 
 pub struct AttributeEffect {
     pub attribute_type: AttributeType,
-    pub modifier_value: i32,    // Value that will be added to the attribute's current value
+    pub modifier_value: i32, // Value that will be added to the attribute's current value
 }
 
 pub struct Ability {
@@ -19,28 +19,26 @@ pub struct Ability {
 impl Ability {
     pub fn from_type(ability_type: AbilityType) -> Ability {
         match ability_type {
-            AbilityType::Fireball => {
-                Ability {
-                    cooldown: 2f32,
-                    mana_cost: 25,
-                    last_cast: SystemTime::UNIX_EPOCH,
-                    effects: vec![AttributeEffect {
-                        attribute_type: AttributeType::HealthPoints,
-                        modifier_value: -20}],
-                    ability_type,
-                }
-            }
-            AbilityType::Heal => {
-                Ability {
-                    cooldown: 5f32,
-                    mana_cost: 35,
-                    last_cast: SystemTime::UNIX_EPOCH,
-                    effects: vec![AttributeEffect {
-                        attribute_type: AttributeType::HealthPoints,
-                        modifier_value: 50}],
-                    ability_type,
-                }
-            }
+            AbilityType::Fireball => Ability {
+                cooldown: 2f32,
+                mana_cost: 25,
+                last_cast: SystemTime::UNIX_EPOCH,
+                effects: vec![AttributeEffect {
+                    attribute_type: AttributeType::HealthPoints,
+                    modifier_value: -20,
+                }],
+                ability_type,
+            },
+            AbilityType::Heal => Ability {
+                cooldown: 5f32,
+                mana_cost: 35,
+                last_cast: SystemTime::UNIX_EPOCH,
+                effects: vec![AttributeEffect {
+                    attribute_type: AttributeType::HealthPoints,
+                    modifier_value: 50,
+                }],
+                ability_type,
+            },
         }
     }
     pub fn can_be_casted(&self, entity: &Entity) -> bool {

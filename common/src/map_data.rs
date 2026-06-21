@@ -45,7 +45,7 @@ impl BitMap {
                     self.set_wall(x, y);
                     continue;
                 }
-                
+
                 let dist_x = (x as f32 - center_x + 0.5).abs() as i32;
                 let dist_y = (y as f32 - center_y + 0.5).abs() as i32;
 
@@ -54,6 +54,19 @@ impl BitMap {
 
                 if is_obstacle_x && is_obstacle_y {
                     self.set_wall(x, y);
+                }
+            }
+        }
+
+        // Clear a small area around the center for player spawn
+        let spawn_radius = 2;
+        for y in (center_y as i32 - spawn_radius)..=(center_y as i32 + spawn_radius) {
+            for x in (center_x as i32 - spawn_radius)..=(center_x as i32 + spawn_radius) {
+                if x > 0 && x < MAP_WIDTH as i32 - 1 && y > 0 && y < MAP_HEIGHT as i32 - 1 {
+                    // Clear the wall bit to create an empty space
+                    let bucket = (x as usize) / 64;
+                    let bit = (x as usize) % 64;
+                    self.data[y as usize][bucket] &= !(1 << bit);
                 }
             }
         }

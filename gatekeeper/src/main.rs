@@ -1,4 +1,3 @@
-mod db;
 mod routes;
 
 use axum::{
@@ -13,7 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Clone)]
 pub struct AppState {
     pub redis: RedisClient,
-    pub supabase: db::SupabaseClient,
+    pub supabase: common::supabase::SupabaseClient,
 }
 
 #[tokio::main]
@@ -32,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let redis = RedisClient::connect(&redis_url)
         .await
         .map_err(|e| anyhow::anyhow!("Redis connection failed: {e}"))?;
-    let supabase = db::SupabaseClient::new(&supabase_url, supabase_key);
+    let supabase = common::supabase::SupabaseClient::new(&supabase_url, supabase_key);
 
     let state = AppState { redis, supabase };
 

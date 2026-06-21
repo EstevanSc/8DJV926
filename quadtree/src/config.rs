@@ -1,4 +1,3 @@
-﻿
 pub struct Config {
     pub world_size: f64,
     pub max_capacity: usize,

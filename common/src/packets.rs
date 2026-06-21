@@ -6,7 +6,19 @@ use wincode::{SchemaRead, SchemaWrite};
 // Unreliable datagrams — sent every tick via QUIC unreliable datagrams.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Encode, Decode, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Encode,
+    Decode,
+    Serialize,
+    Deserialize,
+    SchemaWrite,
+    SchemaRead,
+    PartialEq,
+    Eq,
+)]
 pub enum SnapshotAuthority {
     Owned,
     PendingHandOff,

@@ -19,7 +19,10 @@ pub fn on_check_nearby(
     query: Query<(&AiPosition, &Perception)>,
     mut commands: Commands,
 ) {
-    tracing::debug!("CheckNearby triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::debug!(
+        "CheckNearby triggered for entity {:?}",
+        trigger.event().ctx().target_entity()
+    );
     tracing::debug!("Perception query: {:?}", query.iter().collect::<Vec<_>>());
     let ctx = trigger.event().ctx();
 
@@ -48,7 +51,10 @@ pub fn on_chase(
     mut query: Query<(&AiPosition, &Perception, &mut AiIntent)>,
     mut commands: Commands,
 ) {
-    tracing::debug!("Chase triggered for entity {:?}", trigger.event().ctx().target_entity());
+    tracing::debug!(
+        "Chase triggered for entity {:?}",
+        trigger.event().ctx().target_entity()
+    );
     let ctx = trigger.event().ctx();
 
     let Ok((pos, perception, mut intent)) = query.get_mut(ctx.target_entity()) else {
@@ -56,9 +62,10 @@ pub fn on_chase(
         return;
     };
 
-    let nearest = perception.nearby.iter().min_by(|a, b| {
-        dist2(pos, a.1).partial_cmp(&dist2(pos, b.1)).unwrap()
-    });
+    let nearest = perception
+        .nearby
+        .iter()
+        .min_by(|a, b| dist2(pos, a.1).partial_cmp(&dist2(pos, b.1)).unwrap());
 
     match nearest {
         Some((_, target_pos)) => {

@@ -15,3 +15,4 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 game_sockets = { workspace = true }
+reqwest = { workspace = true }
