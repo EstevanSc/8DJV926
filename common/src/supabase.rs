@@ -78,7 +78,10 @@ impl SupabaseClient {
             .headers(self.auth_headers())
             .query(&[
                 ("player_name", format!("eq.{name}")),
-                ("select", "id,player_name,password,log_out_position_x,log_out_position_y".to_string()),
+                (
+                    "select",
+                    "id,player_name,password,log_out_position_x,log_out_position_y".to_string(),
+                ),
             ])
             .send()
             .await
@@ -120,7 +123,12 @@ impl SupabaseClient {
     }
 
     /// Update a player's logout coordinates.
-    pub async fn update_player_position(&self, name: &str, x: f32, y: f32) -> anyhow::Result<PlayerRow> {
+    pub async fn update_player_position(
+        &self,
+        name: &str,
+        x: f32,
+        y: f32,
+    ) -> anyhow::Result<PlayerRow> {
         let mut rows: Vec<PlayerRow> = self
             .http
             .patch(format!("{}/PlayerInformation", self.base_url))

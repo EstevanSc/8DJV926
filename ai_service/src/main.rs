@@ -11,10 +11,10 @@ use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use tokio::runtime::Runtime;
 
+use behaviour::BehaviourPlugin;
 use bridge::{BridgePlugin, TokioRuntime};
 use config::Config;
 use spawn_manager::SpawnPlugin;
-use behaviour::BehaviourPlugin;
 
 fn main() {
     let config = Config::from_env();

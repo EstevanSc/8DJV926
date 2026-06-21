@@ -530,4 +530,3 @@ pub fn serialize_db_name_response_payload(payload: &DbNameResponsePayload) -> Ve
 pub fn deserialize_db_name_response_payload(bytes: &[u8]) -> Option<DbNameResponsePayload> {
     wincode::deserialize(bytes).ok()
 }
-

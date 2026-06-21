@@ -506,7 +506,10 @@ fn poll_join_task(
                         });
                         text.0 = format!(
                             "Login successful!\nPlayer Spawn Position: ({}, {})\nBroker: {}:{}\nConnecting in 2s...",
-                            resp.player_spawn_position[0], resp.player_spawn_position[1], resp.broker_ip, resp.broker_port,
+                            resp.player_spawn_position[0],
+                            resp.player_spawn_position[1],
+                            resp.broker_ip,
+                            resp.broker_port,
                         );
                         color.0 = Color::srgb(0.2, 0.9, 0.2);
                         commands.insert_resource(TransitionTimer(Timer::from_seconds(

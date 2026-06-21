@@ -3,8 +3,9 @@ use common::broker_api::BrokerClient;
 use common::broker_messages::SendingSystem;
 use common::supabase::SupabaseClient;
 use common::topics::{
-    Topic, deserialize_db_query_payload, deserialize_db_register_username_payload,
-    deserialize_db_name_request_payload, serialize_db_name_response_payload, DbNameResponsePayload,
+    DbNameResponsePayload, Topic, deserialize_db_name_request_payload,
+    deserialize_db_query_payload, deserialize_db_register_username_payload,
+    serialize_db_name_response_payload,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -88,11 +89,14 @@ async fn run_main_loop(supabase: SupabaseClient, mut client: BrokerClient) {
                     Topic::DbNameRequest => {
                         if let Some(req_payload) = deserialize_db_name_request_payload(&payload) {
                             if let Some(player_name) = player_map.get(&req_payload.player_id) {
-                                let response_payload = serialize_db_name_response_payload(&DbNameResponsePayload {
-                                    username: player_name.clone(),
-                                });
+                                let response_payload =
+                                    serialize_db_name_response_payload(&DbNameResponsePayload {
+                                        username: player_name.clone(),
+                                    });
                                 let target_topic = Topic::DbNameResponse(req_payload.player_id);
-                                if let Err(e) = client.publish_raw(target_topic, &response_payload).await {
+                                if let Err(e) =
+                                    client.publish_raw(target_topic, &response_payload).await
+                                {
                                     tracing::error!("Failed to publish DbNameResponse: {:?}", e);
                                 } else {
                                     tracing::info!(
@@ -101,7 +105,10 @@ async fn run_main_loop(supabase: SupabaseClient, mut client: BrokerClient) {
                                     );
                                 }
                             } else {
-                                tracing::warn!("Name requested for unknown player_id={}", req_payload.player_id);
+                                tracing::warn!(
+                                    "Name requested for unknown player_id={}",
+                                    req_payload.player_id
+                                );
                             }
                         } else {
                             tracing::error!("Failed to deserialize DbNameRequestPayload");

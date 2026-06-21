@@ -179,7 +179,6 @@ async fn handle_shard_update(
     Ok(())
 }
 
-
 /// Find multiple available ports for new game servers.
 async fn find_available_ports(
     redis: &RedisClient,

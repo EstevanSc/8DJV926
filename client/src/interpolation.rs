@@ -6,8 +6,8 @@ use common::topics::Topic;
 
 use super::net::{
     ActivePeer, AttributeUpdatedReceived, AuthorityDebugPacketReceived, BrokerConn,
-    BrokerControlStream, DisconnectReceived, PositionUpdateReceived,
-    QuadtreeBoundariesUpdateReceived, LevelUpReceived, XPEarnedReceived,
+    BrokerControlStream, DisconnectReceived, LevelUpReceived, PositionUpdateReceived,
+    QuadtreeBoundariesUpdateReceived, XPEarnedReceived,
 };
 use super::{GameSession, GameState};
 
@@ -353,8 +353,6 @@ fn spawn_remote_players(
                                     );
                                 }
 
-
-
                                 // Then publish the name request
                                 let publish =
                                     common::broker_messages::BrokerMessage::serialize_publish(
@@ -392,7 +390,12 @@ fn spawn_remote_players(
                             target: pos,
                             prev: pos,
                         },
-                        PlayerStats { hp: 100, mp: 100, level: 0, xp: 0 },
+                        PlayerStats {
+                            hp: 100,
+                            mp: 100,
+                            level: 0,
+                            xp: 0,
+                        },
                         SelfPlayer,
                         Mesh2d(meshes.add(Circle::new(16.0))),
                         MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
@@ -448,7 +451,12 @@ fn spawn_remote_players(
                             target: pos,
                             prev: pos,
                         },
-                        PlayerStats { hp: 100, mp: 100, level: 0, xp: 0 },
+                        PlayerStats {
+                            hp: 100,
+                            mp: 100,
+                            level: 0,
+                            xp: 0,
+                        },
                         Mesh2d(meshes.add(Circle::new(16.0))),
                         MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
                         Transform::from_translation(pos.extend(0.0)),

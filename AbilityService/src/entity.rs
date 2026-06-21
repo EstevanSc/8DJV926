@@ -1,10 +1,11 @@
-﻿use crate::ability::Ability;
+use crate::ability::Ability;
 use crate::attribute::Attribute;
 use common::ability_type::AbilityType;
 use common::attribute_type::AttributeType;
 use std::collections::HashMap;
 
 pub struct Entity {
+    #[allow(dead_code)]
     pub entity_id: uuid::Uuid,
     pub experience_points: i32,
     pub level: i32,

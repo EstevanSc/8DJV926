@@ -1,9 +1,9 @@
 //! QUIC client wrapper used by the quadtree for separate orchestrator and broker connections.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use common::topics::Topic;
 use common::broker_messages::{BrokerMessage, SendingSystem};
+use common::topics::Topic;
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use std::time::Duration;
@@ -62,7 +62,11 @@ impl QuicClient {
             .with_context(|| format!("Failed to create {} control stream", label))?;
         let control_stream = Self::wait_for_reliable_stream(&mut peer, label, connection).await?;
 
-        tracing::info!("{} QUIC link connected (id={:?})", label, connection.connection_id);
+        tracing::info!(
+            "{} QUIC link connected (id={:?})",
+            label,
+            connection.connection_id
+        );
 
         Ok(Self {
             peer,
@@ -100,11 +104,7 @@ impl QuicClient {
                         connection: stream_connection,
                         inner,
                     } if stream_connection == connection => {
-                        return Err(anyhow!(
-                            "{} control stream setup error: {}",
-                            label,
-                            inner
-                        ));
+                        return Err(anyhow!("{} control stream setup error: {}", label, inner));
                     }
                     _ => {}
                 }
@@ -123,7 +123,8 @@ impl QuicClient {
     }
 
     pub fn poll(&mut self) -> Result<Option<GameNetworkEvent>> {
-        GamePeer::poll(&mut self.peer).map_err(|e| anyhow!("{} link poll failed: {}", self.label, e))
+        GamePeer::poll(&mut self.peer)
+            .map_err(|e| anyhow!("{} link poll failed: {}", self.label, e))
     }
 
     pub fn connection_id(&self) -> Uuid {
@@ -147,7 +148,11 @@ impl QuicClient {
     }
 
     pub async fn announce_connect(&self, client_id: Uuid) -> Result<()> {
-        self.send_bytes(BrokerMessage::serialize_connect(client_id, SendingSystem::PathingService), "connect").await
+        self.send_bytes(
+            BrokerMessage::serialize_connect(client_id, SendingSystem::PathingService),
+            "connect",
+        )
+        .await
     }
 
     pub async fn publish(&self, topic: Topic, payload: &[u8]) -> Result<()> {

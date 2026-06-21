@@ -3,6 +3,7 @@ use avian2d::{math::*, prelude::*};
 use bevy::prelude::*;
 use common::ability_type::AbilityType;
 
+/*
 pub struct FireballPlugin;
 
 impl Plugin for FireballPlugin {
@@ -10,7 +11,7 @@ impl Plugin for FireballPlugin {
         app.add_systems(FixedUpdate, handle_fireball_collisions);
     }
 }
-
+*/
 #[derive(Component)]
 pub struct Fireball;
 
@@ -18,9 +19,11 @@ pub struct Fireball;
 pub struct Caster(pub Entity);
 
 #[derive(Component)]
+#[allow(dead_code)]
 pub struct Speed(pub Scalar);
 
 #[derive(Component)]
+#[allow(dead_code)]
 pub struct Direction(pub Vector);
 
 #[derive(Bundle)]
@@ -57,7 +60,7 @@ impl FireballBundle {
 }
 
 pub fn handle_fireball_collisions(
-    mut commands: Commands,
+    //mut commands: Commands,
     mut collision_events: MessageReader<CollisionStart>,
     mut hit_writer: MessageWriter<AbilityHitEntity>,
     fireball_query: Query<(Entity, &Caster, &Direction, &Transform), With<Fireball>>,

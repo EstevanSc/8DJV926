@@ -6,9 +6,9 @@ use bevy_behave::prelude::*;
 
 use actions::{
     chase::{on_chase, on_check_nearby},
+    fireball::{on_cast_fireball, on_check_aggro_distance},
+    heal::{on_cast_heal, on_check_low_health},
     patrol::on_patrol,
-    heal::{on_check_low_health, on_cast_heal},
-    fireball::{on_check_aggro_distance, on_cast_fireball},
 };
 
 /// Bevy plugin that registers the behaviour tree plugin and all action observers.

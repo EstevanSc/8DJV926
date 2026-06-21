@@ -45,7 +45,7 @@ impl BitMap {
                     self.set_wall(x, y);
                     continue;
                 }
-                
+
                 let dist_x = (x as f32 - center_x + 0.5).abs() as i32;
                 let dist_y = (y as f32 - center_y + 0.5).abs() as i32;
 

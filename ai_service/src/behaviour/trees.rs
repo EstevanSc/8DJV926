@@ -1,5 +1,5 @@
-use bevy_behave::prelude::*;
 use bevy_behave::ego_tree::Tree;
+use bevy_behave::prelude::*;
 use uuid::Uuid;
 
 use super::actions::chase::{Chase, CheckNearby};

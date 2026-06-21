@@ -10,7 +10,7 @@ use super::server::{BrokerPeer, publish_player_position, publish_to_topic, send_
 use crate::abilities::fireball::{FireballBundle, handle_fireball_collisions};
 use bevy::prelude::*;
 use common::ability_type::AbilityType;
-use common::ability_type::AbilityType::Fireball;
+//use common::ability_type::AbilityType::Fireball;
 
 pub struct SimulationPlugin;
 
@@ -292,7 +292,10 @@ fn cast_ability(
 ) {
     for ev in events.read() {
         let Ok(spawn_translation) = caster_query.get(ev.caster).map(|t| t.translation) else {
-            tracing::warn!("Blocked casting from dead or non-existent entity {:?}", ev.caster);
+            tracing::warn!(
+                "Blocked casting from dead or non-existent entity {:?}",
+                ev.caster
+            );
             continue;
         };
 

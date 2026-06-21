@@ -1,10 +1,12 @@
-﻿use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
-use game_sockets;
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
-use game_sockets::protocols::QuicBackend;
-use common::broker_messages::{BrokerMessage};
+use common::broker_messages::BrokerMessage;
 use common::topics::Topic;
+use game_sockets;
+use game_sockets::protocols::QuicBackend;
+use game_sockets::{
+    GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability,
+};
+use std::collections::{HashMap, HashSet};
 
 pub struct BrokerConfig {
     pub ip: String,
@@ -99,35 +101,61 @@ impl BrokerState {
         }
     }
 
-    fn handle_message(&mut self, data: Bytes, connection: GameConnection, connection_map: &mut HashMap<uuid::Uuid, GameConnection>) {
+    fn handle_message(
+        &mut self,
+        data: Bytes,
+        connection: GameConnection,
+        connection_map: &mut HashMap<uuid::Uuid, GameConnection>,
+    ) {
         let message = match BrokerMessage::deserialize(&data) {
             Some(msg) => msg,
             None => {
-                eprintln!("Received malformed or unknown packet tag from {:?}", connection.connection_id);
+                eprintln!(
+                    "Received malformed or unknown packet tag from {:?}",
+                    connection.connection_id
+                );
                 return;
             }
         };
 
         match message {
             BrokerMessage::Subscribe { client_id, topic } => {
-                let topic_desc = Topic::from_bytes(topic); 
-                println!("Broker: Subscribe - conn_id={:?}, topic={:?}", client_id, topic_desc);
+                let topic_desc = Topic::from_bytes(topic);
+                println!(
+                    "Broker: Subscribe - conn_id={:?}, topic={:?}",
+                    client_id, topic_desc
+                );
                 if let Some(existing_connection) = connection_map.get(&client_id) {
-                    self.subscriptions.entry(topic).or_default().insert(*existing_connection);
+                    self.subscriptions
+                        .entry(topic)
+                        .or_default()
+                        .insert(*existing_connection);
                 }
             }
             BrokerMessage::Unsubscribe { client_id, topic } => {
                 let topic_desc = Topic::from_bytes(topic);
-                println!("Broker: Unsubscribe - conn_id={:?}, topic={:?}", client_id, topic_desc);
+                println!(
+                    "Broker: Unsubscribe - conn_id={:?}, topic={:?}",
+                    client_id, topic_desc
+                );
                 if let Some(existing_connection) = connection_map.get(&client_id) {
-                    self.subscriptions.entry(topic).or_default().remove(existing_connection);  
+                    self.subscriptions
+                        .entry(topic)
+                        .or_default()
+                        .remove(existing_connection);
                 }
             }
             BrokerMessage::Publish { topic, payload } => {
                 self.publish(topic, payload);
             }
-            BrokerMessage::Connect { client_id, sending_system } => {
-                println!("Broker: Connect from conn_id={:?}, sending_system={:?}", client_id, sending_system);
+            BrokerMessage::Connect {
+                client_id,
+                sending_system,
+            } => {
+                println!(
+                    "Broker: Connect from conn_id={:?}, sending_system={:?}",
+                    client_id, sending_system
+                );
                 connection_map.insert(client_id, connection);
             }
             _ => {}
@@ -147,16 +175,33 @@ impl BrokerState {
                 Topic::QuadtreeBoundariesUpdate => {}
                 Topic::PathRequest => {}
                 Topic::PathResponse(_) => {}
-                _ => println!("Broker: publishing {:?} to {} subscribers. The ids of the subscribers are {:?}", topic_desc, subscribers.len(), subscribers.iter().map(|c| c.connection_id).collect::<Vec<_>>()),
+                _ => println!(
+                    "Broker: publishing {:?} to {} subscribers. The ids of the subscribers are {:?}",
+                    topic_desc,
+                    subscribers.len(),
+                    subscribers
+                        .iter()
+                        .map(|c| c.connection_id)
+                        .collect::<Vec<_>>()
+                ),
             }
 
             for conn in subscribers {
-                if let Err(e) = self.peer.send(conn, &self.broker_stream, bytes_payload.clone()) {
-                    eprintln!("Failed to forward publish to {:?}: {:?}", conn.connection_id, e);
+                if let Err(e) = self
+                    .peer
+                    .send(conn, &self.broker_stream, bytes_payload.clone())
+                {
+                    eprintln!(
+                        "Failed to forward publish to {:?}: {:?}",
+                        conn.connection_id, e
+                    );
                 }
             }
         } else {
-            println!("Broker: no subscribers for topic {:?}", Topic::from_bytes(topic));
+            println!(
+                "Broker: no subscribers for topic {:?}",
+                Topic::from_bytes(topic)
+            );
         }
     }
 }
