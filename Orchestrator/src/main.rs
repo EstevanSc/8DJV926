@@ -81,12 +81,12 @@ async fn main() {
         let scaler_redis = redis.clone();
         let ds_base_port = config.ds_base_port;
         let quic_port = config.quic_port;
-        
+
         // Start QUIC server to listen for shard updates from quadtree
         match quic_server::start_quic_server(quic_port).await {
             Ok(rx) => {
                 tracing::info!("QUIC server started on port {}", quic_port);
-                
+
                 // Start shard handler to process shard updates
                 match docker_ops::connect() {
                     Ok(docker) => {
@@ -103,7 +103,9 @@ async fn main() {
                         });
                     }
                     Err(e) => {
-                        tracing::error!("Failed to connect to Docker daemon — shard handler disabled: {e}");
+                        tracing::error!(
+                            "Failed to connect to Docker daemon — shard handler disabled: {e}"
+                        );
                     }
                 }
             }

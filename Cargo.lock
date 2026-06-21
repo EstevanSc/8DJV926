@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "AbilityService"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
+ "dotenv",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "GameServer"
 version = "0.1.0"
 dependencies = [
@@ -2347,10 +2360,16 @@ dependencies = [
 name = "common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bitcode",
+ "bytes",
+ "game_sockets",
  "redis",
+ "reqwest",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
  "uuid",
  "wincode",
 ]
@@ -2729,6 +2748,23 @@ name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "database_service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "common",
+ "dotenv",
+ "game_sockets",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wincode",
+]
 
 [[package]]
 name = "deranged"

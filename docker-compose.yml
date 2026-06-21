@@ -105,7 +105,7 @@ services:
       QUADTREE_ORCHESTRATOR_PORT: "5000"
       QUADTREE_BROKER_HOST: "broker"
       QUADTREE_BROKER_PORT: "7776"
-      QUADTREE_ENTITY_ADD_INTERVAL_MS: "${QUADTREE_ENTITY_ADD_INTERVAL_MS}"
+      QUADTREE_TICK_MS: "${QUADTREE_TICK_MS}"
       QUADTREE_AREA_OF_INTEREST_RADIUS : "${QUADTREE_AREA_OF_INTEREST_RADIUS}"
       RUST_LOG: info
     depends_on:
@@ -155,7 +155,38 @@ services:
     image: game-server:latest
     deploy:
       replicas: 0
+  ability-service:
+    build:
+      context: .
+      dockerfile: AbilityService/Dockerfile
+    image: ability-service:latest
+    networks:
+      - game-net
+    depends_on:
+      broker:
+        condition: service_started
+    environment:
+      BROKER_HOST: "broker"
+      BROKER_PORT: "7776"
+      ABILITY_SERVICE_TICK_MS: 50
+      RUST_LOG: info
 
+  database-service:
+    build:
+      context: .
+      dockerfile: database_service/Dockerfile
+    image: database-service:latest
+    networks:
+      - game-net
+    depends_on:
+      broker:
+        condition: service_started
+    environment:
+      BROKER_HOST: "broker"
+      BROKER_PORT: "7776"
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      RUST_LOG: info
 
   # ── AI Service ───────────────────────────────────────────────────────────
   # Headless Bevy service that spawns AI entities and manages their behaviour trees.
@@ -175,4 +206,3 @@ services:
       - broker
       - quadtree
     restart: unless-stopped
- 

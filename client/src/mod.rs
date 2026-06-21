@@ -3,8 +3,8 @@ pub mod interpolation;
 pub mod login;
 pub mod net;
 
-use bevy::prelude::*;
 use bevy::log::LogPlugin;
+use bevy::prelude::*;
 
 use self::input::ClientInputPlugin;
 use self::interpolation::InterpolationPlugin;
@@ -15,10 +15,10 @@ use self::net::ClientNetPlugin;
 #[derive(Resource, Clone)]
 #[allow(dead_code)] // server_ip / server_port used when real QUIC connection is implemented
 pub struct GameSession {
-    pub player_id: String,
     pub username: String,
     pub broker_ip: String,
     pub broker_port: u16,
+    pub player_spawn_position: [f32; 2],
 }
 
 /// Top-level app states.
@@ -36,19 +36,21 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     App::new()
-        .add_plugins(DefaultPlugins
-            .set(LogPlugin {
-                filter: "info,client=debug".to_string(),
-                ..default()
-            })
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Extraction MMO".to_string(),
-                    resolution: bevy::window::WindowResolution::new(1280_u32, 720_u32),
+        .add_plugins(
+            DefaultPlugins
+                .set(LogPlugin {
+                    filter: "info,client=debug".to_string(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Extraction MMO".to_string(),
+                        resolution: bevy::window::WindowResolution::new(1280_u32, 720_u32),
+                        ..default()
+                    }),
                     ..default()
                 }),
-                ..default()
-            }))
+        )
         .init_state::<GameState>()
         .add_plugins(LoginPlugin)
         .add_plugins(ClientNetPlugin)

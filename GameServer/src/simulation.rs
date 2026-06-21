@@ -1,14 +1,16 @@
 use avian2d::{math::*, prelude::*};
-use common::topics::PositionPayload;
 use common::map_data::{BitMap, MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
+use common::topics::PositionPayload;
 
 use std::collections::HashMap;
 
-use bevy::prelude::*;
-
-use super::net::{SimCommand, SimCommandReceiver};
-use super::server::{publish_player_position, BrokerPeer, send_claim_ownership};
 use super::char_controller::*;
+use super::net::{SimCommand, SimCommandReceiver, SimCommandSender};
+use super::server::{BrokerPeer, publish_player_position, publish_to_topic, send_claim_ownership};
+use crate::abilities::fireball::{FireballBundle, handle_fireball_collisions};
+use bevy::prelude::*;
+use common::ability_type::AbilityType;
+//use common::ability_type::AbilityType::Fireball;
 
 pub struct SimulationPlugin;
 
@@ -20,24 +22,40 @@ const FLOOR_RESTITUTION: f32 = 0.0;
 
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .add_plugins((
+        app.add_plugins((
             PhysicsPlugins::default().with_length_unit(20.0),
             CharacterControllerPlugin,
-            ))
-            .init_resource::<InputBuffer>()
-            .add_message::<SpawnNetEntity>()
-            .add_message::<DespawnNetEntity>()
-            .add_message::<ClaimAsLocalPlayer>()
-            .add_message::<MarkAsGhost>()
-            .add_systems(Startup, spawn_map)
-            .add_systems(FixedUpdate, process_net_commands)
-            .add_systems(FixedUpdate, (spawn_net_entities).after(process_net_commands))
-            .add_systems(FixedUpdate, (claim_ghosts, mark_locals_as_ghosts).after(spawn_net_entities))
-            .add_systems(FixedUpdate, despawn_net_entities.after(claim_ghosts))
-            .add_systems(FixedUpdate, apply_inputs.after(despawn_net_entities))
-            .add_systems(FixedUpdate,publish_entity_positions.after(apply_inputs)
-            );
+        ))
+        .init_resource::<InputBuffer>()
+        .add_message::<SpawnNetEntity>()
+        .add_message::<DespawnNetEntity>()
+        .add_message::<ClaimAsLocalPlayer>()
+        .add_message::<MarkAsGhost>()
+        .add_message::<CastAbility>()
+        .add_message::<AbilityHitEntity>()
+        .add_systems(Startup, spawn_map)
+        .add_systems(FixedUpdate, process_net_commands)
+        .add_systems(
+            FixedUpdate,
+            (spawn_net_entities).after(process_net_commands),
+        )
+        .add_systems(
+            FixedUpdate,
+            (claim_ghosts, mark_locals_as_ghosts).after(spawn_net_entities),
+        )
+        .add_systems(FixedUpdate, despawn_net_entities.after(claim_ghosts))
+        .add_systems(FixedUpdate, apply_inputs.after(despawn_net_entities))
+        .add_systems(FixedUpdate, publish_entity_positions.after(apply_inputs))
+        .add_systems(
+            FixedUpdate,
+            (
+                cast_ability,
+                handle_fireball_collisions.after(cast_ability),
+                publish_ability_hits
+                    .after(cast_ability)
+                    .after(handle_fireball_collisions),
+            ),
+        );
     }
 }
 
@@ -61,6 +79,9 @@ pub struct Ghost;
 pub struct NetEntity {
     pub connection_id: uuid::Uuid,
 }
+
+#[derive(Component, Clone)]
+pub struct Dead;
 
 // ---------------------------------------------------------------------------
 // Events
@@ -91,6 +112,20 @@ pub struct MarkAsGhost {
     pub receiver_shard_id: uuid::Uuid,
 }
 
+#[derive(Message)]
+pub struct CastAbility {
+    pub caster: Entity,
+    pub ability_type: AbilityType,
+    pub direction: Option<Vec2>,
+}
+
+#[derive(Message)]
+pub struct AbilityHitEntity {
+    pub caster: Entity,
+    pub hit_entity: Entity,
+    pub ability_type: AbilityType,
+}
+
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
@@ -107,8 +142,10 @@ fn spawn_map(mut commands: Commands) {
                 // 1. Convert tile coordinate to initial world space
                 // 2. Subtract half-map size to center it at (0,0)
                 // 3. Add 4.0 (half of tile size) so the anchor aligns to the center of the asset mesh
-                let world_x = (x as f32 * TILE_SIZE) - (MAP_WIDTH as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
-                let world_y = (y as f32 * TILE_SIZE) - (MAP_HEIGHT as f32 * TILE_SIZE / 2.0) + (TILE_SIZE / 2.0);
+                let world_x = (x as f32 * TILE_SIZE) - (MAP_WIDTH as f32 * TILE_SIZE / 2.0)
+                    + (TILE_SIZE / 2.0);
+                let world_y = (y as f32 * TILE_SIZE) - (MAP_HEIGHT as f32 * TILE_SIZE / 2.0)
+                    + (TILE_SIZE / 2.0);
 
                 commands.spawn((
                     Transform::from_translation(Vec3::new(world_x, world_y, 0.0)),
@@ -122,10 +159,7 @@ fn spawn_map(mut commands: Commands) {
     }
 }
 
-fn spawn_net_entities(
-    mut commands: Commands,
-    mut events: MessageReader<SpawnNetEntity>,
-) {
+fn spawn_net_entities(mut commands: Commands, mut events: MessageReader<SpawnNetEntity>) {
     for ev in events.read() {
         if ev.is_ghost {
             commands.spawn((
@@ -134,20 +168,21 @@ fn spawn_net_entities(
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
-                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING),
+                CharacterControllerBundle::new(Collider::circle(16.0))
+                    .with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING),
                 Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
                 Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
                 ColliderDensity(PLAYER_COLLIDER_DENSITY),
                 GravityScale(PLAYER_GRAVITY_SCALE),
             ));
-        }
-        else {
+        } else {
             commands.spawn((
                 ev.net_entity.clone(),
                 Transform::from_translation(ev.position.extend(0.0)),
                 GlobalTransform::default(),
                 CollisionEventsEnabled,
-                CharacterControllerBundle::new(Collider::circle(16.0)).with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING),
+                CharacterControllerBundle::new(Collider::circle(16.0))
+                    .with_movement(PLAYER_MOVEMENT_ACCELERATION, PLAYER_MOVEMENT_DAMPING),
                 Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
                 Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
                 ColliderDensity(PLAYER_COLLIDER_DENSITY),
@@ -182,15 +217,21 @@ fn claim_ghosts(
     mut commands: Commands,
     mut events: MessageReader<ClaimAsLocalPlayer>,
     query: Query<(Entity, &NetEntity), With<Ghost>>,
-){
+) {
     for ev in events.read() {
         for (entity, net_entity) in &query {
             if net_entity.connection_id == ev.connection_id {
                 commands.entity(entity).remove::<Ghost>();
                 let velocity = Vec2::new(ev.speed[0] as f32, ev.speed[1] as f32);
                 commands.entity(entity).insert(LinearVelocity(velocity));
-                commands.entity(entity).insert(Transform::from_translation(Vec3::new(ev.position[0] as f32, ev.position[1] as f32, 0.0)));
-                
+                commands
+                    .entity(entity)
+                    .insert(Transform::from_translation(Vec3::new(
+                        ev.position[0] as f32,
+                        ev.position[1] as f32,
+                        0.0,
+                    )));
+
                 tracing::info!(connection_id = %ev.connection_id, "Claimed Ghost as Local Player");
                 break;
             }
@@ -201,24 +242,32 @@ fn claim_ghosts(
 fn mark_locals_as_ghosts(
     mut commands: Commands,
     mut events: MessageReader<MarkAsGhost>,
-    query: Query<(Entity, &NetEntity, Option<&LinearVelocity>, Option<&Transform>), Without<Ghost>>,
+    query: Query<
+        (
+            Entity,
+            &NetEntity,
+            Option<&LinearVelocity>,
+            Option<&Transform>,
+        ),
+        Without<Ghost>,
+    >,
     broker: Option<Res<BrokerPeer>>,
 ) {
     for ev in events.read() {
         for (entity, net_entity, velocity, transform) in &query {
             if net_entity.connection_id == ev.connection_id {
                 commands.entity(entity).insert(Ghost);
-                
+
                 let speed = velocity
                     .map(|vel| [vel.x as f64, vel.y as f64])
                     .unwrap_or([0.0, 0.0]);
-                
+
                 let position = transform
                     .map(|t| [t.translation.x as f64, t.translation.y as f64])
                     .unwrap_or([0.0, 0.0]);
-                
+
                 tracing::info!(connection_id = %ev.connection_id, "Marked Local Player as Ghost");
-                
+
                 // Publish the claim ownership message to the new shard so it can get the authority directly
                 if let Some(broker) = &broker {
                     send_claim_ownership(
@@ -235,6 +284,49 @@ fn mark_locals_as_ghosts(
     }
 }
 
+fn cast_ability(
+    mut commands: Commands,
+    mut events: MessageReader<CastAbility>,
+    mut hit_writer: MessageWriter<AbilityHitEntity>,
+    caster_query: Query<&Transform, Without<Dead>>,
+) {
+    for ev in events.read() {
+        let Ok(spawn_translation) = caster_query.get(ev.caster).map(|t| t.translation) else {
+            tracing::warn!(
+                "Blocked casting from dead or non-existent entity {:?}",
+                ev.caster
+            );
+            continue;
+        };
+
+        match ev.ability_type {
+            AbilityType::Heal => {
+                tracing::info!("Heal ability casted by {:?}", ev.caster);
+                hit_writer.write(AbilityHitEntity {
+                    caster: ev.caster,
+                    hit_entity: ev.caster,
+                    ability_type: AbilityType::Heal,
+                });
+            }
+            AbilityType::Fireball => {
+                let raw_direction = ev.direction.unwrap_or_else(|| Vec2::X);
+                let direction = raw_direction.normalize();
+                tracing::info!("Fireball ability casted! Direction: {:?}", direction);
+
+                let offset = direction * 26.0;
+                let spawn_pos = spawn_translation + Vec3::new(offset.x, offset.y, 0.0);
+
+                // Spawn fireball
+                commands.spawn((
+                    FireballBundle::new(ev.caster, direction, 400.0f32),
+                    Transform::from_translation(spawn_pos),
+                    GlobalTransform::default(),
+                ));
+            }
+        }
+    }
+}
+
 fn publish_entity_positions(
     query: Query<(&Transform, &NetEntity), (With<NetEntity>, Without<Ghost>)>,
     broker: Option<Res<BrokerPeer>>,
@@ -245,16 +337,73 @@ fn publish_entity_positions(
 
     let position_payloads = query
         .iter()
-        .map(|(transform, net_entity)| (net_entity.connection_id, PositionPayload {
-            position: [
-                transform.translation.x as f64,
-                transform.translation.y as f64,
-            ],
-        }))
+        .map(|(transform, net_entity)| {
+            (
+                net_entity.connection_id,
+                PositionPayload {
+                    position: [
+                        transform.translation.x as f64,
+                        transform.translation.y as f64,
+                    ],
+                },
+            )
+        })
         .collect::<Vec<(uuid::Uuid, PositionPayload)>>();
 
     for (connection_id, position_payload) in position_payloads {
         publish_player_position(&broker, connection_id, position_payload);
+    }
+}
+
+fn publish_ability_hits(
+    mut events: MessageReader<AbilityHitEntity>,
+    net_query: Query<&NetEntity>,
+    broker: Option<Res<BrokerPeer>>,
+) {
+    let Some(broker) = broker else {
+        return;
+    };
+
+    for ev in events.read() {
+        let Ok(caster) = net_query.get(ev.caster) else {
+            continue;
+        };
+        let Ok(hit_entity) = net_query.get(ev.hit_entity) else {
+            continue;
+        };
+
+        let payload_bytes = common::topics::serialize_ability_hit_entity_payload(
+            &common::topics::AbilityHitEntityPayload {
+                caster_id: caster.connection_id,
+                hit_entity_id: hit_entity.connection_id,
+                ability_type: ev.ability_type.clone(),
+            },
+        );
+
+        let topic = common::topics::Topic::AbilityHitEntity;
+
+        let (Some(connection), Some(control_stream)) =
+            (broker.connection, broker.control_stream.clone())
+        else {
+            continue;
+        };
+
+        let publish_message = common::broker_messages::BrokerMessage::serialize_publish(
+            topic.to_bytes(),
+            &payload_bytes,
+        );
+
+        if let Err(e) = broker
+            .peer
+            .send(&connection, &control_stream, publish_message.into())
+        {
+            eprintln!(
+                "Failed to publish AbilityHit for entity {}: {:?}",
+                ev.hit_entity, e
+            );
+        } else {
+            tracing::info!("Successfully published AbilityHitEntity to broker.");
+        }
     }
 }
 
@@ -265,9 +414,14 @@ fn process_net_commands(
     mut despawn_writer: MessageWriter<DespawnNetEntity>,
     mut claim_as_local_writer: MessageWriter<ClaimAsLocalPlayer>,
     mut mark_as_ghost_writer: MessageWriter<MarkAsGhost>,
+    mut cast_ability_writer: MessageWriter<CastAbility>,
     mut input_buf: ResMut<InputBuffer>,
     mut query: Query<(Entity, &NetEntity, &mut Transform, Option<&LinearVelocity>)>,
     ghost_query: Query<&NetEntity, With<Ghost>>,
+    net_entities_query: Query<(Entity, &NetEntity)>,
+    broker: Option<Res<BrokerPeer>>,
+    mut commands: Commands,
+    sim_tx: Res<SimCommandSender>,
 ) {
     // Clear every tick so players with no input this tick stop moving.
     input_buf.0.clear();
@@ -275,24 +429,42 @@ fn process_net_commands(
     let rx = cmd_rx.0.lock().unwrap();
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            SimCommand::Joined { connection_id, position } => {
-                let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
+            SimCommand::Joined {
+                connection_id,
+                position,
+            } => {
+                let new_position = Vec2 {
+                    x: position.x as f32,
+                    y: position.y as f32,
+                };
                 spawn_owned_writer.write(SpawnNetEntity {
                     net_entity: NetEntity { connection_id },
                     position: new_position,
                     is_ghost: false,
                 });
             }
-            SimCommand::GhostJoined { connection_id, position } => {
-                let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
+            SimCommand::GhostJoined {
+                connection_id,
+                position,
+            } => {
+                let new_position = Vec2 {
+                    x: position.x as f32,
+                    y: position.y as f32,
+                };
                 spawn_owned_writer.write(SpawnNetEntity {
-                    net_entity: NetEntity { connection_id},
+                    net_entity: NetEntity { connection_id },
                     position: new_position,
                     is_ghost: true,
                 });
             }
-            SimCommand::GhostPositionUpdate { connection_id, position } => {
-                let new_position = Vec2 { x: position.x as f32, y: position.y as f32 };
+            SimCommand::GhostPositionUpdate {
+                connection_id,
+                position,
+            } => {
+                let new_position = Vec2 {
+                    x: position.x as f32,
+                    y: position.y as f32,
+                };
                 for (_, net_entity, mut transform, _) in &mut query {
                     if net_entity.connection_id == connection_id {
                         transform.translation = new_position.extend(transform.translation.z);
@@ -301,36 +473,155 @@ fn process_net_commands(
                 }
             }
             SimCommand::Left { connection_id } => {
+                let mut last_position = None;
+                for (_, net_entity, transform, _) in &query {
+                    if net_entity.connection_id == connection_id {
+                        last_position = Some(transform.translation);
+                        break;
+                    }
+                }
+                if let Some(pos) = last_position {
+                    if let Some(broker_peer) = &broker {
+                        let payload = common::topics::serialize_db_query_payload(
+                            &common::topics::DbQueryPayload {
+                                player_id: connection_id,
+                                x: pos.x,
+                                y: pos.y,
+                            },
+                        );
+                        publish_to_topic(
+                            broker_peer.as_ref(),
+                            common::topics::Topic::DbQuery,
+                            payload,
+                        );
+                        tracing::info!(
+                            "Sent UpdatePosition for player_id={} on disconnect to DB service (pos: {:?})",
+                            connection_id,
+                            pos
+                        );
+                    }
+                }
                 despawn_writer.write(DespawnNetEntity { connection_id });
                 input_buf.0.remove(&connection_id);
             }
-            SimCommand::GhostIsNowLocal { connection_id, speed, position } => {
+            SimCommand::GhostIsNowLocal {
+                connection_id,
+                speed,
+                position,
+            } => {
                 let mut found = false;
-                for net_entity in &ghost_query{
+                for net_entity in &ghost_query {
                     if net_entity.connection_id == connection_id {
                         found = true;
-                        println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={}", connection_id);
-                        claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id, speed, position });
+                        println!(
+                            "ClaimOwnership : Received GhostIsNowLocal for connection_id={}",
+                            connection_id
+                        );
+                        claim_as_local_writer.write(ClaimAsLocalPlayer {
+                            connection_id,
+                            speed,
+                            position,
+                        });
                         break;
                     }
                 }
                 if !found {
-                    println!("ClaimOwnership : Received GhostIsNowLocal for connection_id={} but no matching Ghost found", connection_id);
+                    println!(
+                        "ClaimOwnership : Received GhostIsNowLocal for connection_id={} but no matching Ghost found",
+                        connection_id
+                    );
                     // create the ghost
                     spawn_owned_writer.write(SpawnNetEntity {
-                        net_entity: NetEntity { connection_id},
+                        net_entity: NetEntity { connection_id },
                         position: Vec2::new(position[0] as f32, position[1] as f32),
                         is_ghost: true,
                     });
-                    claim_as_local_writer.write(ClaimAsLocalPlayer { connection_id, speed, position });
+                    claim_as_local_writer.write(ClaimAsLocalPlayer {
+                        connection_id,
+                        speed,
+                        position,
+                    });
                 }
             }
-            SimCommand::LocalIsNowGhost { connection_id, receiver_shard_id } => {
-                println!("ReleaseOwnership : Received LocalIsNowGhost for connection_id={}", connection_id);
-                mark_as_ghost_writer.write(MarkAsGhost { connection_id, receiver_shard_id });
+            SimCommand::LocalIsNowGhost {
+                connection_id,
+                receiver_shard_id,
+            } => {
+                println!(
+                    "ReleaseOwnership : Received LocalIsNowGhost for connection_id={}",
+                    connection_id
+                );
+                mark_as_ghost_writer.write(MarkAsGhost {
+                    connection_id,
+                    receiver_shard_id,
+                });
             }
-            SimCommand::Input { connection_id, dx, dy } => {
+            SimCommand::Input {
+                connection_id,
+                dx,
+                dy,
+            } => {
                 input_buf.0.insert(connection_id, Vec2::new(dx, dy));
+            }
+            SimCommand::CastAbility {
+                entity_id,
+                ability_type,
+                direction,
+            } => {
+                println!("CastAbility : {:?}", ability_type);
+                if let Some((net_entity, _)) = net_entities_query
+                    .iter()
+                    .find(|(_, net)| net.connection_id == entity_id)
+                {
+                    cast_ability_writer.write(CastAbility {
+                        caster: net_entity,
+                        ability_type,
+                        direction,
+                    });
+                } else {
+                    eprintln!(
+                        "Warning: Received CastAbility for unknown network UUID: {}",
+                        entity_id
+                    );
+                }
+            }
+            SimCommand::Died { entity_id } => {
+                println!("Died : {}", entity_id);
+                if let Some((entity, _, mut transform, _)) = query
+                    .iter_mut()
+                    .find(|(_, net, _, _)| net.connection_id == entity_id)
+                {
+                    commands.entity(entity).insert(Dead);
+                    transform.translation = Vec3::ZERO;
+                    commands
+                        .entity(entity)
+                        .insert((Position(Vec2::ZERO), LinearVelocity(Vec2::ZERO)));
+
+                    let tx = sim_tx.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        let _ = tx.0.send(SimCommand::RemoveDeadTag { entity_id });
+                    });
+                } else {
+                    eprintln!(
+                        "Warning: Received Died for unknown network UUID: {}",
+                        entity_id
+                    );
+                }
+            }
+            SimCommand::RemoveDeadTag { entity_id } => {
+                if let Some((entity, _, _, _)) = query
+                    .iter_mut()
+                    .find(|(_, net, _, _)| net.connection_id == entity_id)
+                {
+                    commands.entity(entity).remove::<Dead>();
+                    println!("RemoveDeadTag : {}", entity_id);
+                } else {
+                    eprintln!(
+                        "Warning: Received RemoveDeadTag for unknown network UUID: {}",
+                        entity_id
+                    );
+                }
             }
         }
     }
@@ -339,11 +630,14 @@ fn process_net_commands(
 /// Apply buffered player inputs via the character-controller physics.
 fn apply_inputs(
     time: Res<Time>,
-    mut query: Query<(&NetEntity, &MovementAcceleration, &mut LinearVelocity), Without<Ghost>>,
+    mut query: Query<
+        (&NetEntity, &MovementAcceleration, &mut LinearVelocity),
+        (Without<Ghost>, Without<Dead>),
+    >,
     input_buf: Res<InputBuffer>,
 ) {
     let delta_time = time.delta_secs_f64().adjust_precision();
-    
+
     for (net_entity, movement_acceleration, mut linear_velocity) in &mut query {
         if let Some(&dir) = input_buf.0.get(&net_entity.connection_id) {
             if dir.x != 0.0 {

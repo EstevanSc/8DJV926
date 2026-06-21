@@ -44,7 +44,10 @@ impl Eq for AStarNodeState {}
 
 impl Ord for AStarNodeState {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.f_cost.partial_cmp(&self.f_cost).unwrap_or(Ordering::Equal)
+        other
+            .f_cost
+            .partial_cmp(&self.f_cost)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -70,7 +73,7 @@ fn cross_product_2d(origin: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 pub fn run_a_star(graph: &Graph, start_id: usize, end_id: usize) -> Option<Vec<usize>> {
     let mut open_set = BinaryHeap::new();
     let mut came_from: HashMap<usize, usize> = HashMap::new();
-    
+
     let mut g_score: HashMap<usize, f32> = HashMap::new();
     g_score.insert(start_id, 0.0);
 
@@ -82,7 +85,10 @@ pub fn run_a_star(graph: &Graph, start_id: usize, end_id: usize) -> Option<Vec<u
         f_cost: 0.0,
     });
 
-    while let Some(AStarNodeState { node_id, g_cost, .. }) = open_set.pop() {
+    while let Some(AStarNodeState {
+        node_id, g_cost, ..
+    }) = open_set.pop()
+    {
         if node_id == end_id {
             // Reconstruct the path backwards
             let mut path = vec![end_id];
@@ -111,8 +117,8 @@ pub fn run_a_star(graph: &Graph, start_id: usize, end_id: usize) -> Option<Vec<u
 
                     let neighbor_node = graph.nodes.get(&neighbor_id)?;
                     // Manhattan distance heuristic
-                    let mut h_cost = (neighbor_node.x as f32 - goal_node.x as f32).abs() 
-                                + (neighbor_node.y as f32 - goal_node.y as f32).abs();
+                    let mut h_cost = (neighbor_node.x as f32 - goal_node.x as f32).abs()
+                        + (neighbor_node.y as f32 - goal_node.y as f32).abs();
 
                     // Multiply by a tiny fraction. This forces A* to pick the path that is most
                     // directly pointing at the goal, heavily reducing staircasing in open corridors.
@@ -138,11 +144,11 @@ pub fn run_funnel(start: [f32; 2], end: [f32; 2], portals: &[Portal]) -> Vec<[f3
     }
 
     let mut path = vec![start];
-    
+
     let mut apex = start;
     let mut left_ptr = portals[0].left;
     let mut right_ptr = portals[0].right;
-    
+
     let mut left_index = 0;
     let mut right_index = 0;
 
@@ -162,7 +168,7 @@ pub fn run_funnel(start: [f32; 2], end: [f32; 2], portals: &[Portal]) -> Vec<[f3
                 // Crossover! The funnel snapped shut onto the left boundary vertex.
                 apex = left_ptr;
                 path.push(apex);
-                
+
                 // Restart from the last snapped index point
                 i = left_index;
                 if i + 1 < portals.len() {
@@ -188,7 +194,7 @@ pub fn run_funnel(start: [f32; 2], end: [f32; 2], portals: &[Portal]) -> Vec<[f3
                 // Crossover! The funnel snapped shut onto the right boundary vertex.
                 apex = right_ptr;
                 path.push(apex);
-                
+
                 // Restart from the last snapped index point
                 i = right_index;
                 if i + 1 < portals.len() {
@@ -211,16 +217,16 @@ pub fn run_funnel(start: [f32; 2], end: [f32; 2], portals: &[Portal]) -> Vec<[f3
 }
 
 pub fn build_portals_from_nodes(
-    node_path: &[usize], 
-    graph: &Graph, 
-    tile_size: f32, 
-    offset_x: f32, 
-    offset_y: f32
+    node_path: &[usize],
+    graph: &Graph,
+    tile_size: f32,
+    offset_x: f32,
+    offset_y: f32,
 ) -> Vec<Portal> {
     let mut portals = Vec::new();
-    
+
     // REDUCED PADDING: Must be less than half of tile_size! (e.g., 8.0 or 10.0)
-    let padding = 10.0; 
+    let padding = 10.0;
 
     for window in node_path.windows(2) {
         let n1 = graph.nodes.get(&window[0]).unwrap();
@@ -230,22 +236,26 @@ pub fn build_portals_from_nodes(
         let n1_x = (n1.x as f32 * tile_size) - offset_x;
         let n1_y = (n1.y as f32 * tile_size) - offset_y;
 
-        if n2.x > n1.x { // Moving Right
+        if n2.x > n1.x {
+            // Moving Right
             portals.push(Portal {
                 left: [n1_x + tile_size, n1_y + tile_size - padding],
                 right: [n1_x + tile_size, n1_y + padding],
             });
-        } else if n2.x < n1.x { // Moving Left
+        } else if n2.x < n1.x {
+            // Moving Left
             portals.push(Portal {
                 left: [n1_x, n1_y + padding],
                 right: [n1_x, n1_y + tile_size - padding],
             });
-        } else if n2.y > n1.y { // Moving Up
+        } else if n2.y > n1.y {
+            // Moving Up
             portals.push(Portal {
                 left: [n1_x + padding, n1_y + tile_size],
                 right: [n1_x + tile_size - padding, n1_y + tile_size],
             });
-        } else if n2.y < n1.y { // Moving Down
+        } else if n2.y < n1.y {
+            // Moving Down
             portals.push(Portal {
                 left: [n1_x + tile_size - padding, n1_y],
                 right: [n1_x + padding, n1_y],
@@ -257,12 +267,12 @@ pub fn build_portals_from_nodes(
 }
 
 pub fn has_line_of_sight(
-    graph: &Graph, 
+    graph: &Graph,
     map_width: usize,
-    start_x: usize, 
-    start_y: usize, 
-    end_x: usize, 
-    end_y: usize
+    start_x: usize,
+    start_y: usize,
+    end_x: usize,
+    end_y: usize,
 ) -> bool {
     let mut x0 = start_x as i32;
     let mut y0 = start_y as i32;
@@ -278,7 +288,7 @@ pub fn has_line_of_sight(
     loop {
         // Calculate the flat ID for the current grid tile
         let node_id = (y0 as usize) * map_width + (x0 as usize);
-        
+
         // If the graph does NOT contain this node, it must be a wall!
         // Therefore, the straight line of sight is blocked.
         if !graph.nodes.contains_key(&node_id) {

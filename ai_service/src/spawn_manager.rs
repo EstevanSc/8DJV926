@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::behaviour::trees::build_tree;
 use crate::bridge::QuadtreeBoundaries;
-use crate::components::{AiEntity, AiIntent, AiPosition, PatrolRoute, Perception, AiPath};
+use crate::components::{AiEntity, AiIntent, AiPath, AiPosition, AiStats, PatrolRoute, Perception};
 use crate::config::Config;
 
 /// Bevy plugin that manages dynamic AI spawns based on Quadtree limits.
@@ -68,7 +68,11 @@ fn tick_respawns(
 
     let mut sorted_boundaries = boundaries.0.clone();
     // Sort descending by size (area proportional to half_size)
-    sorted_boundaries.sort_by(|a, b| b.half_size.partial_cmp(&a.half_size).unwrap_or(std::cmp::Ordering::Equal));
+    sorted_boundaries.sort_by(|a, b| {
+        b.half_size
+            .partial_cmp(&a.half_size)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let pct = config.spawn_top_shard_percentage.clamp(0.0, 100.0) / 100.0;
     let top_count = (sorted_boundaries.len() as f32 * pct).ceil() as usize;
@@ -86,14 +90,28 @@ fn tick_respawns(
     let padding = config.spawn_padding as f32;
 
     // Apply padding only if the shard edge coincides with the global edge, to avoid pushing spawns outside the world bounds
-    if (min_x - global_min_x).abs() < 1e-3 { min_x += padding; }
-    if (global_max_x - max_x).abs() < 1e-3 { max_x -= padding; }
-    if (min_y - global_min_y).abs() < 1e-3 { min_y += padding; }
-    if (global_max_y - max_y).abs() < 1e-3 { max_y -= padding; }
+    if (min_x - global_min_x).abs() < 1e-3 {
+        min_x += padding;
+    }
+    if (global_max_x - max_x).abs() < 1e-3 {
+        max_x -= padding;
+    }
+    if (min_y - global_min_y).abs() < 1e-3 {
+        min_y += padding;
+    }
+    if (global_max_y - max_y).abs() < 1e-3 {
+        max_y -= padding;
+    }
 
     // fallback if padding made the spawn area invalid
-    if min_x > max_x { min_x = chosen_shard.x as f32; max_x = chosen_shard.x as f32; }
-    if min_y > max_y { min_y = chosen_shard.y as f32; max_y = chosen_shard.y as f32; }
+    if min_x > max_x {
+        min_x = chosen_shard.x as f32;
+        max_x = chosen_shard.x as f32;
+    }
+    if min_y > max_y {
+        min_y = chosen_shard.y as f32;
+        max_y = chosen_shard.y as f32;
+    }
 
     let spawn_x = rng.random_range(min_x..=max_x);
     let spawn_y = rng.random_range(min_y..=max_y);
@@ -107,20 +125,39 @@ fn tick_respawns(
     }
 
     let id = Uuid::new_v4();
-    let agent = commands.spawn(AiEntity { id })
-        .insert(AiPosition { x: spawn_x, y: spawn_y })
+    let agent = commands
+        .spawn(AiEntity { id })
+        .insert(AiPosition {
+            x: spawn_x,
+            y: spawn_y,
+        })
         .insert(Perception::default())
-        .insert(AiPath { waypoints: Vec::new()})
-        .insert(PatrolRoute { waypoints, current: 0 })
+        .insert(AiPath {
+            waypoints: Vec::new(),
+        })
+        .insert(PatrolRoute {
+            waypoints,
+            current: 0,
+        })
         .insert(AiIntent::Idle)
+        .insert(AiStats {
+            health: 100,
+            max_health: 100,
+            mana: 50,
+        })
         .id();
 
     let tree = build_tree(id);
-    commands.spawn((Name::new(format!("BT-{id}")), tree))
+    commands
+        .spawn((Name::new(format!("BT-{id}")), tree))
         .insert(BehaveTargetEntity::Entity(agent));
 
     tracing::info!(
         "Spawned AI {} at ({:.1}, {:.1}) in a top {}% shard (half_size: {:.1})",
-        id, spawn_x, spawn_y, config.spawn_top_shard_percentage, chosen_shard.half_size
+        id,
+        spawn_x,
+        spawn_y,
+        config.spawn_top_shard_percentage,
+        chosen_shard.half_size
     );
 }

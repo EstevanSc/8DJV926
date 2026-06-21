@@ -1,8 +1,8 @@
 //! Shared shard data structures for quadtree and orchestrator communication.
 
 use serde::{Deserialize, Serialize};
-use wincode::{SchemaRead, SchemaWrite};
 use std::hash::{Hash, Hasher};
+use wincode::{SchemaRead, SchemaWrite};
 
 /// Boundary of a shard in 2D space (axis-aligned bounding box).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead)]
@@ -46,8 +46,7 @@ impl Boundary {
         let top = self.y - self.half_size;
         let bottom = self.y + self.half_size;
 
-        *x >= left && *x < right &&
-        *y >= top  && *y < bottom
+        *x >= left && *x < right && *y >= top && *y < bottom
     }
 
     /// Determine which quadrant a point falls into.
@@ -71,10 +70,26 @@ impl Boundary {
     pub fn subdivide(&self) -> [Boundary; 4] {
         let hs = self.half_size / 2.0;
         [
-            Boundary { x: self.x + hs, y: self.y - hs, half_size: hs }, // NE
-            Boundary { x: self.x - hs, y: self.y - hs, half_size: hs }, // NW
-            Boundary { x: self.x + hs, y: self.y + hs, half_size: hs }, // SE
-            Boundary { x: self.x - hs, y: self.y + hs, half_size: hs }, // SW
+            Boundary {
+                x: self.x + hs,
+                y: self.y - hs,
+                half_size: hs,
+            }, // NE
+            Boundary {
+                x: self.x - hs,
+                y: self.y - hs,
+                half_size: hs,
+            }, // NW
+            Boundary {
+                x: self.x + hs,
+                y: self.y + hs,
+                half_size: hs,
+            }, // SE
+            Boundary {
+                x: self.x - hs,
+                y: self.y + hs,
+                half_size: hs,
+            }, // SW
         ]
     }
 
@@ -91,8 +106,10 @@ impl Boundary {
         let range_bottom = *y + margin;
 
         // Returns true if the two AABBs overlap
-        self_left < range_right && self_right > range_left &&
-        self_top < range_bottom && self_bottom > range_top
+        self_left < range_right
+            && self_right > range_left
+            && self_top < range_bottom
+            && self_bottom > range_top
     }
 
     pub fn encode_batch(boundaries: &Vec<Boundary>) -> serde_json::Result<Vec<u8>> {

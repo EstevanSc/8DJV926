@@ -1,23 +1,56 @@
 use std::collections::HashMap;
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 
 use bevy::prelude::*;
-use uuid::Uuid;
-
+use common::ability_type::AbilityType;
 use game_sockets::GameConnection;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Commands sent from the network layer into the simulation
 // ---------------------------------------------------------------------------
 
 pub enum SimCommand {
-    Joined { connection_id: Uuid, position: Vec2 },
-    Left { connection_id: Uuid },
-    Input { connection_id: Uuid, dx: f32, dy: f32 },
-    GhostJoined { connection_id: Uuid, position: Vec2 },
-    GhostPositionUpdate { connection_id: Uuid, position: Vec2 },
-    GhostIsNowLocal { connection_id: Uuid, speed: [f64; 2], position: [f64; 2] },
-    LocalIsNowGhost { connection_id: Uuid, receiver_shard_id: Uuid },
+    Joined {
+        connection_id: Uuid,
+        position: Vec2,
+    },
+    Left {
+        connection_id: Uuid,
+    },
+    Input {
+        connection_id: Uuid,
+        dx: f32,
+        dy: f32,
+    },
+    GhostJoined {
+        connection_id: Uuid,
+        position: Vec2,
+    },
+    GhostPositionUpdate {
+        connection_id: Uuid,
+        position: Vec2,
+    },
+    GhostIsNowLocal {
+        connection_id: Uuid,
+        speed: [f64; 2],
+        position: [f64; 2],
+    },
+    LocalIsNowGhost {
+        connection_id: Uuid,
+        receiver_shard_id: Uuid,
+    },
+    CastAbility {
+        entity_id: Uuid,
+        ability_type: AbilityType,
+        direction: Option<Vec2>,
+    },
+    Died {
+        entity_id: Uuid,
+    },
+    RemoveDeadTag {
+        entity_id: Uuid,
+    },
 }
 
 // ---------------------------------------------------------------------------

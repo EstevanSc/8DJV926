@@ -5,14 +5,7 @@ pub struct CharacterControllerPlugin;
 
 impl Plugin for CharacterControllerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                update_grounded,
-                apply_movement_damping,
-            )
-                .chain(),
-        );
+        app.add_systems(Update, (update_grounded, apply_movement_damping).chain());
     }
 }
 
@@ -59,10 +52,7 @@ pub struct MovementBundle {
 }
 
 impl MovementBundle {
-    pub const fn new(
-        acceleration: Scalar,
-        damping: Scalar,
-    ) -> Self {
+    pub const fn new(acceleration: Scalar, damping: Scalar) -> Self {
         Self {
             acceleration: MovementAcceleration(acceleration),
             damping: MovementDampingFactor(damping),
@@ -93,11 +83,7 @@ impl CharacterControllerBundle {
         }
     }
 
-    pub fn with_movement(
-        mut self,
-        acceleration: Scalar,
-        damping: Scalar,
-    ) -> Self {
+    pub fn with_movement(mut self, acceleration: Scalar, damping: Scalar) -> Self {
         self.movement = MovementBundle::new(acceleration, damping);
         self
     }

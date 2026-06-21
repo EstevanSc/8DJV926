@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use common::broker_messages::{BrokerMessage, SendingSystem};
-use common::topics::{
-    serialize_starting_position_payload, StartingPositionPayload, Topic,
-};
+use common::topics::{StartingPositionPayload, Topic, serialize_starting_position_payload};
 use game_sockets::protocols::QuicBackend;
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameStream, GameStreamReliability};
 use tokio::sync::mpsc;
@@ -44,9 +42,18 @@ impl AiClient {
 
         let (conn, stream) = await_handshake(Arc::clone(&peer)).await?;
 
-        let client = Self { id, peer, conn, stream, inbound_tx };
+        let client = Self {
+            id,
+            peer,
+            conn,
+            stream,
+            inbound_tx,
+        };
 
-        client.send_raw(BrokerMessage::serialize_connect(id, SendingSystem::AiService));
+        client.send_raw(BrokerMessage::serialize_connect(
+            id,
+            SendingSystem::AiService,
+        ));
         client.send_raw(BrokerMessage::serialize_subscribe(
             id,
             Topic::EntityPositionUpdate(id).to_bytes(),
@@ -67,13 +74,25 @@ impl AiClient {
             id,
             Topic::PathResponse(id).to_bytes(),
         ));
+        // subscribe to the attribute updates for this entity
+        client.send_raw(BrokerMessage::serialize_subscribe(
+            id,
+            Topic::AttributeUpdated(id).to_bytes(),
+        ));
+        // subscribe to entity killed so can react to ia death
+        client.send_raw(BrokerMessage::serialize_subscribe(
+            id,
+            Topic::EntityKilled(id).to_bytes(),
+        ));
 
         Ok((client, inbound_rx))
     }
 
     /// Poll the peer for incoming broadcasts and forward them to the inbound channel.
     pub fn poll(&self) {
-        let Ok(mut peer) = self.peer.lock() else { return };
+        let Ok(mut peer) = self.peer.lock() else {
+            return;
+        };
         while let Ok(Some(event)) = peer.poll() {
             if let GameNetworkEvent::Message { data, .. } = event {
                 if let Some(BrokerMessage::Broadcast { topic, payload }) =
@@ -122,9 +141,18 @@ impl MasterClient {
 
         let (conn, stream) = await_handshake(Arc::clone(&peer)).await?;
 
-        let client = Self { id, peer, conn, stream, inbound_tx };
+        let client = Self {
+            id,
+            peer,
+            conn,
+            stream,
+            inbound_tx,
+        };
 
-        client.send_raw(BrokerMessage::serialize_connect(id, SendingSystem::AiService));
+        client.send_raw(BrokerMessage::serialize_connect(
+            id,
+            SendingSystem::AiService,
+        ));
         client.send_raw(BrokerMessage::serialize_subscribe(
             id,
             Topic::QuadtreeBoundariesUpdate.to_bytes(),
@@ -134,7 +162,9 @@ impl MasterClient {
     }
 
     pub fn poll(&self) {
-        let Ok(mut peer) = self.peer.lock() else { return };
+        let Ok(mut peer) = self.peer.lock() else {
+            return;
+        };
         while let Ok(Some(event)) = peer.poll() {
             if let GameNetworkEvent::Message { data, .. } = event {
                 if let Some(BrokerMessage::Broadcast { topic, payload }) =
@@ -156,25 +186,25 @@ impl MasterClient {
 
 /// Standalone handshake routine utilized by both AiClient and MasterClient.
 pub async fn await_handshake(
-        peer: Arc<Mutex<GamePeer>>,
-    ) -> Result<(GameConnection, GameStream), String> {
-        loop {
-            let event = {
+    peer: Arc<Mutex<GamePeer>>,
+) -> Result<(GameConnection, GameStream), String> {
+    loop {
+        let event = {
+            let Ok(mut p) = peer.lock() else { continue };
+            p.poll().ok().flatten()
+        };
+        match event {
+            Some(GameNetworkEvent::Connected(conn)) => {
                 let Ok(mut p) = peer.lock() else { continue };
-                p.poll().ok().flatten()
-            };
-            match event {
-                Some(GameNetworkEvent::Connected(conn)) => {
-                    let Ok(mut p) = peer.lock() else { continue };
-                    p.create_stream(conn, GameStreamReliability::Reliable)
-                        .map_err(|e| format!("stream error: {e:?}"))?;
-                }
-                Some(GameNetworkEvent::StreamCreated(conn, stream)) if stream.is_reliable() => {
-                    return Ok((conn, stream));
-                }
-                _ => {}
+                p.create_stream(conn, GameStreamReliability::Reliable)
+                    .map_err(|e| format!("stream error: {e:?}"))?;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            Some(GameNetworkEvent::StreamCreated(conn, stream)) if stream.is_reliable() => {
+                return Ok((conn, stream));
+            }
+            _ => {}
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
 
