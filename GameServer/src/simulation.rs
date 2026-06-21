@@ -288,9 +288,14 @@ fn cast_ability(
     mut commands: Commands,
     mut events: MessageReader<CastAbility>,
     mut hit_writer: MessageWriter<AbilityHitEntity>,
-    caster_query: Query<&Transform>,
+    caster_query: Query<&Transform, Without<Dead>>,
 ) {
     for ev in events.read() {
+        let Ok(spawn_translation) = caster_query.get(ev.caster).map(|t| t.translation) else {
+            tracing::warn!("Blocked casting from dead or non-existent entity {:?}", ev.caster);
+            continue;
+        };
+
         match ev.ability_type {
             AbilityType::Heal => {
                 tracing::info!("Heal ability casted by {:?}", ev.caster);
@@ -304,11 +309,6 @@ fn cast_ability(
                 let raw_direction = ev.direction.unwrap_or_else(|| Vec2::X);
                 let direction = raw_direction.normalize();
                 tracing::info!("Fireball ability casted! Direction: {:?}", direction);
-
-                let Ok(spawn_translation) = caster_query.get(ev.caster).map(|t| t.translation)
-                else {
-                    return;
-                };
 
                 let offset = direction * 26.0;
                 let spawn_pos = spawn_translation + Vec3::new(offset.x, offset.y, 0.0);

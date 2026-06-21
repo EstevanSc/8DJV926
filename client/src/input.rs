@@ -14,9 +14,52 @@ pub struct ClientInputPlugin;
 
 impl Plugin for ClientInputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, keyboard_input.run_if(in_state(GameState::InGame)))
-            .add_systems(Update, mouse_button_input.run_if(in_state(GameState::InGame)))
-            .init_resource::<PathToCursor>();
+        app.init_resource::<DeathState>()
+            .init_resource::<PathToCursor>()
+            .add_systems(
+                Update,
+                (
+                    keyboard_input.run_if(in_state(GameState::InGame)),
+                    mouse_button_input.run_if(in_state(GameState::InGame)),
+                    update_death_state.run_if(in_state(GameState::InGame)),
+                ),
+            );
+    }
+}
+
+#[derive(Resource)]
+pub struct DeathState {
+    pub is_dead: bool,
+    pub timer: Timer,
+}
+
+impl Default for DeathState {
+    fn default() -> Self {
+        let mut timer = Timer::from_seconds(5.0, TimerMode::Once);
+        timer.set_elapsed(std::time::Duration::from_secs(5));
+        Self {
+            is_dead: false,
+            timer,
+        }
+    }
+}
+
+fn update_death_state(
+    time: Res<Time>,
+    mut death_state: ResMut<DeathState>,
+    mut killed_events: MessageReader<super::net::LocalPlayerKilled>,
+) {
+    for _ in killed_events.read() {
+        death_state.is_dead = true;
+        death_state.timer.reset();
+        tracing::info!("Local player death state activated for 5 seconds.");
+    }
+
+    if death_state.is_dead {
+        if death_state.timer.tick(time.delta()).just_finished() {
+            death_state.is_dead = false;
+            tracing::info!("Local player death state deactivated.");
+        }
     }
 }
 
@@ -55,7 +98,14 @@ fn send_ability(
     broker_stream: Option<&Res<BrokerControlStream>>,
     ability_type: AbilityType,
     direction: Option<[f32; 2]>,
+    death_state: Option<&Res<DeathState>>,
 ) {
+    if let Some(ds) = death_state {
+        if ds.is_dead {
+            tracing::info!("Blocked sending ability because local player is dead.");
+            return;
+        }
+    }
     let (Some(peer_res), Some(broker_conn), Some(broker_stream)) = (peer_res, broker_conn, broker_stream) else {
         return;
     };
@@ -74,11 +124,13 @@ fn send_ability(
     }
 }
 
-fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
+fn keyboard_input(
+    keys: Res<ButtonInput<KeyCode>>,
     mut peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
     broker_stream: Option<Res<BrokerControlStream>>,
     mut path_to_cursor: ResMut<PathToCursor>,
+    death_state: Option<Res<DeathState>>,
 ) {
 
     let mut dx = 0.0_f64;
@@ -103,6 +155,7 @@ fn keyboard_input(keys: Res<ButtonInput<KeyCode>>,
             broker_stream.as_ref(),
             AbilityType::Heal,
             None,
+            death_state.as_ref(),
         );
     }
 
@@ -133,7 +186,8 @@ fn mouse_button_input(
     q_window: Query<&Window>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
     mut event: MessageReader<PathResponseReceived>,
-    mut path_to_cursor: ResMut<PathToCursor>
+    mut path_to_cursor: ResMut<PathToCursor>,
+    death_state: Option<Res<DeathState>>,
 ) {
     let player_position = query_player
         .iter()
@@ -182,6 +236,7 @@ fn mouse_button_input(
             broker_stream.as_ref(),
             AbilityType::Fireball,
             Some(fireball_direction),
+            death_state.as_ref(),
         );
     }
 

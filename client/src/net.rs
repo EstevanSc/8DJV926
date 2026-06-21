@@ -25,6 +25,7 @@ impl Plugin for ClientNetPlugin {
             .add_message::<PathResponseReceived>()
             .add_message::<AbilityCastReceived>()
             .add_message::<DbNameResponseReceived>()
+            .add_message::<LocalPlayerKilled>()
             .add_systems(OnEnter(GameState::Connecting), start_connect)
             .add_systems(
                 Update,
@@ -314,6 +315,9 @@ pub struct DbNameResponseReceived {
     pub username: String,
 }
 
+#[derive(Message)]
+pub struct LocalPlayerKilled;
+
 fn receive_packets(
     peer_res: Option<ResMut<ActivePeer>>,
     broker_conn: Option<Res<BrokerConn>>,
@@ -325,6 +329,7 @@ fn receive_packets(
     mut path_response_writer: MessageWriter<PathResponseReceived>,
     mut ability_cast_writer: MessageWriter<AbilityCastReceived>,
     mut name_response_writer: MessageWriter<DbNameResponseReceived>,
+    mut local_player_killed_writer: MessageWriter<LocalPlayerKilled>,
     _session: Res<GameSession>,
 ) {
     let Some(peer_res) = peer_res else { return };
@@ -381,7 +386,7 @@ fn receive_packets(
                                     "Received EntityKilled for our own entity {:?} — we were killed!",
                                     uuid
                                 );
-                                //killed = true;
+                                local_player_killed_writer.write(LocalPlayerKilled);
                             }
                         }
                         Topic::PathResponse(_entity_uuid) => {
