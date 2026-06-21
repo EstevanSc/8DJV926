@@ -57,7 +57,7 @@ See technical documentation in ARCHITECTURE.md.
 ## Gameplay
 
 ### Overview
-The player can move around and fight against other players or NPCs. The player can also use abilities to heal themselves or to damage other players or NPCs. The zone in the center is a safe zone where players cannot be damaged. Player can gain experience points by killing other players or NPCs and can level up to increase their fireball damages. The player get mana points over time and can use them to cast abilities. The player can also die and respawn in the safe zone.
+The player can move around and fight against other players or NPCs. The player can also use abilities to heal themselves or to damage other players or NPCs. The zone in the center is a safe zone where players cannot be damaged. Player can gain experience points by killing other players or NPCs and can level up to increase their fireball damages. The player get mana points over time and can use them to cast abilities. The player can also die and respawn in the safe zone, then can't send inputs during 5 seconds.
 
 ### Movement
 The player can move using the WASD/Arrow keys or using the right mouse button (using the pathfinding service). The player will move to the destination and the position will be updated in the spatial service and the other clients will receive the update.

@@ -484,7 +484,7 @@ sequenceDiagram
     QT->>Broker: Publish: Topic::ReleaseOwnership(shard_A_uuid) (player_id payload)
     Broker->>GSA: Forward to Shard A (despawns entity, unsubscribes input)
     
-    QT->>Broker: Publish: Topic::ClaimOwnership(shard_B_uuid) (player_id payload)
+    GSA->>Broker: Publish: Topic::ClaimOwnership(shard_B_uuid) (player_id payload)
     Broker->>GSB: Forward to Shard B (spawns entity, subscribes to input)
 
     Note over Client: Visual continuity remains completely seamless
