@@ -30,7 +30,8 @@ You will need to run the client separately. You can do it by running the followi
 cd client
 cargo run
 ```
-You will be able to connect to a new user or to an existing user if the password is correct.
+You will be able to connect to a new user or to an existing user if the password is correct. Gatekeeper will check the informations in the supabase database and then send the feedback to the client.
+![database_row.png](docs/database_row.png) *The database row*
 
 ![login-screen.png](docs/login-screen.png)
 
