@@ -23,7 +23,7 @@ docker-compose up --build
 ```
 Then the backend will be up and running.
 
-![containers.png](docs/containers.png) *There should be one container for each part of the project*
+![containers.png](docs/containers2.png) *There should be one container for each part of the project*
 
 You will need to run the client separately. You can do it by running the following command in the root directory of the project:
 ```bash
@@ -66,5 +66,9 @@ The player can move using the WASD/Arrow keys or using the right mouse button (u
 - Heal : Player can heal themselves using Q key. (the ability service check the mana cost and the cooldown before applying the heal)
 - Fireball : Player can cast a fireball using left mouse button. (the ability service check the mana cost and the cooldown before applying the damage to the target)
 
+![fireball.png](docs/fireball.png) *A fireball being cast*
+
 ### AI
 The AI service will spawn NPCs in the game randomly depending on the quadtree population. The NPCs patrol then if it sees a player it will chase and attack the player. If the player is out of sight, the NPC will go back to patrolling. The NPCs uses the pathfinding service to move around the map and use the same ability service as the player.
+
+![ai_fireballs.png](docs/ai_fireballs.png) *A player fighting two AIs*
