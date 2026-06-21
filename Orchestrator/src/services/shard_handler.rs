@@ -63,7 +63,11 @@ async fn handle_shard_update(
     let to_remove: Vec<CenterKey> = current_shards
         .iter()
         .filter_map(|(center, _)| {
-            if incoming_centers.contains(center) { None } else { Some(*center) }
+            if incoming_centers.contains(center) {
+                None
+            } else {
+                Some(*center)
+            }
         })
         .collect();
 
@@ -76,24 +80,58 @@ async fn handle_shard_update(
     let to_add_len = to_add.len();
     let to_remove_len = to_remove.len();
 
-    for boundary in to_add {
-        let center = center_key(&boundary);
-        tracing::info!("Orchestrator: spawning server for shard center ({}, {})", boundary.x, boundary.y);
+    if to_add_len > 0 {
+        match find_available_ports(redis, base_port, to_add_len).await {
+            Ok(ports) => {
+                let mut join_set = tokio::task::JoinSet::new();
+                for (boundary, port) in to_add.iter().zip(ports) {
+                    let docker_clone = docker.clone();
+                    let redis_clone = redis.clone();
+                    let boundary_val = *boundary;
 
-        match find_available_port(redis, base_port).await {
-            Ok(port) => {
-                match docker_ops::spawn_server_for_boundary(docker, redis, port, boundary).await {
-                    Ok(redis_key) => {
-                        current_shards.insert(center, redis_key);
-                        current_centers.insert(center);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to spawn server for shard center ({}, {}): {}", boundary.x, boundary.y, e);
+                    join_set.spawn(async move {
+                        let center = center_key(&boundary_val);
+                        tracing::info!(
+                            "Orchestrator: spawning server for shard center ({}, {}) on port {}",
+                            boundary_val.x,
+                            boundary_val.y,
+                            port
+                        );
+                        let spawn_res = docker_ops::spawn_server_for_boundary(
+                            &docker_clone,
+                            &redis_clone,
+                            port,
+                            boundary_val,
+                        )
+                        .await;
+                        (center, boundary_val, spawn_res)
+                    });
+                }
+
+                while let Some(res) = join_set.join_next().await {
+                    match res {
+                        Ok((center, boundary, spawn_res)) => match spawn_res {
+                            Ok(redis_key) => {
+                                current_shards.insert(center, redis_key);
+                                current_centers.insert(center);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to spawn server for shard center ({}, {}): {}",
+                                    boundary.x,
+                                    boundary.y,
+                                    e
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!("Tokio spawn join error: {}", e);
+                        }
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("No available port for shard center ({}, {}): {}", boundary.x, boundary.y, e);
+                tracing::error!("No available ports to spawn new shards: {}", e);
             }
         }
     }
@@ -101,7 +139,11 @@ async fn handle_shard_update(
     for center in to_remove {
         if let Some(redis_key) = current_shards.remove(&center) {
             current_centers.remove(&center);
-            tracing::info!("Orchestrator: stopping server for shard center ({}, {})", f64::from_bits(center.0), f64::from_bits(center.1));
+            tracing::info!(
+                "Orchestrator: stopping server for shard center ({}, {})",
+                f64::from_bits(center.0),
+                f64::from_bits(center.1)
+            );
 
             if let Ok(Some(container_id)) = redis.hget(&redis_key, "container_id").await {
                 if let Err(e) = docker_ops::stop_container(docker, &container_id).await {
@@ -118,7 +160,11 @@ async fn handle_shard_update(
             if let Err(e) = redis.del(&redis_key).await {
                 tracing::error!("Failed to remove Redis key {}: {}", redis_key, e);
             } else {
-                tracing::info!("Removed server for shard center ({}, {})", f64::from_bits(center.0), f64::from_bits(center.1));
+                tracing::info!(
+                    "Removed server for shard center ({}, {})",
+                    f64::from_bits(center.0),
+                    f64::from_bits(center.1)
+                );
             }
         }
     }
@@ -133,8 +179,13 @@ async fn handle_shard_update(
     Ok(())
 }
 
-/// Find an available port for a new game server.
-async fn find_available_port(redis: &RedisClient, base_port: u16) -> anyhow::Result<u16> {
+
+/// Find multiple available ports for new game servers.
+async fn find_available_ports(
+    redis: &RedisClient,
+    base_port: u16,
+    count: usize,
+) -> anyhow::Result<Vec<u16>> {
     let keys = redis.scan("server:*").await?;
     let mut used_ports = HashSet::new();
 
@@ -146,11 +197,20 @@ async fn find_available_port(redis: &RedisClient, base_port: u16) -> anyhow::Res
         }
     }
 
+    let mut ports = Vec::new();
     for port in base_port..base_port + 1000 {
         if !used_ports.contains(&port) {
-            return Ok(port);
+            ports.push(port);
+            if ports.len() == count {
+                return Ok(ports);
+            }
         }
     }
 
-    Err(anyhow::anyhow!("No available port in range {}-{}", base_port, base_port + 1000))
+    Err(anyhow::anyhow!(
+        "Not enough available ports in range {}-{} (requested {})",
+        base_port,
+        base_port + 1000,
+        count
+    ))
 }
