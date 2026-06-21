@@ -1,7 +1,7 @@
-﻿use avian2d::{math::*, prelude::*};
+use crate::simulation::AbilityHitEntity;
+use avian2d::{math::*, prelude::*};
 use bevy::prelude::*;
 use common::ability_type::AbilityType;
-use crate::simulation::AbilityHitEntity;
 
 pub struct FireballPlugin;
 
@@ -60,7 +60,7 @@ pub fn handle_fireball_collisions(
     mut commands: Commands,
     mut collision_events: MessageReader<CollisionStart>,
     mut hit_writer: MessageWriter<AbilityHitEntity>,
-    fireball_query: Query<(Entity, &Caster, &Direction), With<Fireball>>,
+    fireball_query: Query<(Entity, &Caster, &Direction, &Transform), With<Fireball>>,
     collidable_query: Query<Entity>,
 ) {
     for collision in collision_events.read() {
@@ -68,30 +68,50 @@ pub fn handle_fireball_collisions(
         let fireball_data = fireball_query
             .get(collision.collider1)
             .map(|data| (collision.collider1, data))
-            .or_else(|_| fireball_query.get(collision.collider2).map(|data| (collision.collider2, data)));
+            .or_else(|_| {
+                fireball_query
+                    .get(collision.collider2)
+                    .map(|data| (collision.collider2, data))
+            });
 
-        if let Ok((fireball_entity, (_fb_ent, caster, _))) = fireball_data {
-            let hit_entity = if fireball_entity == collision.collider1 { collision.collider2 } else { collision.collider1 };
+        if let Ok((fireball_entity, (_fb_ent, caster, _direction, transform))) = fireball_data {
+            let hit_entity = if fireball_entity == collision.collider1 {
+                collision.collider2
+            } else {
+                collision.collider1
+            };
 
             // Prevent the fireball from blowing up on the person who cast it
             if hit_entity == caster.0 {
                 continue;
             }
 
+            // Ignore collisions inside the 500x500 safe zone centered at (0, 0)
+            let pos = transform.translation;
+            if pos.x.abs() <= 250.0 && pos.y.abs() <= 250.0 {
+                continue;
+            }
 
             // Verify the hit entity is something valid we can collide with
             if collidable_query.get(hit_entity).is_ok() {
-                // Despawn the fireball simulation entity immediately
-                commands.entity(fireball_entity).despawn();
+                // Only deal damage/write hit event if outside the 500x500 safe zone centered at (0, 0)
+                let pos = transform.translation;
+                if pos.x.abs() <= 250.0 && pos.y.abs() <= 250.0 {
+                    tracing::info!(
+                        "Fireball {:?} hit Entity {:?} inside safe zone (ignored damage)",
+                        fireball_entity,
+                        hit_entity
+                    );
+                } else {
+                    // Send ability_hit_entity event
+                    hit_writer.write(AbilityHitEntity {
+                        caster: caster.0,
+                        hit_entity,
+                        ability_type: AbilityType::Fireball,
+                    });
 
-                // Send ability_hit_entity event
-                hit_writer.write(AbilityHitEntity {
-                    caster: caster.0,
-                    hit_entity,
-                    ability_type: AbilityType::Fireball,
-                });
-
-                tracing::info!("Fireball {:?} hit Entity {:?}", fireball_entity, hit_entity);
+                    tracing::info!("Fireball {:?} hit Entity {:?}", fireball_entity, hit_entity);
+                }
             }
         }
     }
