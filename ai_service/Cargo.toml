@@ -1,0 +1,19 @@
+[package]
+name = "ai_service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common       = { workspace = true }
+game_sockets = { workspace = true }
+bevy         = { workspace = true, features = ["multi_threaded"] }
+uuid         = { workspace = true }
+tokio        = { workspace = true }
+serde        = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+bytes        = { workspace = true }
+
+bevy_behave = "0.5"
+rand        = "0.10.1"
+dotenv      = "0.15"

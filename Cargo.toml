@@ -8,6 +8,10 @@ members = [
     "game_sockets",
     "quadtree",
     "broker",
+    "ai_service",
+    "pathing_service",
+    "AbilityService",
+    "database_service",
 ]
 resolver = "2"
 

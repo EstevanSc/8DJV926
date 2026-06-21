@@ -15,10 +15,10 @@ pub struct LoginRequest {
 
 #[derive(Serialize)]
 pub struct LoginResponse {
-    pub player_id: String,
-    //pub server: ServerInfo,
     pub broker_ip: String,
     pub broker_port: u16,
+    pub player_name: String,
+    pub player_spawn_position: [f32; 2],
 }
 
 #[derive(Serialize)]
@@ -50,7 +50,7 @@ pub async fn handler(
 
     // ── Supabase: find or create the player ─────────────────────────────────
 
-    let player_id = match state.supabase.find_player(username).await {
+    let player_spawn_position = match state.supabase.find_player(username).await {
         Err(e) => {
             tracing::error!("Supabase find_player failed: {e:#}");
             return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "database error"));
@@ -62,14 +62,14 @@ pub async fn handler(
                 return Err(err(StatusCode::UNAUTHORIZED, "invalid password"));
             }
             tracing::info!("Existing player '{username}' authenticated (id={})", row.id);
-            row.unique_id.to_string()
+            [row.log_out_position_x, row.log_out_position_y]
         }
         Ok(None) => {
             // New player — create the account and log in immediately.
             match state.supabase.create_player(username, password).await {
                 Ok(row) => {
                     tracing::info!("New player '{username}' created (id={})", row.id);
-                    row.unique_id.to_string()
+                    [row.log_out_position_x, row.log_out_position_y]
                 }
                 Err(e) => {
                     tracing::error!("Supabase create_player failed: {e:#}");
@@ -87,7 +87,8 @@ pub async fn handler(
         .parse()
         .unwrap_or(7776);
     Ok(Json(LoginResponse {
-        player_id,
+        player_name: username.to_string(),
+        player_spawn_position, // Default spawn position
         broker_ip,
         broker_port,
     }))

@@ -1,0 +1,8 @@
+broker_ip   = "broker"
+broker_port = 7776
+
+[[zones]]
+kind             = "Goblin"
+center           = [0.0, 0.0]
+count            = 1
+respawn_delay_secs = 999999999

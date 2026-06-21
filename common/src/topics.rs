@@ -1,4 +1,6 @@
-﻿use crate::{Boundary};
+use crate::Boundary;
+use crate::ability_type::AbilityType;
+use crate::attribute_type::AttributeType;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wincode::{SchemaRead, SchemaWrite};
@@ -15,19 +17,36 @@ pub enum TopicDomain {
     ClaimOwnership = 0xFE,
     QuadtreeBoundariesUpdate = 0x06,
     AuthorityDebugPacket = 0x07,
+    PathRequest = 0x08,
+    PathResponse = 0x09,
+
+    // Ability & attribute-related topics
+    RequestCastAbility = 0xA0,
+    CastAbility = 0xA1,
+    AbilityHitEntity = 0xA2,
+    AttributeUpdated = 0xA3,
+    EntityKilled = 0xA4,
+    XPEarned = 0xA5,
+    LevelUp = 0xA6,
+
+    // Database-related topics
+    DbQuery = 0xB0,
+    DbRegisterUsername = 0xB2,
+    DbNameRequest = 0xB3,
+    DbNameResponse = 0xB4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Topic {
     //Quadtree topics
-    ShardCreated,       
+    ShardCreated,
     PlayerStartingPosition,
 
     //server topics
-    PlayerStartingPositionInShard(Uuid), 
-    Input(Uuid), // For client inputs updates, uuid identifies the client
-    Disconnect(Uuid), // For disconnect events
-    ClaimOwnership(Uuid), // Target shard UUID, payload contains entity UUID
+    PlayerStartingPositionInShard(Uuid),
+    Input(Uuid),            // For client inputs updates, uuid identifies the client
+    Disconnect(Uuid),       // For disconnect events
+    ClaimOwnership(Uuid),   // Target shard UUID, payload contains entity UUID
     ReleaseOwnership(Uuid), // Target shard UUID, payload contains entity UUID
 
     //client topics
@@ -35,7 +54,26 @@ pub enum Topic {
     QuadtreeBoundariesUpdate,
     AuthorityDebugPacket(Uuid),
 
-    Raw([u8; 32]),     // Fallback
+    //pathfinding
+    PathRequest,        //payload contains path request data
+    PathResponse(Uuid), // Target entity UUID, payload contains path response data
+
+    // Ability & attribute-related topics
+    RequestCastAbility,
+    CastAbility(Uuid),
+    AbilityHitEntity,
+    AttributeUpdated(Uuid),
+    EntityKilled(Uuid),
+    XPEarned(Uuid),
+    LevelUp(Uuid),
+
+    // Database
+    DbQuery,
+    DbRegisterUsername,
+    DbNameRequest,
+    DbNameResponse(Uuid),
+
+    Raw([u8; 32]), // Fallback
 }
 
 impl Topic {
@@ -80,6 +118,52 @@ impl Topic {
                 bytes[0] = TopicDomain::AuthorityDebugPacket as u8;
                 bytes[1..17].copy_from_slice(uuid.as_bytes());
             }
+            Topic::PathRequest => {
+                bytes[0] = TopicDomain::PathRequest as u8;
+            }
+            Topic::PathResponse(uuid) => {
+                bytes[0] = TopicDomain::PathResponse as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::RequestCastAbility => {
+                bytes[0] = TopicDomain::RequestCastAbility as u8;
+            }
+            Topic::CastAbility(uuid) => {
+                bytes[0] = TopicDomain::CastAbility as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::AbilityHitEntity => {
+                bytes[0] = TopicDomain::AbilityHitEntity as u8;
+            }
+            Topic::AttributeUpdated(uuid) => {
+                bytes[0] = TopicDomain::AttributeUpdated as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::EntityKilled(uuid) => {
+                bytes[0] = TopicDomain::EntityKilled as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::XPEarned(uuid) => {
+                bytes[0] = TopicDomain::XPEarned as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::LevelUp(uuid) => {
+                bytes[0] = TopicDomain::LevelUp as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
+            Topic::DbQuery => {
+                bytes[0] = TopicDomain::DbQuery as u8;
+            }
+            Topic::DbRegisterUsername => {
+                bytes[0] = TopicDomain::DbRegisterUsername as u8;
+            }
+            Topic::DbNameRequest => {
+                bytes[0] = TopicDomain::DbNameRequest as u8;
+            }
+            Topic::DbNameResponse(uuid) => {
+                bytes[0] = TopicDomain::DbNameResponse as u8;
+                bytes[1..17].copy_from_slice(uuid.as_bytes());
+            }
             Topic::Raw(raw) => return *raw,
         }
         bytes
@@ -89,9 +173,7 @@ impl Topic {
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         match bytes[0] {
             0x01 => Topic::ShardCreated,
-            0x02 => {
-                Topic::PlayerStartingPosition
-            }
+            0x02 => Topic::PlayerStartingPosition,
             0x03 => {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::PlayerStartingPositionInShard(uuid)
@@ -121,8 +203,41 @@ impl Topic {
                 let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
                 Topic::AuthorityDebugPacket(uuid)
             }
+            0x08 => Topic::PathRequest,
+            0x09 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::PathResponse(uuid)
+            }
+            0xA0 => Topic::RequestCastAbility,
+            0xA1 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::CastAbility(uuid)
+            }
+            0xA2 => Topic::AbilityHitEntity,
+            0xA3 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::AttributeUpdated(uuid)
+            }
+            0xA4 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::EntityKilled(uuid)
+            }
+            0xA5 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::XPEarned(uuid)
+            }
+            0xA6 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::LevelUp(uuid)
+            }
+            0xB0 => Topic::DbQuery,
+            0xB2 => Topic::DbRegisterUsername,
+            0xB3 => Topic::DbNameRequest,
+            0xB4 => {
+                let uuid = Uuid::from_slice(&bytes[1..17]).unwrap_or_else(|_| Uuid::nil());
+                Topic::DbNameResponse(uuid)
+            }
             _ => Topic::Raw(bytes),
-            
         }
     }
 }
@@ -175,6 +290,73 @@ pub struct ClaimOwnershipPayload {
     pub speed: [f64; 2],
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct PathRequestPayload {
+    pub entity_id: Uuid,
+    pub start: [f32; 2],
+    pub end: [f32; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct PathResponsePayload {
+    pub path: Vec<[f32; 2]>,
+}
+
+pub fn serialize_path_request_payload(payload: &PathRequestPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize path request payload")
+}
+
+pub fn deserialize_path_request_payload(bytes: &[u8]) -> Option<PathRequestPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_path_response_payload(payload: &PathResponsePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize path response payload")
+}
+
+pub fn deserialize_path_response_payload(bytes: &[u8]) -> Option<PathResponsePayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct UseAbilityPayload {
+    pub entity_id: Uuid,
+    pub ability: AbilityType,
+    pub direction: Option<[f32; 2]>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct AttributeUpdatedPayload {
+    pub entity_id: Uuid,
+    pub attribute: AttributeType,
+    pub new_value: i32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct AbilityHitEntityPayload {
+    pub caster_id: Uuid,
+    pub hit_entity_id: Uuid,
+    pub ability_type: AbilityType,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct EntityKilledPayload {
+    pub killer_id: Uuid,
+    pub victim_id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct XPEarnedPayload {
+    pub entity_id: Uuid,
+    pub new_value: i32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct LevelUpPayload {
+    pub entity_id: Uuid,
+    pub new_level: i32,
+}
+
 pub fn serialize_shard_created_payload(payload: &ShardCreatedPayload) -> Vec<u8> {
     wincode::serialize(payload).expect("failed to serialize shard created payload")
 }
@@ -207,11 +389,15 @@ pub fn deserialize_starting_position_payload(bytes: &[u8]) -> Option<StartingPos
     wincode::deserialize(bytes).ok()
 }
 
-pub fn serialize_quadtree_boundaries_update_payload(payload: &QuadtreeBoundariesUpdatePayload) -> Vec<u8> {
+pub fn serialize_quadtree_boundaries_update_payload(
+    payload: &QuadtreeBoundariesUpdatePayload,
+) -> Vec<u8> {
     wincode::serialize(payload).expect("failed to serialize quadtree boundaries update payload")
 }
 
-pub fn deserialize_quadtree_boundaries_update_payload(bytes: &[u8]) -> Option<QuadtreeBoundariesUpdatePayload> {
+pub fn deserialize_quadtree_boundaries_update_payload(
+    bytes: &[u8],
+) -> Option<QuadtreeBoundariesUpdatePayload> {
     wincode::deserialize(bytes).ok()
 }
 
@@ -219,7 +405,9 @@ pub fn serialize_authority_debug_packet_payload(payload: &AuthorityDebugPacketPa
     wincode::serialize(payload).expect("failed to serialize authority debug packet payload")
 }
 
-pub fn deserialize_authority_debug_packet_payload(bytes: &[u8]) -> Option<AuthorityDebugPacketPayload> {
+pub fn deserialize_authority_debug_packet_payload(
+    bytes: &[u8],
+) -> Option<AuthorityDebugPacketPayload> {
     wincode::deserialize(bytes).ok()
 }
 
@@ -236,5 +424,109 @@ pub fn serialize_claim_ownership_payload(payload: &ClaimOwnershipPayload) -> Vec
 }
 
 pub fn deserialize_claim_ownership_payload(bytes: &[u8]) -> Option<ClaimOwnershipPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_use_ability_payload(payload: &UseAbilityPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize useability payload")
+}
+
+pub fn deserialize_use_ability_payload(bytes: &[u8]) -> Option<UseAbilityPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_attribute_updated_payload(payload: &AttributeUpdatedPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize attribute updated payload")
+}
+
+pub fn deserialize_attribute_updated_payload(bytes: &[u8]) -> Option<AttributeUpdatedPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_ability_hit_entity_payload(payload: &AbilityHitEntityPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize ability hit entity payload")
+}
+
+pub fn deserialize_ability_hit_entity_payload(bytes: &[u8]) -> Option<AbilityHitEntityPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_entity_killed_payload(payload: &EntityKilledPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize entity killed payload")
+}
+
+pub fn deserialize_entity_killed_payload(bytes: &[u8]) -> Option<EntityKilledPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_xp_earned_payload(payload: &XPEarnedPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize XP earned payload")
+}
+
+pub fn deserialize_xp_earned_payload(bytes: &[u8]) -> Option<XPEarnedPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_level_up_payload(payload: &LevelUpPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize level up payload")
+}
+
+pub fn deserialize_level_up_payload(bytes: &[u8]) -> Option<LevelUpPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DbQueryPayload {
+    pub player_id: Uuid,
+    pub x: f32,
+    pub y: f32,
+}
+
+pub fn serialize_db_query_payload(payload: &DbQueryPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize db query payload")
+}
+
+pub fn deserialize_db_query_payload(bytes: &[u8]) -> Option<DbQueryPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DbRegisterUsernamePayload {
+    pub player_id: Uuid,
+    pub username: String,
+}
+
+pub fn serialize_db_register_username_payload(payload: &DbRegisterUsernamePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize db register username payload")
+}
+
+pub fn deserialize_db_register_username_payload(bytes: &[u8]) -> Option<DbRegisterUsernamePayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DbNameRequestPayload {
+    pub requestor_id: Uuid,
+    pub player_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, PartialEq)]
+pub struct DbNameResponsePayload {
+    pub username: String,
+}
+
+pub fn serialize_db_name_request_payload(payload: &DbNameRequestPayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize db name request payload")
+}
+
+pub fn deserialize_db_name_request_payload(bytes: &[u8]) -> Option<DbNameRequestPayload> {
+    wincode::deserialize(bytes).ok()
+}
+
+pub fn serialize_db_name_response_payload(payload: &DbNameResponsePayload) -> Vec<u8> {
+    wincode::serialize(payload).expect("failed to serialize db name response payload")
+}
+
+pub fn deserialize_db_name_response_payload(bytes: &[u8]) -> Option<DbNameResponsePayload> {
     wincode::deserialize(bytes).ok()
 }
